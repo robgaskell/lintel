@@ -17,7 +17,8 @@
   import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
   import { createScrollLock, renderDelayMs } from '../render/scrollSync';
   import type { DocState, ViewMode } from '../docs/store.svelte';
-  import { outline, outlineSources } from './outline.svelte';
+  import { outline, outlinePlacement, outlineSources } from './outline.svelte';
+  import WindowOutline from './WindowOutline.svelte';
 
   let { doc }: { doc: DocState } = $props();
 
@@ -226,6 +227,9 @@
 <div class="doc-pane" data-doc-pane={doc.id} bind:this={pane}>
   <Toolbar docId={doc.id} mode={doc.mode} onModeChange={(m) => (doc.mode = m)} />
   <div class="panes mode-{doc.mode}">
+    {#if outlinePlacement.anchorId === doc.id}
+      <WindowOutline docId={outlinePlacement.docId} />
+    {/if}
     <div class="doc-column">
       {#if largeFileNotices.has(doc.id)}
         <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>

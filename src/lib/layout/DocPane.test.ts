@@ -7,8 +7,7 @@ import { cursors } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
-import { outline, outlineSources } from './outline.svelte';
-import WindowOutline from './WindowOutline.svelte';
+import { outline, outlinePlacement, outlineSources } from './outline.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
@@ -19,7 +18,15 @@ beforeEach(() => {
   docs.clear();
   largeFileNotices.clear();
   outline.visible = true;
+  outlinePlacement.anchorId = null;
+  outlinePlacement.docId = null;
 });
+
+// As the workspace does for a lone pane: the outline sits in it and lists its headings.
+function placeOutlineIn(id: string) {
+  outlinePlacement.anchorId = id;
+  outlinePlacement.docId = id;
+}
 
 afterEach(() => vi.useRealTimers());
 
@@ -46,9 +53,8 @@ function fakeResizeObservers() {
 
 function pane(mode: ViewMode, raw = '# Title\n') {
   const doc = createDoc({ path: '/notes/a.md', raw, hash: 'h', mode });
+  placeOutlineIn(doc.id);
   const view = render(DocPane, { doc });
-  // The outline is the window's, beside the groups (Ruling 181).
-  render(WindowOutline, { docId: doc.id });
   const q = (selector: string) => view.container.querySelector(selector);
   return { doc, ...view, q };
 }
@@ -129,14 +135,13 @@ describe('DocPane large-file notice', () => {
   it('spans the document column only, not the outline (Ruling 122)', () => {
     const doc = createDoc({ path: '/big.md', raw: '# x', hash: 'h', mode: 'edit' });
     largeFileNotices.add(doc.id);
+    placeOutlineIn(doc.id);
     const { getByRole, container } = render(DocPane, { doc });
-    render(WindowOutline, { docId: doc.id });
 
     const column = getByRole('status').closest('.doc-column');
     expect(column).not.toBeNull();
-    // The outline is the window's, outside every pane (Ruling 181).
-    expect(container.querySelector('nav')).toBeNull();
-    expect(document.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
+    expect(column!.querySelector('nav')).toBeNull();
+    expect(container.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
   });
 
   it('shows no notice for an ordinary doc', () => {
@@ -180,6 +185,20 @@ describe('DocPane scroll sync', () => {
     q('[data-doc-pane]')!.dispatchEvent(new Event(PANE_MOVED));
 
     expect(preview.scrollTop).toBe(200);
+  });
+
+  it('leaves the scroll alone when moved while out of the page, as a hidden tab is', () => {
+    const { q, container } = pane('read', src);
+    const preview = q('.preview')!;
+    userScroll(preview, 200);
+    preview.scrollTop = 0;
+    const root = q('[data-doc-pane]')!;
+    root.remove();
+
+    root.dispatchEvent(new Event(PANE_MOVED));
+
+    expect(preview.scrollTop).toBe(0);
+    container.append(root);
   });
 
   it('brings the editor to the line being read when leaving Read', () => {
@@ -293,6 +312,24 @@ describe('DocPane outline', () => {
 
     unmount();
     expect(outlineSources.has(doc.id)).toBe(false);
+  });
+
+  it('shows the outline only in the pane it is placed in, listing the active doc (Ruling 191)', () => {
+    const { container } = pane('split', src);
+    const other = createDoc({ path: '/notes/b.md', raw: '# B\n', hash: 'h', mode: 'split' });
+    const second = render(DocPane, { doc: other });
+    const navIn = (el: Element) => el.querySelector('nav[aria-label="Outline"]');
+    expect(navIn(container)).not.toBeNull();
+    expect(navIn(second.container)).toBeNull();
+
+    outlinePlacement.docId = other.id;
+    flushSync();
+    expect([...navIn(container)!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['B']);
+
+    outlinePlacement.anchorId = other.id;
+    flushSync();
+    expect(navIn(container)).toBeNull();
+    expect(navIn(second.container)).not.toBeNull();
   });
 
   it('hides the panel when the outline is turned off for the window', () => {

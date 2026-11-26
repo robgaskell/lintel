@@ -393,6 +393,18 @@ describe('showTabMenu', () => {
     expect(native.items.get(idOf('Split Down'))?.enabled).toBe(true);
   });
 
+  it('greys out the splits when no workspace is attached to ask', async () => {
+    const a = fileDoc('a.md');
+    open(a, fileDoc('b.md'));
+    const otherHost = document.createElement('div');
+    new Workspace(otherHost).dispose(); // the last one attached, now gone
+
+    await showTabMenu(a.id, 0, 0);
+
+    expect(native.items.get(idOf('Split Right'))?.enabled).toBe(false);
+    expect(native.items.get(idOf('Split Down'))?.enabled).toBe(false);
+  });
+
   it('ignores a second right-click until the first menu has closed (Ruling 175)', async () => {
     const a = fileDoc('a.md');
     const b = fileDoc('b.md');

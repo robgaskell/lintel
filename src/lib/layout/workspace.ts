@@ -11,6 +11,7 @@ import { EditorView } from '@codemirror/view';
 import { closeDocWithPrompt, confirmCloseAll, docs, type DocState } from '../docs/store.svelte';
 import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
+import { outlinePlacement } from './outline.svelte';
 import Tab from './Tab.svelte';
 import { attachTabMenu, tabDocId } from './tabMenu';
 import './vendor/dockview.css';
@@ -22,7 +23,7 @@ interface PanelParams {
 
 type GridNode =
   | { type: 'branch'; data: GridNode[] }
-  | { type: 'leaf'; data: { views: string[] } };
+  | { type: 'leaf'; data: { views: string[]; activeView?: string } };
 
 const COMPONENT = 'doc';
 
@@ -37,6 +38,7 @@ export class Workspace {
   private readonly closing = new Map<string, Promise<boolean>>();
   private readonly focusListener: { dispose(): void };
   private readonly moveListener: { dispose(): void };
+  private readonly layoutListener: { dispose(): void };
   private readonly stopTheme: () => void;
   private readonly detachTabMenu: () => void;
   private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
@@ -62,6 +64,7 @@ export class Workspace {
       // The pane left the page during the move, which reset its scroll.
       this.panes.get(e.panel.id)?.querySelector('[data-doc-pane]')?.dispatchEvent(new Event(PANE_MOVED));
     });
+    this.layoutListener = this.api.onDidLayoutChange(() => this.placeOutline());
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
     el.addEventListener('click', this.onClick);
@@ -177,6 +180,12 @@ export class Workspace {
     return () => listener.dispose();
   }
 
+  /** Calls `cb` after tabs or groups are added, removed, moved, switched or resized, once per burst. */
+  onLayoutChange(cb: () => void): () => void {
+    const listener = this.api.onDidLayoutChange(() => cb());
+    return () => listener.dispose();
+  }
+
   /** The tab reads the title live; this keeps the title dockview stores in the layout current. */
   refreshTab(id: string): void {
     const doc = docs.get(id);
@@ -189,6 +198,9 @@ export class Workspace {
     this.detachTabMenu();
     this.focusListener.dispose();
     this.moveListener.dispose();
+    this.layoutListener.dispose();
+    outlinePlacement.anchorId = null;
+    outlinePlacement.docId = null;
     this.stopTheme();
     this.api.dispose();
   }
@@ -210,6 +222,12 @@ export class Workspace {
       const panel = this.api.getPanel(id);
       if (panel) this.api.removePanel(panel);
     }
+  }
+
+  private placeOutline(): void {
+    const root = this.api.toJSON().grid.root as unknown as GridNode;
+    outlinePlacement.anchorId = this.api.panels.length ? topLeftView(root) : null;
+    outlinePlacement.docId = this.activeDocId();
   }
 
   private groupDocIds(id?: string): string[] {
@@ -319,6 +337,11 @@ export class Workspace {
       if (editor) EditorView.findFromDOM(editor)?.focus();
     }, 0);
   }
+}
+
+function topLeftView(node: GridNode): string | null {
+  if (node.type === 'leaf') return node.data.activeView ?? node.data.views[0] ?? null;
+  return node.data.length ? topLeftView(node.data[0]) : null;
 }
 
 function leafViews(node: GridNode): string[] {

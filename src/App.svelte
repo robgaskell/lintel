@@ -7,9 +7,8 @@
   import { docs } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
-  import WindowOutline from './lib/layout/WindowOutline.svelte';
   import { Workspace } from './lib/layout/workspace';
-  import { setOutlineChecked, syncAppMenu, type MenuHandlers } from './lib/os/menu';
+  import { setOutlineChecked, setSplitEnabled, syncAppMenu, type MenuHandlers } from './lib/os/menu';
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
   import { currentPlatform } from './lib/os/platform';
@@ -71,6 +70,15 @@
     // onActiveChange makes no first call, so read the current value too (Ruling 111).
     activeId = workspace.activeDocId();
     const stopActive = workspace.onActiveChange((id) => (activeId = id));
+    // View > Split Right and Split Down grey out for a lone tab, as in the tab menu (Ruling 192).
+    const syncSplit = () => {
+      const id = workspace.activeDocId();
+      setSplitEnabled(id !== null && !workspace.isAloneInGroup(id)).catch((err) =>
+        console.error('Could not update View > Split:', err),
+      );
+    };
+    syncSplit();
+    const stopLayout = workspace.onLayoutChange(syncSplit);
     const stopRecent = onRecentChanged(() => {
       if (docs.size === 0) loadRecent();
     });
@@ -106,6 +114,7 @@
       setOutlineChecked(outline.visible).catch((err) =>
         console.error('Could not tick View > Show Outline:', err),
       );
+      syncSplit();
     });
     return () => {
       disposed = true;
@@ -114,6 +123,7 @@
       stopTheme();
       stopEditorFont();
       stopActive();
+      stopLayout();
       stopRecent();
       unlistenClose.then((stop) => stop());
       unlistenFocus.then((stop) => stop());
@@ -125,7 +135,6 @@
 
 <div class="app">
   <div class="work">
-    <WindowOutline docId={activeId} />
     <main class="dock" bind:this={host}></main>
     {#if docs.size === 0 && handlers}
       <EmptyState
@@ -160,14 +169,11 @@
 
   .work {
     position: relative;
-    display: flex;
     flex: 1;
     min-height: 0;
   }
 
   .dock {
-    flex: 1;
-    min-width: 0;
     height: 100%;
   }
 

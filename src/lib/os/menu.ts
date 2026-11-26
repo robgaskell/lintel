@@ -1,6 +1,7 @@
 import {
   CheckMenuItem,
   Menu,
+  MenuItem,
   type CheckMenuItemOptions,
   type MenuItemOptions,
   type PredefinedMenuItemOptions,
@@ -45,7 +46,8 @@ type MenuEntry =
   | CheckMenuItemOptions
   | PredefinedMenuItemOptions
   | SubmenuOptions
-  | CheckMenuItem;
+  | CheckMenuItem
+  | MenuItem;
 
 let installing: Promise<void> = Promise.resolve();
 let generation = 0;
@@ -55,6 +57,17 @@ let outlineItem: CheckMenuItem | null = null;
 /** Ticks or clears View > Show Outline (Ruling 110). */
 export async function setOutlineChecked(checked: boolean): Promise<void> {
   await outlineItem?.setChecked(checked);
+}
+
+const SPLIT_IDS = ['split-right', 'split-down'];
+// Like the outline item: View > Split Right and Split Down, greyed out without a rebuild.
+let splitItems: MenuItem[] = [];
+let splitEnabled = true;
+
+/** Enables View > Split Right and Split Down, or greys them out for a lone tab (Ruling 192). */
+export async function setSplitEnabled(enabled: boolean): Promise<void> {
+  splitEnabled = enabled;
+  await Promise.all(splitItems.map((item) => item.setEnabled(enabled)));
 }
 
 // One rebuild per burst, such as opening several files at once.
@@ -135,18 +148,28 @@ export function buildAppMenu(h: MenuHandlers, recent: string[] | null): Promise<
 
 async function install(h: MenuHandlers, recent: string[] | null): Promise<void> {
   const checked = outline.visible;
+  const splittable = splitEnabled;
   const entries = menuEntries(h, recent, currentPlatform());
   stampBuildIds(entries, ++generation);
   const check = await liveCheckItem(entries, 'toggle-outline');
+  const splits: MenuItem[] = [];
+  for (const base of SPLIT_IDS) {
+    const item = await liveMenuItem(entries, base);
+    if (item) splits.push(item);
+  }
   const menu = await Menu.new({ items: entries });
   const previous = await menu.setAsAppMenu();
   const previousCheck = outlineItem;
+  const previousSplits = splitItems;
   outlineItem = check;
+  splitItems = splits;
   // Each menu holds native resources and action channels until closed (Ruling 37).
   await previous?.close();
   await previousCheck?.close();
-  // The outline may have been toggled while this menu was being built.
+  await Promise.all(previousSplits.map((item) => item.close()));
+  // The outline or the active tab may have changed while this menu was being built.
   if (outline.visible !== checked) await check?.setChecked(outline.visible);
+  if (splitEnabled !== splittable) await setSplitEnabled(splitEnabled);
 }
 
 /**
@@ -160,6 +183,22 @@ async function liveCheckItem(entries: MenuEntry[], base: string): Promise<CheckM
     const i = items.findIndex((item) => 'checked' in item && baseId(item.id ?? '') === base);
     if (i === -1) continue;
     const item = await CheckMenuItem.new(items[i] as CheckMenuItemOptions);
+    items[i] = item;
+    return item;
+  }
+  return null;
+}
+
+/** As liveCheckItem, for a plain item that only greys out. */
+async function liveMenuItem(entries: MenuEntry[], base: string): Promise<MenuItem | null> {
+  for (const entry of entries) {
+    if (!('items' in entry) || !entry.items) continue;
+    const items = entry.items as MenuEntry[];
+    const i = items.findIndex(
+      (item) => 'id' in item && !('items' in item) && baseId(item.id ?? '') === base,
+    );
+    if (i === -1) continue;
+    const item = await MenuItem.new(items[i] as MenuItemOptions);
     items[i] = item;
     return item;
   }
@@ -288,9 +327,10 @@ export function menuEntries(
         id: 'split-right',
         text: 'Split Right',
         accelerator: 'CmdOrCtrl+\\',
+        enabled: splitEnabled,
         action: () => h.split('right'),
       },
-      { id: 'split-down', text: 'Split Down', action: () => h.split('below') },
+      { id: 'split-down', text: 'Split Down', enabled: splitEnabled, action: () => h.split('below') },
     ],
   };
 

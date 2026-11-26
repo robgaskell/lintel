@@ -3,8 +3,8 @@ import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { createDoc, docs } from './lib/docs/store.svelte';
-import { outline, outlineSources } from './lib/layout/outline.svelte';
-import { setOutlineChecked } from './lib/os/menu';
+import { outline } from './lib/layout/outline.svelte';
+import { setOutlineChecked, setSplitEnabled } from './lib/os/menu';
 import { openPaths } from './lib/os/open';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
@@ -14,6 +14,8 @@ import App from './App.svelte';
 const fake = vi.hoisted(() => ({
   active: null as string | null,
   activeListeners: new Set<(id: string | null) => void>(),
+  layoutListeners: new Set<() => void>(),
+  alone: new Set<string>(),
   focusHandler: null as ((event: { payload: boolean }) => void) | null,
 }));
 
@@ -24,6 +26,11 @@ vi.mock('./lib/layout/workspace', () => ({
       fake.activeListeners.add(cb);
       return () => fake.activeListeners.delete(cb);
     }
+    onLayoutChange(cb: () => void) {
+      fake.layoutListeners.add(cb);
+      return () => fake.layoutListeners.delete(cb);
+    }
+    isAloneInGroup = (id: string) => fake.alone.has(id);
     dispose() {}
   },
 }));
@@ -41,6 +48,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn(), s
 vi.mock('./lib/os/menu', () => ({
   syncAppMenu: vi.fn(() => () => {}),
   setOutlineChecked: vi.fn(async () => {}),
+  setSplitEnabled: vi.fn(async () => {}),
 }));
 vi.mock('./lib/os/open', () => ({
   setWorkspace: vi.fn(),
@@ -81,9 +89,10 @@ beforeEach(() => {
   (cursors as Map<string, Cursor>).clear();
   fake.active = null;
   fake.activeListeners.clear();
+  fake.layoutListeners.clear();
+  fake.alone.clear();
   fake.focusHandler = null;
   outline.visible = true;
-  outlineSources.clear();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
   document.documentElement.removeAttribute('style');
@@ -174,45 +183,48 @@ describe('App outline tick (Ruling 120)', () => {
   });
 });
 
-describe('App outline (Ruling 181)', () => {
-  function source(...texts: string[]) {
-    const headings = texts.map((text, i) => ({ level: 1 as const, text, id: `h-${text}`, line: i + 1 }));
-    return { headings, activeLine: 1, pick: vi.fn() };
-  }
-  const outlineTexts = (container: HTMLElement) =>
-    [...container.querySelectorAll('nav[aria-label="Outline"] a')].map((a) => a.textContent);
+describe('App outline (Rulings 181, 191)', () => {
+  it('leaves the outline to the panes, with none beside the dock', () => {
+    const a = createDoc({ path: '/a.md', raw: '# A\n', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container } = render(App);
 
-  it('shows one outline, at the left of the window, for the active doc in any group', () => {
+    expect(container.querySelector('.work > nav')).toBeNull();
+    expect(container.querySelector('.work')?.firstElementChild?.classList.contains('dock')).toBe(true);
+  });
+});
+
+describe('App View > Split (Ruling 192)', () => {
+  function layoutChanged() {
+    for (const cb of fake.layoutListeners) cb();
+  }
+
+  it('greys out Split Right and Split Down while the active tab is alone in its group', () => {
     const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
     const b = createDoc({ path: '/b.md', raw: '', hash: 'h', mode: 'edit' });
-    outlineSources.set(a.id, source('Alpha'));
-    outlineSources.set(b.id, source('Beta', 'Gamma'));
     fake.active = a.id;
-    const { container } = render(App);
+    fake.alone.add(a.id);
+    render(App);
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
 
-    const navs = container.querySelectorAll('nav[aria-label="Outline"]');
-    expect(navs).toHaveLength(1);
-    expect(navs[0].parentElement?.firstElementChild).toBe(navs[0]);
-    expect(navs[0].nextElementSibling?.classList.contains('dock')).toBe(true);
-    expect(outlineTexts(container)).toEqual(['Alpha']);
+    fake.alone.clear();
+    layoutChanged();
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(true);
 
-    setActive(b.id);
-    expect(outlineTexts(container)).toEqual(['Beta', 'Gamma']);
+    fake.active = b.id;
+    fake.alone.add(b.id);
+    layoutChanged();
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
   });
 
-  it('sends a pick to the active doc, and hides with Show Outline', async () => {
-    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
-    const src = source('Alpha');
-    outlineSources.set(a.id, src);
-    fake.active = a.id;
-    const { container } = render(App);
+  it('greys them out with no tab open, and sets them again when the window gains focus', async () => {
+    render(App);
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
+    await vi.waitFor(() => expect(fake.focusHandler).not.toBeNull());
+    vi.mocked(setSplitEnabled).mockClear();
 
-    await fireEvent.click(container.querySelector('nav[aria-label="Outline"] a')!);
-    expect(src.pick).toHaveBeenCalledWith(src.headings[0]);
-
-    outline.visible = false;
-    flushSync();
-    expect(container.querySelector('nav[aria-label="Outline"]')).toBeNull();
+    fake.focusHandler!({ payload: true });
+    expect(setSplitEnabled).toHaveBeenCalledWith(false);
   });
 });
 

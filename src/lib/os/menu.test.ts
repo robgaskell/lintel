@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CheckMenuItem, Menu } from '@tauri-apps/api/menu';
+import { CheckMenuItem, Menu, MenuItem } from '@tauri-apps/api/menu';
 import { history } from '@codemirror/commands';
 import { search } from '@codemirror/search';
 import { EditorState } from '@codemirror/state';
@@ -13,6 +13,7 @@ import {
   buildAppMenu,
   menuEntries,
   setOutlineChecked,
+  setSplitEnabled,
   syncAppMenu,
   type MenuHandlers,
 } from './menu';
@@ -67,6 +68,19 @@ vi.mock('@tauri-apps/api/menu', () => ({
       };
     }),
   },
+  MenuItem: {
+    new: vi.fn(async (opts: { id: string; action: (id: string) => void; enabled?: boolean }) => {
+      tauri.channels.set(opts.id, opts.action);
+      return {
+        id: opts.id,
+        enabled: opts.enabled ?? true,
+        setEnabled: vi.fn(async function (this: { enabled: boolean }, enabled: boolean) {
+          this.enabled = enabled;
+        }),
+        close: vi.fn(async () => {}),
+      };
+    }),
+  },
 }));
 
 vi.mock('../../settings/settingsWindow', () => ({ focusedSettingsWindow: vi.fn(async () => null) }));
@@ -92,6 +106,8 @@ beforeEach(async () => {
   await loadSettings();
   vi.mocked(Menu.new).mockClear();
   vi.mocked(CheckMenuItem.new).mockClear();
+  await setSplitEnabled(true);
+  vi.mocked(MenuItem.new).mockClear();
   vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   outline.visible = true;
 });
@@ -412,6 +428,42 @@ describe('buildAppMenu', () => {
 
     expect(first.setChecked).toHaveBeenLastCalledWith(false);
     expect(Menu.new).toHaveBeenCalledOnce();
+  });
+
+  it('greys out View > Split Right and Split Down without a rebuild (Ruling 192)', async () => {
+    await buildAppMenu(handlers(), []);
+    const live = await Promise.all(vi.mocked(MenuItem.new).mock.results.map((r) => r.value));
+    const splits = live.filter((item) => /^split-(right|down)#/.test(item.id));
+    expect(splits).toHaveLength(2);
+    const view = (vi.mocked(Menu.new).mock.lastCall![0]!.items as Built[]).find(
+      (entry) => (entry as { text?: string }).text === 'View',
+    );
+    for (const item of splits) expect(view?.items).toContain(item);
+
+    await setSplitEnabled(false);
+    for (const item of splits) expect(item.enabled).toBe(false);
+    await setSplitEnabled(true);
+    for (const item of splits) expect(item.enabled).toBe(true);
+    expect(Menu.new).toHaveBeenCalledOnce();
+  });
+
+  it('builds the splits greyed when the active tab is already alone, and keeps a change made mid-build', async () => {
+    await setSplitEnabled(false);
+    await buildAppMenu(handlers(), []);
+    const first = await Promise.all(vi.mocked(MenuItem.new).mock.results.map((r) => r.value));
+    expect(first.map((item) => item.enabled)).toEqual([false, false]);
+
+    vi.mocked(MenuItem.new).mockClear();
+    const real = vi.mocked(MenuItem.new).getMockImplementation()!;
+    vi.mocked(MenuItem.new).mockImplementationOnce(async (opts) => {
+      const item = await real(opts);
+      void setSplitEnabled(true); // the active tab changes mid-build
+      return item;
+    });
+    await buildAppMenu(handlers(), []);
+    const second = await Promise.all(vi.mocked(MenuItem.new).mock.results.map((r) => r.value));
+    expect(second.map((item) => item.enabled)).toEqual([true, true]);
+    for (const item of first) expect(item.close).toHaveBeenCalled();
   });
 
   it('re-ticks the item when the outline is toggled while the menu is being built', async () => {

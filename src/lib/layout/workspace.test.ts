@@ -4,7 +4,9 @@ import { EditorView } from '@codemirror/view';
 import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
 import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
+import { fakePreviewLayout } from '../../test/layout';
 import { applyTheme } from '../theme/theme';
+import { outline } from './outline.svelte';
 import type { DockviewApi } from 'dockview-core';
 import { Workspace } from './workspace';
 
@@ -43,6 +45,7 @@ function tabFor(id: string): HTMLElement {
 beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
+  outline.visible = true;
   messageDialog.mockReset();
   host = document.createElement('div');
   document.body.append(host);
@@ -663,7 +666,11 @@ describe('Workspace split (Ruling 178)', () => {
   it('leaves a tab that is alone in its group where it is', () => {
     const [a, b] = ['a.md', 'b.md'].map(fileDoc);
     ws.openDoc(a);
+    const api = (ws as unknown as { api: DockviewApi }).api;
+    const moveTo = vi.spyOn(api.getPanel(a.id)!.api, 'moveTo');
     ws.split(a.id, 'right');
+    ws.split(a.id, 'below');
+    expect(moveTo).not.toHaveBeenCalled();
     expect(ws.groupCount()).toBe(1);
 
     ws.openDoc(b);
@@ -710,18 +717,98 @@ describe('Workspace split (Ruling 178)', () => {
     elsewhere.remove();
   });
 
-  it('brings the moved editor back to its line, as a move out of the page resets scroll', async () => {
-    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+  it('brings the moved editor and preview back to their line, as a move out of the page resets scroll', async () => {
+    const restoreLayout = fakePreviewLayout();
+    const a = createDoc({ path: '/notes/a.md', raw: '# A\n\nb\n\n## C\n\nd\n\n### E\n\nf\n', hash: 'h', mode: 'split' });
+    const b = fileDoc('b.md');
     ws.openDoc(b);
     ws.openDoc(a);
     flushSync();
+    const preview = host.querySelector(`[data-doc-pane="${a.id}"] .preview`) as HTMLElement;
     const view = EditorView.findFromDOM(editorOf(a.id) as HTMLElement)!;
+    // With the fake layout, 200 px down the preview is line 5 (## C).
+    preview.scrollTop = 200;
+    preview.dispatchEvent(new Event('scroll'));
+    preview.scrollTop = 0; // what leaving the page does
     const dispatch = vi.spyOn(view, 'dispatch');
 
     ws.split(a.id, 'right');
 
-    await vi.waitFor(() =>
-      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() })),
-    );
+    // scrollIntoView's target is not public; its range says where the editor is sent.
+    const target = (spec: unknown) =>
+      (spec as { effects?: { value?: { range?: { head: number } } } }).effects?.value?.range?.head;
+    await vi.waitFor(() => expect(dispatch.mock.calls.map(([spec]) => target(spec))).toContain(view.state.doc.line(5).from));
+    expect(preview.scrollTop).toBe(200);
+    restoreLayout();
+  });
+});
+
+describe('Workspace outline placement (Rulings 181, 191)', () => {
+  const outlines = () => [...host.querySelectorAll('nav[aria-label="Outline"]')];
+  const outlineTexts = () => [...outlines()[0].querySelectorAll('a')].map((a) => a.textContent);
+  const paneOf = (nav: Element) => nav.closest('[data-doc-pane]')?.getAttribute('data-doc-pane');
+
+  it('shows one outline, under the top-left group\'s tab strip and toolbar, for the active doc', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'right');
+
+    await vi.waitFor(() => expect(outlineTexts()).toEqual(['b.md']));
+    expect(outlines()).toHaveLength(1);
+    const nav = outlines()[0];
+    expect(paneOf(nav)).toBe(a.id);
+    // Below the strip (outside the pane) and the toolbar, beside the document.
+    expect(nav.closest('.panes')?.previousElementSibling?.classList.contains('toolbar')).toBe(true);
+    expect(nav.nextElementSibling?.classList.contains('doc-column')).toBe(true);
+
+    ws.activate(a.id);
+    await vi.waitFor(() => expect(outlineTexts()).toEqual(['a.md']));
+    expect(paneOf(outlines()[0])).toBe(a.id);
+  });
+
+  it('moves to the pane now shown at the top left', async () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'below');
+    ws.openDoc(c, { referenceId: a.id });
+    await vi.waitFor(() => expect(paneOf(outlines()[0])).toBe(c.id));
+    expect(outlineTexts()).toEqual(['c.md']);
+
+    await ws.closeDoc(c.id);
+    await ws.closeDoc(a.id);
+    await vi.waitFor(() => expect(paneOf(outlines()[0])).toBe(b.id));
+    expect(outlines()).toHaveLength(1);
+  });
+
+  it('shows none when the outline is turned off', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    await vi.waitFor(() => expect(outlines()).toHaveLength(1));
+
+    outline.visible = false;
+    flushSync();
+    expect(outlines()).toHaveLength(0);
+  });
+});
+
+describe('Workspace layout changes', () => {
+  it('reports splits, tab switches and closes until unlistened', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+    const changed = vi.fn();
+    const stop = ws.onLayoutChange(changed);
+
+    ws.split(b.id, 'right');
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    ws.activate(a.id);
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2));
+
+    stop();
+    await ws.closeDoc(b.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
