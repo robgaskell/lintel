@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message, open } from '@tauri-apps/plugin-dialog';
 import { docs, saveDoc, saveDocAs, type DocState } from '../docs/store.svelte';
-import { makeMenuHandlers, type MenuHandlerDeps } from './menuHandlers';
+import { listenTabSwitchKeys, makeMenuHandlers, tabSwitchKey, type MenuHandlerDeps } from './menuHandlers';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
 import { quitApp } from './quit';
@@ -36,6 +36,8 @@ function deps(): MenuHandlerDeps {
       refreshTab: vi.fn(),
       docIdsInOrder: vi.fn(() => []),
       activate: vi.fn(),
+      nextTab: vi.fn(),
+      previousTab: vi.fn(),
     },
     currentWindow: vi.fn(() => mainWindow),
     outline: { visible: true },
@@ -225,6 +227,19 @@ describe('makeMenuHandlers', () => {
       expect(message).not.toHaveBeenCalled();
     });
 
+    it('leaves the tabs alone for Show Next and Show Previous Tab', async () => {
+      const d = deps();
+      const h = makeMenuHandlers(d);
+
+      h.nextTab();
+      h.previousTab();
+
+      await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(d.workspace.nextTab).not.toHaveBeenCalled();
+      expect(d.workspace.previousTab).not.toHaveBeenCalled();
+    });
+
     it('closes Settings on Close Tab, not a tab', async () => {
       makeMenuHandlers(deps()).closeTab();
 
@@ -255,11 +270,67 @@ describe('makeMenuHandlers', () => {
     });
   });
 
+  it('shows the next and previous tab of the workspace', async () => {
+    const d = deps();
+    const h = makeMenuHandlers(d);
+
+    h.nextTab();
+    await vi.waitFor(() => expect(d.workspace.nextTab).toHaveBeenCalledOnce());
+    h.previousTab();
+    await vi.waitFor(() => expect(d.workspace.previousTab).toHaveBeenCalledOnce());
+  });
+
   it('shows an error from a handler in a dialog', async () => {
     vi.mocked(quitApp).mockRejectedValue(new Error('ipc down'));
     makeMenuHandlers(deps()).quit();
     await vi.waitFor(() =>
       expect(String(vi.mocked(message).mock.calls[0]?.[0])).toContain('ipc down'),
     );
+  });
+});
+
+describe('tab switching keys (Ruling 167)', () => {
+  const key = (key: string, mods: Partial<KeyboardEventInit> = {}) =>
+    new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...mods });
+
+  it('reads Ctrl+Tab and Ctrl+Shift+Tab on macOS', () => {
+    expect(tabSwitchKey(key('Tab', { ctrlKey: true }), 'macos')).toBe('next');
+    expect(tabSwitchKey(key('Tab', { ctrlKey: true, shiftKey: true }), 'macos')).toBe('previous');
+    expect(tabSwitchKey(key('Tab'), 'macos')).toBeNull();
+    expect(tabSwitchKey(key('Tab', { ctrlKey: true, metaKey: true }), 'macos')).toBeNull();
+    expect(tabSwitchKey(key('PageDown', { ctrlKey: true }), 'macos')).toBeNull();
+  });
+
+  it.each(['windows', 'linux'] as const)('reads Ctrl+PageDown and Ctrl+PageUp on %s', (platform) => {
+    expect(tabSwitchKey(key('PageDown', { ctrlKey: true }), platform)).toBe('next');
+    expect(tabSwitchKey(key('PageUp', { ctrlKey: true }), platform)).toBe('previous');
+    expect(tabSwitchKey(key('PageDown'), platform)).toBeNull();
+    expect(tabSwitchKey(key('PageDown', { ctrlKey: true, shiftKey: true }), platform)).toBeNull();
+    // Ctrl+Tab is the Window menu's own accelerator here.
+    expect(tabSwitchKey(key('Tab', { ctrlKey: true }), platform)).toBeNull();
+  });
+
+  it('runs the handler before the editor sees the key, until stopped', () => {
+    const h = { nextTab: vi.fn(), previousTab: vi.fn() };
+    const editor = document.createElement('div');
+    const editorSaw = vi.fn();
+    editor.addEventListener('keydown', editorSaw);
+    document.body.append(editor);
+    const stop = listenTabSwitchKeys(h, 'macos');
+
+    const next = key('Tab', { ctrlKey: true });
+    editor.dispatchEvent(next);
+    editor.dispatchEvent(key('Tab', { ctrlKey: true, shiftKey: true }));
+    editor.dispatchEvent(key('a'));
+
+    expect(h.nextTab).toHaveBeenCalledOnce();
+    expect(h.previousTab).toHaveBeenCalledOnce();
+    expect(next.defaultPrevented).toBe(true);
+    expect(editorSaw).toHaveBeenCalledOnce();
+
+    stop();
+    editor.dispatchEvent(key('Tab', { ctrlKey: true }));
+    expect(h.nextTab).toHaveBeenCalledOnce();
+    editor.remove();
   });
 });

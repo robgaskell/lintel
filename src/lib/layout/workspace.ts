@@ -1,16 +1,18 @@
 import {
   createDockview,
   type DockviewApi,
+  type DockviewGroupPanel,
   type IContentRenderer,
   type ITabRenderer,
   type SerializedDockview,
 } from 'dockview-core';
 import { mount, unmount } from 'svelte';
 import { EditorView } from '@codemirror/view';
-import { closeDocWithPrompt, docs, type DocState } from '../docs/store.svelte';
+import { closeDocWithPrompt, confirmCloseAll, docs, type DocState } from '../docs/store.svelte';
 import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
 import DocPane from './DocPane.svelte';
 import Tab from './Tab.svelte';
+import { attachTabMenu, tabDocId } from './tabMenu';
 import './vendor/dockview.css';
 
 // Only the id goes in params: dockview serialises params into the saved layout.
@@ -34,8 +36,12 @@ export class Workspace {
   private readonly panes = new Map<string, HTMLElement>();
   private readonly closing = new Map<string, Promise<boolean>>();
   private readonly focusListener: { dispose(): void };
+  private readonly moveListener: { dispose(): void };
   private readonly stopTheme: () => void;
+  private readonly detachTabMenu: () => void;
   private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
+  private readonly onClick = (e: MouseEvent) => this.selectTabOnClick(e);
+  private sorting = false;
 
   constructor(private readonly el: HTMLElement) {
     this.api = createDockview(el, {
@@ -50,8 +56,12 @@ export class Workspace {
     });
     // Dockview's own overlay colours (drag targets, scrollbars) follow the app theme.
     this.stopTheme = resolvedTheme.subscribe((theme) => this.api.updateOptions({ theme: dockTheme(theme) }));
+    // A drag or a drop into a group can put an unpinned tab left of a pinned one.
+    this.moveListener = this.api.onDidMovePanel((e) => this.sortPinnedFirst(e.panel.group));
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
+    el.addEventListener('click', this.onClick);
+    this.detachTabMenu = attachTabMenu(el, this);
   }
 
   openDoc(doc: DocState, opts?: { referenceId?: string; direction?: 'right' | 'below' }): void {
@@ -84,6 +94,34 @@ export class Workspace {
     const promise = this.runClose(id).finally(() => this.closing.delete(id));
     this.closing.set(id, promise);
     return promise;
+  }
+
+  /** Pinned tabs sort to the left of their group, keeping their relative order. */
+  setPinned(id: string, pinned: boolean): void {
+    const doc = docs.get(id);
+    if (!doc) return;
+    doc.pinned = pinned;
+    const panel = this.api.getPanel(id);
+    if (panel) this.sortPinnedFirst(panel.group);
+  }
+
+  /** Closes every tab but `id` and the pinned ones, after one round of prompts (Ruling 166). */
+  closeOthers(id: string): Promise<void> {
+    return this.closeUnpinned(this.docIdsInOrder().filter((other) => other !== id));
+  }
+
+  /** Closes every tab but the pinned ones, after one round of prompts (Ruling 166). */
+  closeAll(): Promise<void> {
+    return this.closeUnpinned(this.docIdsInOrder());
+  }
+
+  /** Activates the next tab of the active group in visible order, wrapping at the end. */
+  nextTab(): void {
+    this.stepTab(1);
+  }
+
+  previousTab(): void {
+    this.stepTab(-1);
   }
 
   activeDocId(): string | null {
@@ -121,7 +159,10 @@ export class Workspace {
 
   dispose(): void {
     this.el.removeEventListener('keydown', this.onKeydown, true);
+    this.el.removeEventListener('click', this.onClick);
+    this.detachTabMenu();
     this.focusListener.dispose();
+    this.moveListener.dispose();
     this.stopTheme();
     this.api.dispose();
   }
@@ -133,16 +174,65 @@ export class Workspace {
     return true;
   }
 
+  // Cancel at any prompt closes nothing, as with Quit (Ruling 32).
+  private async closeUnpinned(ids: string[]): Promise<void> {
+    const targets = ids.filter((id) => docs.has(id) && !docs.get(id)?.pinned);
+    if (!(await confirmCloseAll(targets, (id) => this.activate(id)))) return;
+    for (const id of targets) {
+      // Already asked: a Don't Save answer leaves the doc dirty, so closeDoc would ask again.
+      docs.delete(id);
+      const panel = this.api.getPanel(id);
+      if (panel) this.api.removePanel(panel);
+    }
+  }
+
+  private stepTab(step: 1 | -1): void {
+    const group = this.api.activeGroup;
+    const panels = group?.panels ?? [];
+    const current = group?.activePanel;
+    if (panels.length < 2 || !current) return;
+    const index = panels.indexOf(current);
+    this.activate(panels[(index + step + panels.length) % panels.length].id);
+  }
+
+  private sortPinnedFirst(group: DockviewGroupPanel): void {
+    // Each moveTo below fires onDidMovePanel, which calls back here.
+    if (this.sorting) return;
+    const isPinned = (id: string) => docs.get(id)?.pinned === true;
+    const panels = group.panels;
+    const order = [...panels.filter((p) => isPinned(p.id)), ...panels.filter((p) => !isPinned(p.id))];
+    if (order.every((panel, i) => panel === panels[i])) return;
+    const active = this.api.activePanel;
+    this.sorting = true;
+    try {
+      order.forEach((panel, i) => {
+        if (group.panels[i] !== panel) panel.api.moveTo({ group, index: i });
+      });
+    } finally {
+      this.sorting = false;
+    }
+    // moveTo activates the panel it moves.
+    if (active && this.api.activePanel !== active) active.api.setActive();
+  }
+
   // dockview closes a focused tab on Delete or Backspace by removing its panel, which would
   // skip the unsaved-changes prompt and leave the doc in `docs` with no tab.
   private closeTabFromKeyboard(e: KeyboardEvent): void {
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-    const tab = e.target instanceof Element ? e.target.closest('.dv-tab') : null;
-    const id = tab?.querySelector<HTMLElement>('.lintel-tab')?.dataset.docId;
+    const id = tabDocId(e.target);
     if (!id) return;
     e.preventDefault();
     e.stopPropagation();
+    // A pinned tab has no close button, so the keys do nothing either (Ruling 48).
+    if (docs.get(id)?.pinned) return;
     void this.closeDoc(id);
+  }
+
+  // dockview selects on pointerdown only, so a click with no pointer (an accessibility
+  // press) would do nothing; the close button stops its own click (Rulings 135, 168).
+  private selectTabOnClick(e: MouseEvent): void {
+    const id = tabDocId(e.target);
+    if (id && id !== this.activeDocId()) this.activate(id);
   }
 
   private createPane(): IContentRenderer {

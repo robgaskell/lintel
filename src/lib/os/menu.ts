@@ -35,6 +35,8 @@ export interface MenuHandlers {
   exportHtml(): void;
   exportDocx(): void;
   openSettings(section?: SettingsSection): void;
+  nextTab(): void;
+  previousTab(): void;
 }
 
 type MenuEntry =
@@ -283,15 +285,36 @@ export function menuEntries(
     ],
   };
 
+  // The second chord for each direction is a key handler: an item takes one accelerator (Ruling 167).
+  const tabSwitching: MenuItemOptions[] = [
+    {
+      id: 'next-tab',
+      text: 'Show Next Tab',
+      accelerator: mac ? 'CmdOrCtrl+Shift+]' : 'Ctrl+Tab',
+      action: () => h.nextTab(),
+    },
+    {
+      id: 'previous-tab',
+      text: 'Show Previous Tab',
+      accelerator: mac ? 'CmdOrCtrl+Shift+[' : 'Ctrl+Shift+Tab',
+      action: () => h.previousTab(),
+    },
+  ];
   // Tauri registers submenus with these ids as the macOS Window and Help menus.
   const window: SubmenuOptions = {
     id: '__tauri_window_menu__',
     text: 'Window',
-    items: [
-      { item: 'Minimize' },
-      { item: 'Maximize' },
-      ...(mac ? [separator, { item: 'BringAllToFront' } as const] : []),
-    ],
+    // GTK supports neither Minimize nor Maximize, so Linux gets the tab items only.
+    items:
+      platform === 'linux'
+        ? tabSwitching
+        : [
+            { item: 'Minimize' },
+            { item: 'Maximize' },
+            separator,
+            ...tabSwitching,
+            ...(mac ? [separator, { item: 'BringAllToFront' } as const] : []),
+          ],
   };
   const help: SubmenuOptions = {
     id: '__tauri_help_menu__',
@@ -305,8 +328,7 @@ export function menuEntries(
     file,
     edit,
     view,
-    // GTK supports neither predefined item, so Linux gets no Window menu.
-    ...(platform === 'linux' ? [] : [window]),
+    window,
     help,
   ];
 }

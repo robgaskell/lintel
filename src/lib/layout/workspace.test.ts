@@ -5,6 +5,7 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
 import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
+import type { DockviewApi } from 'dockview-core';
 import { Workspace } from './workspace';
 
 vi.mock('../ipc', () => ({
@@ -306,6 +307,52 @@ describe('Workspace', () => {
     expect(messageDialog).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['Backspace', 'Delete'])('does nothing on %s on a pinned tab (Rulings 48, 165)', async (key) => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    ws.setPinned(a.id, true);
+    flushSync();
+    const tab = tabFor(a.id).closest<HTMLElement>('.dv-tab')!;
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+
+    tab.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ws.docIdsInOrder()).toEqual([a.id]);
+    expect(docs.has(a.id)).toBe(true);
+  });
+
+  it('selects a tab when its body is clicked, and never closes it (Rulings 135, 168)', async () => {
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    ws.openDoc(a);
+    ws.openDoc(b);
+    flushSync();
+
+    tabFor(a.id).querySelector<HTMLElement>('.name')!.click();
+    expect(ws.activeDocId()).toBe(a.id);
+    tabFor(b.id).closest<HTMLElement>('.dv-tab')!.click();
+    expect(ws.activeDocId()).toBe(b.id);
+
+    const tab = tabFor(b.id).closest<HTMLElement>('.dv-tab')!;
+    for (const key of ['Enter', ' ']) {
+      tab.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ws.docIdsInOrder()).toEqual([a.id, b.id]);
+    expect(docs.size).toBe(2);
+  });
+
+  it('labels the close button with the doc name', () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    flushSync();
+
+    const close = tabFor(a.id).querySelector<HTMLButtonElement>('button.close')!;
+    expect(close.getAttribute('aria-label')).toBe('Close a.md');
+  });
+
   it('focuses the editor when the already-active doc is activated again', async () => {
     const a = fileDoc('a.md');
     ws.openDoc(a);
@@ -333,5 +380,114 @@ describe('Workspace theme (Ruling 152)', () => {
 
     applyTheme({ ...structuredClone(DEFAULT_SETTINGS), theme: 'light' } as Settings);
     expect(themed().classList.contains('dockview-theme-light')).toBe(true);
+  });
+});
+
+describe('Workspace pinning (Ruling 165)', () => {
+  it('moves a pinned tab left of the unpinned ones, after tabs pinned before it', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+
+    ws.setPinned(b.id, true);
+    expect(ws.docIdsInOrder()).toEqual([b.id, a.id, c.id]);
+    ws.setPinned(c.id, true);
+    expect(ws.docIdsInOrder()).toEqual([b.id, c.id, a.id]);
+    expect(c.pinned).toBe(true);
+  });
+
+  it('moves an unpinned tab right of the tabs still pinned', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+    ws.setPinned(b.id, true);
+    ws.setPinned(c.id, true);
+
+    ws.setPinned(b.id, false);
+
+    expect(ws.docIdsInOrder()).toEqual([c.id, b.id, a.id]);
+    expect(b.pinned).toBe(false);
+  });
+
+  it('keeps the active tab active while sorting', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+    ws.activate(a.id);
+
+    ws.setPinned(c.id, true);
+
+    expect(ws.activeDocId()).toBe(a.id);
+  });
+
+  it('shows the pin and drops the close button once pinned', () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+
+    ws.setPinned(a.id, true);
+    flushSync();
+
+    expect(tabFor(a.id).querySelector('.pin')).not.toBeNull();
+    expect(tabFor(a.id).querySelector('button.close')).toBeNull();
+  });
+
+  it('puts pinned tabs first again after an unpinned tab is moved in front of them', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+    ws.setPinned(a.id, true);
+
+    (ws as unknown as { api: DockviewApi }).api.getPanel(c.id)!.api.moveTo({ index: 0 });
+
+    expect(ws.docIdsInOrder()).toEqual([a.id, c.id, b.id]);
+  });
+});
+
+describe('Workspace tab switching (Ruling 167)', () => {
+  it('steps through the active group in visible order, pinned first, and wraps', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+    ws.setPinned(c.id, true);
+    ws.activate(c.id);
+
+    const seen: (string | null)[] = [];
+    for (let i = 0; i < 3; i++) {
+      ws.nextTab();
+      seen.push(ws.activeDocId());
+    }
+    expect(seen).toEqual([a.id, b.id, c.id]);
+
+    seen.length = 0;
+    for (let i = 0; i < 3; i++) {
+      ws.previousTab();
+      seen.push(ws.activeDocId());
+    }
+    expect(seen).toEqual([b.id, a.id, c.id]);
+  });
+
+  it('stays within the active group', () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.openDoc(c, { referenceId: a.id, direction: 'right' });
+    ws.activate(b.id);
+
+    ws.nextTab();
+    expect(ws.activeDocId()).toBe(a.id);
+    ws.previousTab();
+    expect(ws.activeDocId()).toBe(b.id);
+  });
+
+  it('does nothing with one tab or none', () => {
+    ws.nextTab();
+    expect(ws.activeDocId()).toBeNull();
+
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    const seen: (string | null)[] = [];
+    ws.onActiveChange((id) => seen.push(id));
+    seen.length = 0; // dockview replays the current panel on subscribe
+
+    ws.nextTab();
+    ws.previousTab();
+
+    expect(ws.activeDocId()).toBe(a.id);
+    expect(seen).toEqual([]);
   });
 });

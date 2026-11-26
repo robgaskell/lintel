@@ -17,7 +17,8 @@
     <span class="dirty" role="img" aria-label="Unsaved changes"></span>
   {/if}
   {#if !doc.pinned}
-    <!-- Stop pointerdown so dockview neither starts a drag nor activates the tab being closed. -->
+    <!-- Stop pointerdown so dockview neither starts a drag nor activates the tab being closed,
+         and click so the tab's own select action never sees a close (Ruling 168). -->
     <button
       class="close"
       type="button"

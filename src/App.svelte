@@ -9,8 +9,9 @@
   import { outline } from './lib/layout/outline.svelte';
   import { Workspace } from './lib/layout/workspace';
   import { setOutlineChecked, syncAppMenu, type MenuHandlers } from './lib/os/menu';
-  import { makeMenuHandlers } from './lib/os/menuHandlers';
+  import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
+  import { currentPlatform } from './lib/os/platform';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
   import { handleCloseRequested } from './lib/os/window';
   import { renderDelayMs } from './lib/render/scrollSync';
@@ -79,6 +80,7 @@
       setOutlineChecked,
     });
     const menuHandlers = handlers;
+    const stopTabKeys = listenTabSwitchKeys(menuHandlers, currentPlatform());
     const showError = (err: unknown) => message(String(err), { title: 'Lintel', kind: 'error' });
     let disposed = false;
     let stopMenu = () => {};
@@ -106,6 +108,7 @@
     });
     return () => {
       disposed = true;
+      stopTabKeys();
       stopMenu();
       stopTheme();
       stopMeasure();

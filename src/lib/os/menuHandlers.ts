@@ -4,7 +4,7 @@ import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
-import { isMac } from './platform';
+import { isMac, type Platform } from './platform';
 import { quitApp } from './quit';
 import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
@@ -12,7 +12,7 @@ import { closeTabOrWindow } from './window';
 export interface MenuHandlerDeps {
   workspace: Pick<
     Workspace,
-    'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate'
+    'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate' | 'nextTab' | 'previousTab'
   >;
   currentWindow(): {
     destroy(): Promise<void>;
@@ -95,7 +95,42 @@ export function makeMenuHandlers({
     exportHtml: forDoc(notYet),
     exportDocx: forDoc(notYet),
     openSettings: (section) => guarded(() => openSettingsWindow(section))(),
+    nextTab: forDoc(() => workspace.nextTab()),
+    previousTab: forDoc(() => workspace.previousTab()),
   };
+}
+
+/**
+ * The second chord for switching tabs: Ctrl+Tab and Ctrl+Shift+Tab on macOS, Ctrl+PageDown
+ * and Ctrl+PageUp elsewhere. The first is the Window menu's accelerator (Ruling 167).
+ */
+export function tabSwitchKey(e: KeyboardEvent, platform: Platform): 'next' | 'previous' | null {
+  if (!e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (platform === 'macos') {
+    if (e.key !== 'Tab') return null;
+    return e.shiftKey ? 'previous' : 'next';
+  }
+  if (e.shiftKey) return null;
+  if (e.key === 'PageDown') return 'next';
+  if (e.key === 'PageUp') return 'previous';
+  return null;
+}
+
+/** Listens on the whole window, in the capture phase, so the editor never sees the chord. */
+export function listenTabSwitchKeys(
+  h: Pick<MenuHandlers, 'nextTab' | 'previousTab'>,
+  platform: Platform,
+): () => void {
+  const onKeydown = (e: KeyboardEvent) => {
+    const direction = tabSwitchKey(e, platform);
+    if (!direction) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (direction === 'next') h.nextTab();
+    else h.previousTab();
+  };
+  window.addEventListener('keydown', onKeydown, true);
+  return () => window.removeEventListener('keydown', onKeydown, true);
 }
 
 // The step that enables an item replaces this; until then a stray click says so.

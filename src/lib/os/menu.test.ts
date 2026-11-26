@@ -126,6 +126,8 @@ function handlers(): MenuHandlers {
     exportHtml: vi.fn(),
     exportDocx: vi.fn(),
     openSettings: vi.fn(),
+    nextTab: vi.fn(),
+    previousTab: vi.fn(),
   };
 }
 
@@ -162,13 +164,33 @@ describe('menuEntries', () => {
     expect(h.quit).toHaveBeenCalledOnce();
   });
 
-  it('leaves out the Window menu on Linux, where GTK cannot minimize or maximize', () => {
+  it('gives Linux a Window menu with only the tab switching items, as GTK cannot minimize or maximize', () => {
     const entries = menuEntries(handlers(), [], 'linux') as Entry[];
 
-    expect(entries.map((e) => e.text)).toEqual(['File', 'Edit', 'View', 'Help']);
+    expect(entries.map((e) => e.text)).toEqual(['File', 'Edit', 'View', 'Window', 'Help']);
+    expect(entries[3].items!.map((e) => e.text)).toEqual(['Show Next Tab', 'Show Previous Tab']);
     const predefined = flatten(entries).map((e) => e.item);
     expect(predefined).not.toContain('Minimize');
     expect(predefined).not.toContain('Maximize');
+  });
+
+  it.each([
+    ['macos', 'CmdOrCtrl+Shift+]', 'CmdOrCtrl+Shift+['],
+    ['windows', 'Ctrl+Tab', 'Ctrl+Shift+Tab'],
+    ['linux', 'Ctrl+Tab', 'Ctrl+Shift+Tab'],
+  ] as const)('puts Show Next and Show Previous Tab in the Window menu on %s (Ruling 167)', (platform, next, previous) => {
+    const h = handlers();
+    const entries = menuEntries(h, [], platform) as Entry[];
+    const window = entries.find((e) => e.text === 'Window')!;
+
+    const nextItem = byId(window.items!, 'next-tab');
+    const previousItem = byId(window.items!, 'previous-tab');
+    expect([nextItem.text, nextItem.accelerator]).toEqual(['Show Next Tab', next]);
+    expect([previousItem.text, previousItem.accelerator]).toEqual(['Show Previous Tab', previous]);
+    nextItem.action!();
+    previousItem.action!();
+    expect(h.nextTab).toHaveBeenCalledOnce();
+    expect(h.previousTab).toHaveBeenCalledOnce();
   });
 
   it('has no predefined Quit, Close Window, Undo or Redo on any platform', () => {
