@@ -351,11 +351,17 @@ describe('applyTheme', () => {
     expect(fake.setTheme).toHaveBeenLastCalledWith('light');
     applyTheme(settingsWith({ theme: 'system' }));
     expect(fake.setTheme).toHaveBeenLastCalledWith(null);
+  });
 
-    // An OS change or a font change needs no new call.
+  it('sets the window theme on every application, even when the choice is unchanged (Ruling 194)', () => {
+    applyTheme(settingsWith({ theme: 'dark' }));
     fake.setTheme.mockClear();
-    applyTheme(settingsWith({ theme: 'system', fontSize: 20 }));
-    expect(fake.setTheme).not.toHaveBeenCalled();
+
+    applyTheme(settingsWith({ theme: 'dark', fontSize: 20 }));
+    applyTheme(settingsWith({ theme: 'system' }));
+    applyTheme(settingsWith({ theme: 'system', fontSize: 18 }));
+
+    expect(fake.setTheme.mock.calls).toEqual([['dark'], [null], [null]]);
   });
 });
 
@@ -462,6 +468,25 @@ describe('restoreTheme (Ruling 150)', () => {
       expect(root.dataset.theme, why).toBeUndefined();
       expect(root.getAttribute('style'), why).toBeNull();
     }
+  });
+});
+
+describe('followTheme in a second window (Ruling 194)', () => {
+  it('sets its own window theme on each settings change, though it was created with that theme', () => {
+    // A window opened with a forced theme: its page restores that same choice first.
+    applyTheme(settingsWith({ theme: 'dark' }));
+    restoreTheme();
+    let current = settingsWith({ theme: 'dark' });
+    const stop = followTheme(() => current, { remember: false });
+    fake.setTheme.mockClear();
+
+    // Another window turns the theme to dark, then to light.
+    fake.settingsChanged!(current);
+    current = settingsWith({ theme: 'light' });
+    fake.settingsChanged!(current);
+
+    expect(fake.setTheme.mock.calls).toEqual([['dark'], ['light']]);
+    stop();
   });
 });
 

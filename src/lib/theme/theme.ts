@@ -111,7 +111,7 @@ export function restoreTheme({ defaultPalettes = false } = {}): void {
     ? cssVariables({ ...DEFAULT_SETTINGS, theme: saved.theme } as Settings, saved.theme)
     : saved.vars;
   paint(saved.theme, vars);
-  setWindowTheme(saved.choice, true);
+  setWindowTheme(saved.choice);
 }
 
 /**
@@ -142,12 +142,10 @@ function paint(resolved: ResolvedTheme, vars: Record<string, string>): void {
   current.set(resolved);
 }
 
-let windowTheme: ThemeChoice | null = null;
-
 // Native menus, dialogs and the title bar follow this; null lets them follow the OS (Ruling 151).
-function setWindowTheme(choice: ThemeChoice, always = false): void {
-  if (choice === windowTheme && !always) return;
-  windowTheme = choice;
+// Set on every application, never skipped as unchanged: a window opened with a forced theme
+// can disagree with what this page last set (Ruling 194).
+function setWindowTheme(choice: ThemeChoice): void {
   getCurrentWindow()
     .setTheme(choice === 'system' ? null : choice)
     .catch((err) => console.error('Could not set the window theme:', err));
