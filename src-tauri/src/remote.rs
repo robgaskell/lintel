@@ -20,22 +20,30 @@ const MAX_REDIRECTS: usize = 5;
 // From the start of connecting to the end of the body.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A remote png, jpg, gif, webp or svg (10 MB at most) as a `data:` URI. Sends no cookies,
-/// follows at most 5 redirects, and never reaches this computer or the local network.
+/// A remote png, jpg, gif, webp or svg (10 MB at most) as a `data:` URI. Sends no cookies or
+/// Referer and follows at most 5 redirects. Refuses the addresses `is_public` rejects.
 #[tauri::command]
 pub async fn fetch_remote_image(url: String) -> Result<String, String> {
-    fetch_image(&url, false).await
+    fetch_image(&url, PUBLIC).await
 }
 
-/// `allow_loopback` is for the tests' local server only.
-async fn fetch_image(url: &str, allow_loopback: bool) -> Result<String, String> {
+/// What a fetch may reach and how long it may take. Tests loosen it for their local server.
+#[derive(Clone, Copy)]
+struct FetchRules {
+    allow_loopback: bool,
+    timeout: Duration,
+}
+
+const PUBLIC: FetchRules = FetchRules {
+    allow_loopback: false,
+    timeout: TIMEOUT,
+};
+
+async fn fetch_image(url: &str, rules: FetchRules) -> Result<String, String> {
+    let allow_loopback = rules.allow_loopback;
     let url = Url::parse(url).map_err(|_| ONLY_WEB.to_owned())?;
     check_target(&url, allow_loopback).map_err(|refusal| refusal.0.to_owned())?;
-    let mut response = client(allow_loopback)?
-        .get(url)
-        .send()
-        .await
-        .map_err(describe)?;
+    let mut response = client(rules)?.get(url).send().await.map_err(describe)?;
     // A redirect to file: is not followed but comes back as the answer itself.
     if !response.status().is_success() {
         return Err(format!("The server answered {}.", response.status()));
@@ -57,7 +65,8 @@ async fn fetch_image(url: &str, allow_loopback: bool) -> Result<String, String> 
     Ok(kind.data_uri(&bytes))
 }
 
-fn client(allow_loopback: bool) -> Result<Client, String> {
+fn client(rules: FetchRules) -> Result<Client, String> {
+    let allow_loopback = rules.allow_loopback;
     // With rustls-no-provider, building a client panics until a provider is installed.
     // A second install fails harmlessly.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -72,8 +81,9 @@ fn client(allow_loopback: bool) -> Result<Client, String> {
                 Err(refusal) => attempt.error(refusal),
             }
         }))
-        .timeout(TIMEOUT)
+        .timeout(rules.timeout)
         .user_agent("Lintel")
+        .referer(false)
         // A proxy would connect for us and skip the address checks.
         .no_proxy()
         .dns_resolver(Arc::new(PublicResolver { allow_loopback }))
@@ -130,7 +140,8 @@ fn reachable(ip: IpAddr, allow_loopback: bool) -> bool {
     is_public(ip) || (allow_loopback && ip.is_loopback())
 }
 
-/// False for loopback, private, link-local, unspecified, multicast and broadcast addresses.
+/// False for loopback, private, link-local, shared (100.64/10), reserved, documentation,
+/// unspecified, multicast and broadcast addresses, and for IPv6 that embeds such an IPv4.
 fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_v4(v4),
@@ -142,21 +153,47 @@ fn is_public(ip: IpAddr) -> bool {
 }
 
 fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let in_net = |net: [u8; 4], bits: u32| {
+        u32::from(ip) >> (32 - bits) == u32::from(Ipv4Addr::from(net)) >> (32 - bits)
+    };
     !(ip.is_loopback()
         || ip.is_private()
         || ip.is_link_local()
         || ip.is_multicast()
-        || ip.is_broadcast()
         // 0.0.0.0/8, which some systems route to this computer.
-        || ip.octets()[0] == 0)
+        || in_net([0, 0, 0, 0], 8)
+        // Shared (carrier and Tailscale) addresses.
+        || in_net([100, 64, 0, 0], 10)
+        || in_net([192, 0, 0, 0], 24)
+        || in_net([192, 0, 2, 0], 24)
+        || in_net([198, 18, 0, 0], 15)
+        || in_net([198, 51, 100, 0], 24)
+        || in_net([203, 0, 113, 0], 24)
+        // Reserved, broadcast included.
+        || in_net([240, 0, 0, 0], 4))
 }
 
 fn is_public_v6(ip: Ipv6Addr) -> bool {
-    !(ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || ip.is_unique_local()
-        || ip.is_unicast_link_local())
+    let v4 = |high: u16, low: u16| Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
+    let embedded_public = match ip.segments() {
+        // NAT64
+        [0x64, 0xff9b, 0, 0, 0, 0, high, low] => is_public_v4(v4(high, low)),
+        // 6to4
+        [0x2002, high, low, ..] => is_public_v4(v4(high, low)),
+        // Teredo: server, then the client, which is stored inverted.
+        [0x2001, 0, s_high, s_low, _, _, c_high, c_low] => {
+            is_public_v4(v4(s_high, s_low)) && is_public_v4(v4(!c_high, !c_low))
+        }
+        _ => true,
+    };
+    embedded_public
+        && !(ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            // Site-local fec0::/10, deprecated but still routed by some networks.
+            || ip.segments()[0] & 0xffc0 == 0xfec0)
 }
 
 /// Our own refusal, found again inside reqwest's error to give the user the reason.
@@ -193,7 +230,22 @@ mod tests {
     use crate::files::NOT_IMAGE_FILE;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::RwLock;
+    use std::time::Instant;
     use tauri::async_runtime::block_on;
+
+    const LOCAL: FetchRules = FetchRules {
+        allow_loopback: true,
+        timeout: TIMEOUT,
+    };
+
+    // The proxy test changes the environment; every other fetch waits for it to finish.
+    static ENV: RwLock<()> = RwLock::new(());
+
+    fn get(url: &str, rules: FetchRules) -> Result<String, String> {
+        let _env = ENV.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        block_on(fetch_image(url, rules))
+    }
 
     const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     const PNG_URI: &str = "data:image/png;base64,iVBORw0KGgo=";
@@ -220,7 +272,7 @@ mod tests {
         }
 
         fn fetch(&self, path: &str) -> Result<String, String> {
-            block_on(fetch_image(&self.url(path), true))
+            get(&self.url(path), LOCAL)
         }
     }
 
@@ -235,6 +287,13 @@ mod tests {
         }
         let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
         let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+        if path == "/slow" {
+            // Headers and a little of the body, then nothing for longer than the test allows.
+            let head = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(&[head.as_bytes(), PNG].concat());
+            std::thread::sleep(Duration::from_secs(3));
+            return;
+        }
         let _ = stream.write_all(&respond(&path, &request, port));
     }
 
@@ -267,6 +326,9 @@ mod tests {
             "/to-private" => redirect("http://10.0.0.1/a.png"),
             "/to-loopback" => redirect(&format!("http://127.0.0.1:{port}/a.png")),
             "/loop" => redirect("/loop"),
+            "/first?secret=1" => redirect("/no-referer"),
+            "/no-referer" if request.contains("\r\nreferer:") => reply("400 Bad Request", "", b""),
+            "/no-referer" => reply("200 OK", "", PNG),
             "/set-cookie" => reply(
                 "302 Found",
                 "Set-Cookie: id=1; Path=/\r\nLocation: /check\r\n",
@@ -338,11 +400,7 @@ mod tests {
             "//example.com/a.png",
             "not a url",
         ] {
-            assert_eq!(
-                block_on(fetch_image(url, true)).unwrap_err(),
-                ONLY_WEB,
-                "{url}"
-            );
+            assert_eq!(get(url, LOCAL).unwrap_err(), ONLY_WEB, "{url}");
         }
     }
 
@@ -416,11 +474,7 @@ mod tests {
             "http://224.0.0.1/a.png".into(),
             "http://255.255.255.255/a.png".into(),
         ] {
-            assert_eq!(
-                block_on(fetch_image(&url, false)).unwrap_err(),
-                LOCAL_ADDRESS,
-                "{url}"
-            );
+            assert_eq!(get(&url, PUBLIC).unwrap_err(), LOCAL_ADDRESS, "{url}");
         }
     }
 
@@ -430,5 +484,97 @@ mod tests {
         assert_eq!(server.fetch("/to-private").unwrap_err(), LOCAL_ADDRESS);
         // The test-only loopback allowance covers loopback alone.
         assert_eq!(server.fetch("/to-loopback").unwrap(), PNG_URI);
+    }
+
+    // Ruling 138. Checked without fetching, so no test ever connects past 127.0.0.1.
+    #[test]
+    fn refuses_shared_reserved_and_documentation_ranges() {
+        for url in [
+            "http://100.64.0.1/a.png",
+            "http://100.100.100.100/a.png",
+            "http://100.127.255.254/a.png",
+            "http://192.0.0.1/a.png",
+            "http://192.0.2.1/a.png",
+            "http://198.18.0.1/a.png",
+            "http://198.19.255.1/a.png",
+            "http://198.51.100.1/a.png",
+            "http://203.0.113.1/a.png",
+            "http://240.0.0.1/a.png",
+            "http://[fec0::1]/a.png",
+            "http://[64:ff9b::a00:1]/a.png",
+            "http://[64:ff9b::7f00:1]/a.png",
+            "http://[2002:a00:1::1]/a.png",
+            "http://[2002:c0a8:101::]/a.png",
+            "http://[2001:0:a00:1::1]/a.png",
+            // Teredo with a public server and the client 127.0.0.1, stored inverted.
+            "http://[2001:0:808:808::80ff:fffe]/a.png",
+        ] {
+            let refusal = check_target(&Url::parse(url).unwrap(), false).map_err(|r| r.0);
+            assert_eq!(refusal, Err(LOCAL_ADDRESS), "{url}");
+        }
+    }
+
+    #[test]
+    fn allows_public_addresses_next_to_the_refused_ranges() {
+        for ip in [
+            "100.63.255.255",
+            "100.128.0.0",
+            "198.17.255.255",
+            "198.20.0.0",
+            "8.8.8.8",
+            "2606:4700::1111",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+            "2001:0:808:808::f7f7:f7f7",
+        ] {
+            assert!(is_public(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn sends_no_referer_on_a_redirect() {
+        let server = Server::start();
+        assert_eq!(server.fetch("/first?secret=1").unwrap(), PNG_URI);
+    }
+
+    #[test]
+    fn ignores_proxy_settings_from_the_environment() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let server = Server::start();
+        let rules = FetchRules {
+            allow_loopback: true,
+            timeout: Duration::from_secs(2),
+        };
+        let names = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+        let result = {
+            let _env = ENV.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for name in names {
+                std::env::set_var(name, &proxy_url);
+            }
+            let result = block_on(fetch_image(&server.url("/a.png"), rules));
+            for name in names {
+                std::env::remove_var(name);
+            }
+            result
+        };
+        assert!(proxy.accept().is_err(), "the request went to the proxy");
+        assert_eq!(result.unwrap(), PNG_URI);
+    }
+
+    #[test]
+    fn gives_up_when_the_time_limit_passes() {
+        assert_eq!(TIMEOUT, Duration::from_secs(10));
+        let server = Server::start();
+        let rules = FetchRules {
+            allow_loopback: true,
+            timeout: Duration::from_millis(300),
+        };
+        let _env = ENV.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let started = Instant::now();
+        let result = block_on(fetch_image(&server.url("/slow"), rules));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(result.unwrap_err(), TIMED_OUT);
     }
 }
