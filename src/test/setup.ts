@@ -6,3 +6,12 @@ class ResizeObserverStub {
 }
 
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
+
+// jsdom has no matchMedia; the theme engine reads prefers-color-scheme through it.
+window.matchMedia ??= ((query: string) =>
+  ({
+    matches: false,
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }) as unknown as MediaQueryList) as typeof window.matchMedia;
