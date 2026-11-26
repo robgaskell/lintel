@@ -65,6 +65,15 @@ const CHANGED = 'lintel://settings-changed';
 /** The settings in force. Holds the defaults until `loadSettings` resolves. */
 export const settings: Settings = $state(structuredClone(DEFAULT_SETTINGS) as Settings);
 
+/** A change to apply: top-level values replace, objects such as `palettes` are merged by key. */
+export type SettingsPatch = {
+  [K in keyof Settings]?: Settings[K] extends object ? DeepPartial<Settings[K]> : Settings[K];
+};
+type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
+
+// Set when this window could not read settings.json; saving then would mislabel the file.
+let loadFailed = false;
+
 /**
  * Reads settings.json into `settings`; a field that is missing or invalid gets its default.
  * A file with an unknown `version` is copied to settings.json.bak and emptied (Ruling 52).
@@ -72,37 +81,38 @@ export const settings: Settings = $state(structuredClone(DEFAULT_SETTINGS) as Se
  */
 export function loadSettings(): Promise<Settings> {
   return oneAtATime(async () => {
-    const store = await settingsStore();
-    const stored = new Map(await store.entries<unknown>());
-    const next = structuredClone(DEFAULT_SETTINGS) as Settings;
-    if (stored.size > 0 && stored.get('version') !== 1) {
-      Object.assign(settings, next);
-      await keepBackup(Object.fromEntries(stored));
-      await store.clear();
-      await store.save();
-    } else {
-      for (const [key, read] of Object.entries(READERS)) {
-        const value = read(stored.get(key));
-        if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
-      }
+    try {
+      const loaded = await readStore();
+      loadFailed = false;
+      return loaded;
+    } catch (err) {
+      loadFailed = true;
+      throw err;
     }
-    Object.assign(settings, next);
-    return structuredClone(next);
   });
 }
 
 /**
- * Saves the patched keys to settings.json, then tells every window. Only those keys are
- * written and sent: another window's copy may be stale, and must not undo newer values
- * (Ruling 140). Missing keys load as their defaults.
+ * Saves the patched keys to settings.json, then tells every window. Only the patched
+ * top-level keys are written and sent, so a stale copy in another window cannot undo
+ * them (Ruling 140). An object value is merged key by key into the value stored at
+ * write time, so edits to different colours never undo each other (Ruling 159). Missing
+ * keys load as their defaults. Rejects, saving nothing, if this window's load failed.
  */
-export function updateSettings(patch: Partial<Settings>): Promise<void> {
+export function updateSettings(patch: SettingsPatch): Promise<void> {
   return oneAtATime(async () => {
-    const changes: Partial<Settings> = {
-      ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
-      version: 1,
-    };
+    if (loadFailed) {
+      throw new Error(
+        'Settings could not be loaded, so this change was not saved. Restart Lintel to try again.',
+      );
+    }
     const store = await settingsStore();
+    const changes: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) continue;
+      changes[key] = isRecord(value) ? merge(await storedValue(store, key), value) : value;
+    }
+    changes.version = 1;
     for (const [key, value] of Object.entries(changes)) await store.set(key, value);
     await store.save();
     Object.assign(settings, changes);
@@ -129,6 +139,41 @@ export function onSettingsChanged(
     active = false;
     unlisten.then((stop) => stop()).catch(() => {});
   };
+}
+
+async function readStore(): Promise<Settings> {
+  const store = await settingsStore();
+  const stored = new Map(await store.entries<unknown>());
+  const next = structuredClone(DEFAULT_SETTINGS) as Settings;
+  if (stored.size > 0 && stored.get('version') !== 1) {
+    Object.assign(settings, next);
+    await keepBackup(Object.fromEntries(stored));
+    await store.clear();
+    await store.save();
+  } else {
+    for (const [key, read] of Object.entries(READERS)) {
+      const value = read(stored.get(key));
+      if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  Object.assign(settings, next);
+  return structuredClone(next);
+}
+
+// The stored value as `loadSettings` would read it, or the default.
+async function storedValue(store: Store, key: string): Promise<unknown> {
+  const read = (READERS as Record<string, Reader<unknown>>)[key];
+  const value = read?.(await store.get(key));
+  return value ?? structuredClone((DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]);
+}
+
+function merge(base: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = isRecord(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    merged[key] = isRecord(value) ? merge(merged[key], value) : value;
+  }
+  return merged;
 }
 
 let queue: Promise<unknown> = Promise.resolve();

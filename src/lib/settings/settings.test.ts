@@ -275,6 +275,75 @@ describe('two windows (Ruling 140)', () => {
   });
 });
 
+describe('nested settings (Ruling 159)', () => {
+  const light = DEFAULT_SETTINGS.palettes.light;
+  const dark = DEFAULT_SETTINGS.palettes.dark;
+
+  it('patches one colour by key path, keeping the rest of both palettes', async () => {
+    await updateSettings({ palettes: { light: { text: '#111111' } } });
+
+    expect(await store().get('palettes')).toEqual({ light: { ...light, text: '#111111' }, dark });
+    expect(settings.palettes).toEqual({ light: { ...light, text: '#111111' }, dark });
+  });
+
+  it('keeps both of two colour edits made at once', async () => {
+    await Promise.all([
+      updateSettings({ palettes: { light: { text: '#111111' } } }),
+      updateSettings({ palettes: { dark: { link: '#222222' } } }),
+    ]);
+
+    expect(await store().get('palettes')).toEqual({
+      light: { ...light, text: '#111111' },
+      dark: { ...dark, link: '#222222' },
+    });
+  });
+
+  it('builds on the stored value, not on a stale copy in this window', async () => {
+    store().data.set('palettes', { light: { ...light, accent: '#0F766E' }, dark });
+
+    await updateSettings({ palettes: { dark: { accent: '#5EEAD4' } } });
+
+    expect(await store().get('palettes')).toEqual({
+      light: { ...light, accent: '#0F766E' },
+      dark: { ...dark, accent: '#5EEAD4' },
+    });
+  });
+
+  it('patches lint and updates the same way', async () => {
+    store().data.set('lint', { enabled: true, rules: { default: true, MD013: false } });
+
+    await updateSettings({ lint: { enabled: false } });
+
+    expect(await store().get('lint')).toEqual({ enabled: false, rules: { default: true, MD013: false } });
+  });
+});
+
+describe('after a failed load (Ruling 159)', () => {
+  it('refuses to save, so a file of another version is not relabelled', async () => {
+    store().data.set('version', 2);
+    vi.mocked(writeTextFile).mockRejectedValueOnce('disk full');
+    await expect(loadSettings()).rejects.toBe('disk full');
+
+    await expect(updateSettings({ remoteImages: 'load' })).rejects.toThrow(
+      'Settings could not be loaded',
+    );
+
+    expect(store().data.get('version')).toBe(2);
+    expect(store().data.has('remoteImages')).toBe(false);
+  });
+
+  it('saves again once a later load succeeds', async () => {
+    store().data.set('version', 2);
+    vi.mocked(writeTextFile).mockRejectedValueOnce('disk full');
+    await expect(loadSettings()).rejects.toBe('disk full');
+    await loadSettings();
+
+    await updateSettings({ remoteImages: 'load' });
+
+    expect(await store().get('remoteImages')).toBe('load');
+  });
+});
+
 describe('onSettingsChanged', () => {
   it('reports a listener that could not be registered', async () => {
     events.failNextListen = new Error('event plugin down');
