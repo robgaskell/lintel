@@ -1,5 +1,5 @@
 import { minimalSetup } from 'codemirror';
-import { Prec, type Extension } from '@codemirror/state';
+import { Compartment, Prec, type Extension } from '@codemirror/state';
 import {
   EditorView,
   highlightActiveLine,
@@ -10,8 +10,21 @@ import {
 import { search, searchKeymap } from '@codemirror/search';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
+import { settings, type Settings } from '../settings/settings.svelte';
+import { editorFont } from '../theme/theme';
 import { editorTheme } from '../theme/editorTheme';
 import { formattingKeymap } from './commands';
+
+/**
+ * Holds the editor font and size. Reconfiguring it makes CodeMirror re-measure every line;
+ * a CSS variable change alone left the gutter out of step with wrapped rows (Ruling 170).
+ */
+export const fontCompartment = new Compartment();
+
+export function fontTheme(s: Pick<Settings, 'editorFont' | 'fontSize'>): Extension {
+  const { family, size } = editorFont(s);
+  return EditorView.theme({ '.cm-scroller': { fontFamily: family, fontSize: size } });
+}
 
 /** Extensions for one markdown editor; `onChange` gets the full text after each edit. */
 export function editorExtensions(onChange: (text: string) => void): Extension[] {
@@ -31,5 +44,6 @@ export function editorExtensions(onChange: (text: string) => void): Extension[] 
       if (update.docChanged) onChange(update.state.doc.toString());
     }),
     editorTheme,
+    fontCompartment.of(fontTheme(settings)),
   ];
 }

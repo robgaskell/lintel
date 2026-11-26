@@ -56,9 +56,9 @@ export function cssVariables(s: Settings, resolved: ResolvedTheme): Record<strin
     '--border': mix(p.background, p.text, 0.14),
     '--muted': muted,
     '--font-read': fontStack(s.readingFont, SYSTEM_READ_FONT),
-    '--font-edit': fontStack(s.editorFont, SYSTEM_EDIT_FONT),
+    '--font-edit': editorFont(s).family,
     '--size-read': `${s.fontSize}px`,
-    '--size-edit': `${s.fontSize - 2}px`,
+    '--size-edit': editorFont(s).size,
     '--active-line': activeLine,
     '--muted-strong': mix(muted, p.text, 0.5),
     '--inset': mix(chrome, p.text, 0.06),
@@ -70,6 +70,11 @@ export function cssVariables(s: Settings, resolved: ResolvedTheme): Record<strin
     '--search-match-current': mix(p.background, SEARCH_AMBER, dark ? 0.45 : 0.9),
     '--scheme': resolved,
   };
+}
+
+/** The editor's font stack and size, which CodeMirror gets through its font compartment. */
+export function editorFont(s: Pick<Settings, 'editorFont' | 'fontSize'>): { family: string; size: string } {
+  return { family: fontStack(s.editorFont, SYSTEM_EDIT_FONT), size: `${s.fontSize - 2}px` };
 }
 
 /**

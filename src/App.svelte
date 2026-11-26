@@ -5,7 +5,7 @@
   import { cursors } from './lib/docs/cursor.svelte';
   import { countWords, saveStateOf } from './lib/docs/stats';
   import { docs } from './lib/docs/store.svelte';
-  import { remeasureOnFontChange, setActiveDocSource } from './lib/editor/views';
+  import { followEditorFont, setActiveDocSource } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
   import { Workspace } from './lib/layout/workspace';
   import { setOutlineChecked, syncAppMenu, type MenuHandlers } from './lib/os/menu';
@@ -85,7 +85,7 @@
     let disposed = false;
     let stopMenu = () => {};
     let stopTheme = () => {};
-    let stopMeasure = () => {};
+    let stopEditorFont = () => {};
     // Settings decide whether Open Recent shows; a failed load keeps the defaults. Until they
     // load, the theme is the one main.ts restored, so a forced theme never flashes (Ruling 150).
     loadSettings()
@@ -93,7 +93,7 @@
       .then(() => {
         if (disposed) return;
         stopTheme = followTheme(() => settings);
-        stopMeasure = remeasureOnFontChange();
+        stopEditorFont = followEditorFont();
         stopMenu = syncAppMenu(menuHandlers, showError);
       });
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
@@ -111,7 +111,7 @@
       stopTabKeys();
       stopMenu();
       stopTheme();
-      stopMeasure();
+      stopEditorFont();
       stopActive();
       stopRecent();
       unlistenClose.then((stop) => stop());

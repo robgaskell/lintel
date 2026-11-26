@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { editorExtensions } from '../editor/setup';
+import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
 
 let view: EditorView | null = null;
 const root = document.documentElement;
@@ -114,9 +115,17 @@ describe('editorTheme (Rulings 92, 130)', () => {
     expect(getComputedStyle(selection).backgroundColor).toBe(rgb(TOKENS['--selection']));
   });
 
-  it('sets the editor font size from --size-edit', () => {
-    const v = mount('text');
-    root.style.setProperty('--size-edit', '19px');
-    expect(getComputedStyle(v.scrollDOM).fontSize).toBe('19px');
+  it('takes the editor font and size from the settings, not from CSS variables (Ruling 170)', () => {
+    settings.fontSize = 21;
+    settings.editorFont = "'JetBrains Mono', monospace";
+    try {
+      const v = mount('text');
+      root.style.setProperty('--size-edit', '9px');
+      expect(getComputedStyle(v.scrollDOM).fontSize).toBe('19px');
+      expect(getComputedStyle(v.scrollDOM).fontFamily).toMatch(/^'?JetBrains Mono'?, monospace/);
+    } finally {
+      settings.fontSize = DEFAULT_SETTINGS.fontSize;
+      settings.editorFont = DEFAULT_SETTINGS.editorFont;
+    }
   });
 });

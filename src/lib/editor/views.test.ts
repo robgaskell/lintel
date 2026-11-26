@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { EditorView } from '@codemirror/view';
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
-import { activeView, registerView, remeasureOnFontChange, setActiveDocSource, viewFor } from './views';
+import { editorExtensions, fontCompartment } from './setup';
+import { activeView, followEditorFont, registerView, setActiveDocSource, viewFor } from './views';
 
 const changed = vi.hoisted(() => ({ cb: null as ((s: Settings) => void) | null }));
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
@@ -52,36 +54,39 @@ describe('editor view registry', () => {
   });
 });
 
-describe('remeasureOnFontChange (Ruling 161)', () => {
-  type Measured = EditorView & { requestMeasure: ReturnType<typeof vi.fn> };
-  const measured = () => ({ requestMeasure: vi.fn() }) as unknown as Measured;
+describe('followEditorFont (Ruling 170)', () => {
   const withSettings = (patch: Partial<Settings>) =>
     ({ ...structuredClone(DEFAULT_SETTINGS), ...patch }) as Settings;
+  const editor = () =>
+    new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: 'a', extensions: editorExtensions(() => {}) }),
+    });
 
-  it('re-measures every editor after a font or size change, and not for other changes', () => {
-    const a = measured();
-    const b = measured();
-    const forget = [registerView('a', a), registerView('b', b)];
-    const stop = remeasureOnFontChange();
+  it("reconfigures each editor's font compartment on an editor font or size change only", () => {
+    const views = [editor(), editor()];
+    const forget = views.map((v, i) => registerView(`doc-${i}`, v));
+    const stop = followEditorFont();
+    const fonts = () => views.map((v) => fontCompartment.get(v.state));
 
-    changed.cb!(withSettings({ theme: 'dark' }));
-    expect(a.requestMeasure).not.toHaveBeenCalled();
-
-    const fontChanges = [
-      { fontSize: 20 },
-      { readingFont: 'Georgia, serif' },
-      { editorFont: 'Menlo, Consolas, monospace' },
-    ];
-    for (const patch of fontChanges) {
-      a.requestMeasure.mockClear();
-      b.requestMeasure.mockClear();
+    let before = fonts();
+    for (const patch of [{ theme: 'dark' }, { readingFont: 'Georgia, serif' }] as const) {
       changed.cb!(withSettings(patch));
-      expect(a.requestMeasure).toHaveBeenCalledOnce();
-      expect(b.requestMeasure).toHaveBeenCalledOnce();
+      expect(fonts(), JSON.stringify(patch)).toEqual(before);
+      fonts().forEach((font, i) => expect(font).toBe(before[i]));
     }
+
+    for (const patch of [{ fontSize: 20 }, { editorFont: 'Menlo, Consolas, monospace' }]) {
+      changed.cb!(withSettings(patch));
+      fonts().forEach((font, i) => expect(font, JSON.stringify(patch)).not.toBe(before[i]));
+      before = fonts();
+    }
+    changed.cb!(withSettings({ fontSize: 20 }));
+    for (const v of views) expect(getComputedStyle(v.scrollDOM).fontSize).toBe('18px');
 
     stop();
     expect(changed.cb).toBeNull();
     forget.forEach((f) => f());
+    views.forEach((v) => v.destroy());
   });
 });

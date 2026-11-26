@@ -9,9 +9,8 @@ import { tags as t } from '@lezer/highlight';
 const view = EditorView.theme({
   '&': { height: '100%', color: 'var(--editor-text)', backgroundColor: 'var(--editor-bg)' },
   '&.cm-focused': { outline: 'none' },
+  // Font and size come from the font compartment in setup.ts.
   '.cm-scroller': {
-    fontFamily: 'var(--font-edit)',
-    fontSize: 'var(--size-edit)',
     lineHeight: '1.7',
     colorScheme: 'var(--scheme)',
   },

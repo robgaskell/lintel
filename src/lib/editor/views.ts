@@ -1,4 +1,5 @@
 import type { EditorView } from '@codemirror/view';
+import { fontCompartment, fontTheme } from './setup';
 import { onSettingsChanged, settings, type Settings } from '../settings/settings.svelte';
 
 const views = new Map<string, EditorView>();
@@ -32,20 +33,24 @@ export function activeView(): EditorView | null {
 }
 
 /**
- * Re-measures every editor after a font or size change in any window. CodeMirror keeps
- * line heights it measured, so wrapped rows and the gutter drift apart until it does
- * (Ruling 161). Returns a stop function.
+ * Puts the editor font and size into every editor now, then after each change to either
+ * in any window (Ruling 170). Returns a stop function.
  */
-export function remeasureOnFontChange(): () => void {
+export function followEditorFont(): () => void {
   let last = fontKey(settings);
+  for (const view of views.values()) setFont(view, settings);
   return onSettingsChanged((next) => {
     const key = fontKey(next);
     if (key === last) return;
     last = key;
-    for (const view of views.values()) view.requestMeasure();
+    for (const view of views.values()) setFont(view, next);
   });
 }
 
+function setFont(view: EditorView, s: Settings): void {
+  view.dispatch({ effects: fontCompartment.reconfigure(fontTheme(s)) });
+}
+
 function fontKey(s: Settings): string {
-  return JSON.stringify([s.readingFont, s.editorFont, s.fontSize]);
+  return JSON.stringify([s.editorFont, s.fontSize]);
 }
