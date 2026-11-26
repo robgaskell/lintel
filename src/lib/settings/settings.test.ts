@@ -45,6 +45,7 @@ describe('loadSettings', () => {
       recentLimit: 5,
       defaultMode: 'split',
       lint: { enabled: true, rules: { default: true } },
+      remoteImages: 'ask',
     });
     expect(writeTextFile).not.toHaveBeenCalled();
   });
@@ -99,10 +100,20 @@ describe('loadSettings', () => {
     store().data.set('lint', {});
     store().data.set('updates', { autoCheck: 'yes' });
     store().data.set('readingFont', 'Georgia');
+    store().data.set('remoteImages', 'always');
 
     const loaded = await loadSettings();
 
     expect(loaded).toEqual({ ...DEFAULT_SETTINGS, fontSize: 24, recentLimit: 0, readingFont: 'Georgia' });
+    expect(loaded.remoteImages).toBe('ask');
+  });
+
+  it('keeps each valid remote images choice', async () => {
+    store().data.set('version', 1);
+    for (const choice of ['ask', 'load', 'block'] as const) {
+      store().data.set('remoteImages', choice);
+      expect((await loadSettings()).remoteImages).toBe(choice);
+    }
   });
 
   it('rounds and clamps numbers into their ranges', async () => {

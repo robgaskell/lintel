@@ -28,3 +28,11 @@ export function pathsExist(paths: string[]): Promise<boolean[]> {
 export function readImageAsDataUri(path: string): Promise<string> {
   return invoke<string>('read_image_as_data_uri', { path });
 }
+
+/**
+ * An http(s) png, jpg, gif, webp or svg (10 MB at most) as a `data:` URI, fetched by Rust so
+ * the webview never reaches the network (Ruling 113). Rejects with a message otherwise.
+ */
+export function fetchRemoteImage(url: string): Promise<string> {
+  return invoke<string>('fetch_remote_image', { url });
+}

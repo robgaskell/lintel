@@ -2,14 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from '@testing-library/svelte';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { readImageAsDataUri } from '../ipc';
+import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
 import { ImageLoader } from '../render/imageLoader';
 import { openPaths } from '../os/open';
 import { renderMarkdown } from '../render/markdown';
+import { settings, updateSettings } from '../settings/settings.svelte';
 import { fakePreviewLayout } from '../../test/layout';
 import Preview from './Preview.svelte';
 
-vi.mock('../ipc', () => ({ readImageAsDataUri: vi.fn() }));
+vi.mock('../ipc', () => ({ readImageAsDataUri: vi.fn(), fetchRemoteImage: vi.fn() }));
+vi.mock('../settings/settings.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
+  updateSettings: vi.fn(async () => {}),
+}));
 vi.mock('../os/open', () => ({ openPaths: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
@@ -19,10 +24,14 @@ vi.mock('mermaid', () => ({ default: mermaid }));
 let mermaidTheme: string | undefined;
 
 const readImage = vi.mocked(readImageAsDataUri);
+const fetchRemote = vi.mocked(fetchRemoteImage);
+let docCount = 0;
 
 beforeEach(() => {
   vi.clearAllMocks();
   readImage.mockImplementation(async (path) => `data:image/png;base64,${btoa(path)}`);
+  fetchRemote.mockImplementation(async (url) => `data:image/png;base64,${btoa(url)}`);
+  settings.remoteImages = 'ask';
   mermaid.initialize.mockImplementation((config: { theme?: string }) => (mermaidTheme = config.theme));
   mermaid.render.mockImplementation(async (id: string, src: string) => ({
     svg: `<svg id="${id}" xmlns="http://www.w3.org/2000/svg"><text>${mermaidTheme}:${src.trim()}</text></svg>`,
@@ -30,7 +39,8 @@ beforeEach(() => {
 });
 
 function show(src: string, docPath: string | null = '/notes/doc.md', onLineVisible = vi.fn()) {
-  const view = render(Preview, { result: renderMarkdown(src), docPath, onLineVisible });
+  docCount += 1;
+  const view = render(Preview, { result: renderMarkdown(src), docId: `doc-${docCount}`, docPath, onLineVisible });
   return { ...view, onLineVisible };
 }
 
@@ -48,6 +58,7 @@ describe('Preview images', () => {
     const box = container.querySelector('.image-alt');
     expect(box?.textContent).toBe('A chart');
     expect(readImage).not.toHaveBeenCalled();
+    expect(fetchRemote).not.toHaveBeenCalled();
   });
 
   it('loads a relative image through the app, never by its relative src', async () => {
@@ -102,6 +113,135 @@ describe('Preview images', () => {
 
     expect(container.querySelector('.image-alt')?.textContent).toBe('pic');
     expect(readImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('Preview remote images (spec: Remote images)', () => {
+  const BANNER = 'This document has remote images.';
+  const CHART = '![A chart](https://example.com/c.png)\n';
+  const chartUri = `data:image/png;base64,${btoa('https://example.com/c.png')}`;
+
+  function banner(container: Element) {
+    return [...container.querySelectorAll('[role="status"]')].find((el) => el.textContent?.includes(BANNER));
+  }
+
+  function button(container: Element, name: string) {
+    return [...container.querySelectorAll('button')].find(
+      (b) => b.textContent?.trim() === name || b.getAttribute('aria-label') === name,
+    )!;
+  }
+
+  it("with 'ask', shows the banner and gives the image no network src", () => {
+    const { container } = show(CHART);
+
+    expect(banner(container)).toBeDefined();
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.image-alt')?.textContent).toBe('A chart');
+    expect(fetchRemote).not.toHaveBeenCalled();
+  });
+
+  it('Load images fetches through Rust and sets the data URI, for that doc only', async () => {
+    const first = show(CHART);
+    const second = show('![Map](https://example.com/m.png)\n');
+
+    click(button(first.container, 'Load images'));
+    flushSync();
+
+    expect(fetchRemote).toHaveBeenCalledWith('https://example.com/c.png');
+    await vi.waitFor(() => expect(first.container.querySelector('img')?.getAttribute('src')).toBe(chartUri));
+    expect(banner(first.container)).toBeUndefined();
+    expect(banner(second.container)).toBeDefined();
+    expect(second.container.querySelector('img')).toBeNull();
+    expect(fetchRemote).toHaveBeenCalledTimes(1);
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps the choice for the doc if its preview is built again, and asks for a new doc', async () => {
+    const result = renderMarkdown(CHART);
+    const first = render(Preview, { result, docId: 'kept-doc', docPath: '/notes/doc.md' });
+    click(button(first.container, 'Load images'));
+    first.unmount();
+
+    const again = render(Preview, { result, docId: 'kept-doc', docPath: '/notes/doc.md' });
+    const reopened = render(Preview, { result, docId: 'reopened-doc', docPath: '/notes/doc.md' });
+
+    expect(banner(again.container)).toBeUndefined();
+    await vi.waitFor(() => expect(again.container.querySelector('img')?.getAttribute('src')).toBe(chartUri));
+    expect(banner(reopened.container)).toBeDefined();
+  });
+
+  it("Always load saves 'load' and hides the banner", async () => {
+    const { container } = show(CHART);
+
+    click(button(container, 'Always load'));
+    flushSync();
+
+    expect(updateSettings).toHaveBeenCalledWith({ remoteImages: 'load' });
+    expect(banner(container)).toBeUndefined();
+    await vi.waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(chartUri));
+  });
+
+  it('closing the banner keeps the image blocked', () => {
+    const { container } = show(CHART);
+
+    click(button(container, 'Keep images blocked'));
+    flushSync();
+
+    expect(banner(container)).toBeUndefined();
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.image-alt')?.textContent).toBe('A chart');
+    expect(fetchRemote).not.toHaveBeenCalled();
+  });
+
+  it("with 'load', fetches with no banner, and //host as https (Ruling 124)", async () => {
+    settings.remoteImages = 'load';
+    const { container } = show('![A](https://example.com/c.png) ![B](//example.com/b.png)\n');
+
+    expect(banner(container)).toBeUndefined();
+    expect(fetchRemote).toHaveBeenCalledWith('https://example.com/c.png');
+    expect(fetchRemote).toHaveBeenCalledWith('https://example.com/b.png');
+    await vi.waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(chartUri));
+  });
+
+  it("with 'block', shows no banner and never fetches", () => {
+    settings.remoteImages = 'block';
+    const { container } = show(CHART);
+
+    expect(banner(container)).toBeUndefined();
+    expect(container.querySelector('.image-alt')?.textContent).toBe('A chart');
+    expect(fetchRemote).not.toHaveBeenCalled();
+  });
+
+  it('shows no banner for a doc without remote images, nor for other schemes', () => {
+    const { container } = show('![pic](a.png) ![old](ftp://example.com/a.png) ![x](data:image/png;base64,AA)\n');
+
+    expect(banner(container)).toBeUndefined();
+    expect([...container.querySelectorAll('.image-alt')].map((b) => b.textContent)).toEqual(['old']);
+  });
+
+  it('never loads another scheme, even when remote images are allowed', () => {
+    settings.remoteImages = 'load';
+    const { container } = show('![old](ftp://example.com/a.png)\n');
+
+    expect(container.querySelector('.image-alt')?.textContent).toBe('old');
+    expect(fetchRemote).not.toHaveBeenCalled();
+  });
+
+  it('shows the alt text with the reason when a fetch fails', async () => {
+    settings.remoteImages = 'load';
+    fetchRemote.mockRejectedValue('Not an image file.');
+    const { container } = show(CHART);
+
+    await vi.waitFor(() => expect(container.querySelector('.image-alt')?.getAttribute('title')).toBe('Not an image file.'));
+    expect(container.querySelector('.image-alt')?.textContent).toBe('A chart');
+  });
+
+  it('fetches an image used twice only once', async () => {
+    settings.remoteImages = 'load';
+    const { container } = show(`${CHART}\n${CHART}`);
+
+    await vi.waitFor(() => expect(container.querySelectorAll(`img[src="${chartUri}"]`)).toHaveLength(2));
+    expect(fetchRemote).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -200,7 +340,7 @@ describe('Preview scroll sync', () => {
   });
 
   it('syncs lines after the last block toward the end of the content', () => {
-    const view = render(Preview, { result: renderMarkdown('# A\n\nb\n'), lineCount: 6 });
+    const view = render(Preview, { result: renderMarkdown('# A\n\nb\n'), docId: 'doc-end', lineCount: 6 });
 
     view.component.scrollToLine(5);
 

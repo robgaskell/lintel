@@ -26,11 +26,22 @@ export function classifyHref(href: string): HrefAction {
   return { kind: 'ignore' };
 }
 
-/** How the preview treats an image source. Remote images are never fetched (Ruling 68). */
+/** How the preview treats an image source. Only `webImageUrl` sources can ever load remotely. */
 export function classifyImageSrc(src: string): 'data' | 'remote' | 'local' {
   if (/^data:/i.test(src)) return 'data';
   if (src.startsWith('//') || SCHEME.test(src)) return 'remote';
   return 'local';
+}
+
+/** The address to fetch for an http(s) image; `//host` is fetched as https (Ruling 124). */
+export function webImageUrl(src: string): string | null {
+  const absolute = src.startsWith('//') ? `https:${src}` : src;
+  if (!/^https?:/i.test(absolute)) return null;
+  try {
+    return new URL(absolute).href;
+  } catch {
+    return null;
+  }
 }
 
 export function isMarkdownPath(path: string): boolean {

@@ -1,11 +1,20 @@
+<script module lang="ts">
+  import { SvelteMap } from 'svelte/reactivity';
+
+  // Keyed by doc id, so the choice outlives a rebuilt preview but not the doc (Ruling 93).
+  const remoteChoices = new SvelteMap<string, 'load' | 'keep-blocked'>();
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { message } from '@tauri-apps/plugin-dialog';
   import { openUrl } from '@tauri-apps/plugin-opener';
-  import { readImageAsDataUri } from '../ipc';
+  import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
   import { ImageLoader } from '../render/imageLoader';
   import { renderMermaidIn, type DiagramTheme } from '../render/mermaid';
+  import { settings, updateSettings } from '../settings/settings.svelte';
   import FrontMatterCard from './FrontMatterCard.svelte';
+  import RemoteImagesBanner from './RemoteImagesBanner.svelte';
   import { openPaths } from '../os/open';
   import {
     classifyHref,
@@ -13,6 +22,7 @@
     headingIdFor,
     isMarkdownPath,
     resolveTarget,
+    webImageUrl,
   } from '../render/links';
   import type { RenderResult } from '../render/markdown';
   import { cleanAnchors, lineToOffset, offsetToLine, type Anchor } from '../render/scrollSync';
@@ -20,12 +30,14 @@
   let {
     result,
     onLineVisible,
+    docId,
     docPath = null,
     reading = false,
     lineCount,
   }: {
     result: RenderResult;
     onLineVisible?: (line: number) => void;
+    docId: string;
     docPath?: string | null; // relative images and links resolve against its folder
     reading?: boolean; // Read mode: 720 px column, larger text
     lineCount?: number; // source lines; lets the last block sync to the end
@@ -48,9 +60,34 @@
   let anchors: Anchor[] = [];
   let anchorsStale = true;
 
-  // One per doc, so closing the tab drops its images (Ruling 97).
-  const images = new ImageLoader((path) => readImageAsDataUri(path));
+  // One per doc, so closing the tab drops its images (Ruling 97). Keys are absolute paths
+  // or http(s) URLs; remote ones share the same limits (Ruling 95).
+  const images = new ImageLoader((key) =>
+    /^https?:\/\//.test(key) ? fetchRemoteImage(key) : readImageAsDataUri(key),
+  );
   onDestroy(() => images.clear());
+
+  let remoteHeldBack = $state(0);
+  const remoteChoice = $derived(remoteChoices.get(docId));
+  const remoteAllowed = $derived(
+    settings.remoteImages === 'load' || (settings.remoteImages === 'ask' && remoteChoice === 'load'),
+  );
+  const showRemoteBanner = $derived(
+    settings.remoteImages === 'ask' && remoteChoice === undefined && remoteHeldBack > 0,
+  );
+
+  function loadRemoteImages() {
+    remoteChoices.set(docId, 'load');
+  }
+
+  function alwaysLoadRemoteImages() {
+    remoteChoices.set(docId, 'load');
+    updateSettings({ remoteImages: 'load' }).catch(showError);
+  }
+
+  function keepRemoteImagesBlocked() {
+    remoteChoices.set(docId, 'keep-blocked');
+  }
 
   /** Scrolls so `line` (maybe fractional) is at the top. Not reported through onLineVisible. */
   export function scrollToLine(line: number): void {
@@ -64,9 +101,10 @@
     scroller?.focus({ preventScroll: true });
   }
 
+  // Allowing remote images patches again; loaded local images come from the cache.
   $effect(() => {
-    const [next, path] = [result, docPath];
-    untrack(() => patch(next, path));
+    const [next, path, remote] = [result, docPath, remoteAllowed];
+    untrack(() => patch(next, path, remote));
   });
 
   onMount(() => {
@@ -89,11 +127,11 @@
   });
 
   // Parsed into an inert template first, so no relative src ever requests the app origin.
-  function patch(next: RenderResult, path: string | null) {
+  function patch(next: RenderResult, path: string | null, remote: boolean) {
     const started = performance.now();
     const template = document.createElement('template');
     template.innerHTML = next.html;
-    prepareImages(template.content, path);
+    remoteHeldBack = prepareImages(template.content, path, remote);
     content.replaceChildren(template.content);
     // Known diagrams go in now; new ones arrive later and the ResizeObserver re-syncs.
     drawDiagrams();
@@ -128,15 +166,24 @@
     onLineVisible?.(topLine);
   }
 
-  function prepareImages(root: DocumentFragment, path: string | null) {
+  /** Returns how many http(s) images it held back. */
+  function prepareImages(root: DocumentFragment, path: string | null, remote: boolean): number {
+    let heldBack = 0;
     for (const img of root.querySelectorAll('img')) {
       img.removeAttribute('srcset');
       const src = img.getAttribute('src') ?? '';
       const kind = classifyImageSrc(src);
       if (kind === 'data') continue;
       if (kind === 'remote') {
-        // No network calls from documents (Ruling 68).
-        img.replaceWith(altBox(img, 'Remote images are not loaded.'));
+        const url = webImageUrl(src);
+        if (url === null) {
+          img.replaceWith(altBox(img, 'Lintel loads images from http and https addresses only.'));
+        } else if (remote) {
+          fill(img, url);
+        } else {
+          heldBack += 1;
+          img.replaceWith(altBox(img, 'Remote images are blocked to protect your privacy.'));
+        }
         continue;
       }
       const file = resolveTarget(path, src);
@@ -145,18 +192,24 @@
         img.replaceWith(altBox(img, why));
         continue;
       }
-      // A known image is set in this pass, so a re-render never blinks it out.
-      const known = images.cached(file);
-      if (known) {
-        img.src = known;
-        continue;
-      }
-      img.removeAttribute('src');
-      images.load(file).then(
-        (uri) => (img.src = uri),
-        (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
-      );
+      fill(img, file);
     }
+    return heldBack;
+  }
+
+  // The image never gets the document's src, only a data URI from Rust.
+  function fill(img: HTMLImageElement, key: string) {
+    // A known image is set in this pass, so a re-render never blinks it out.
+    const known = images.cached(key);
+    if (known) {
+      img.src = known;
+      return;
+    }
+    img.removeAttribute('src');
+    images.load(key).then(
+      (uri) => (img.src = uri),
+      (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
+    );
   }
 
   function altBox(img: HTMLImageElement, why: string): HTMLElement {
@@ -208,31 +261,47 @@
   }
 </script>
 
-<!-- Links inside handle the keyboard: Enter on a focused link fires click. -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<div
-  class="preview"
-  class:reading
-  bind:this={scroller}
-  tabindex="0"
-  role="region"
-  aria-label="Preview"
-  onscroll={onScroll}
-  onclick={onClick}
-  onauxclick={onAuxClick}
->
-  <!-- The card sits outside .content, which every patch replaces (Ruling 102). -->
-  <div class="page" bind:this={page}>
-    <FrontMatterCard data={result.frontMatter} error={result.frontMatterError} />
-    <div class="content" bind:this={content}></div>
+<div class="preview-frame">
+  {#if showRemoteBanner}
+    <RemoteImagesBanner
+      onLoad={loadRemoteImages}
+      onAlwaysLoad={alwaysLoadRemoteImages}
+      onDismiss={keepRemoteImagesBlocked}
+    />
+  {/if}
+  <!-- Links inside handle the keyboard: Enter on a focused link fires click. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="preview"
+    class:reading
+    bind:this={scroller}
+    tabindex="0"
+    role="region"
+    aria-label="Preview"
+    onscroll={onScroll}
+    onclick={onClick}
+    onauxclick={onAuxClick}
+  >
+    <!-- The card sits outside .content, which every patch replaces (Ruling 102). -->
+    <div class="page" bind:this={page}>
+      <FrontMatterCard data={result.frontMatter} error={result.frontMatterError} />
+      <div class="content" bind:this={content}></div>
+    </div>
   </div>
 </div>
 
 <style>
+  .preview-frame {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
   .preview {
     /* contain: paint keeps document SVG from drawing over the app (Ruling 88). */
     position: relative;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     contain: paint;
     overflow-anchor: none;

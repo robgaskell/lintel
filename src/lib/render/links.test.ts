@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { classifyHref, classifyImageSrc, headingIdFor, isMarkdownPath, resolveTarget } from './links';
+import {
+  classifyHref,
+  classifyImageSrc,
+  headingIdFor,
+  isMarkdownPath,
+  resolveTarget,
+  webImageUrl,
+} from './links';
 
 describe('resolveTarget', () => {
   it('resolves a relative target against the doc folder', () => {
@@ -123,6 +130,20 @@ describe('classifyImageSrc', () => {
     expect(classifyImageSrc('blob:abc')).toBe('remote');
     expect(classifyImageSrc('img/a.png')).toBe('local');
     expect(classifyImageSrc('/abs/a.png')).toBe('local');
+  });
+});
+
+describe('webImageUrl', () => {
+  it('gives the address to fetch for http, https and //host images (Ruling 124)', () => {
+    expect(webImageUrl('https://x.test/a b.png')).toBe('https://x.test/a%20b.png');
+    expect(webImageUrl('HTTP://x.test/a.png')).toBe('http://x.test/a.png');
+    expect(webImageUrl('//x.test/a.png')).toBe('https://x.test/a.png');
+  });
+
+  it('gives null for any other source', () => {
+    for (const src of ['ftp://x.test/a.png', 'file:///etc/a.png', 'blob:abc', 'javascript:alert(1)', 'img/a.png', 'data:image/png;base64,AA', 'https://']) {
+      expect(webImageUrl(src), src).toBeNull();
+    }
   });
 });
 

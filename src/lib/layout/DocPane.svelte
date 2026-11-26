@@ -220,6 +220,7 @@
             <Preview
               bind:this={preview}
               {result}
+              docId={doc.id}
               docPath={doc.path}
               reading={doc.mode === 'read'}
               lineCount={renderedLines}
@@ -238,14 +239,6 @@
     flex-direction: column;
     height: 100%;
     background: var(--editor-bg);
-  }
-
-  .notice {
-    padding: 6px 12px;
-    background: var(--chrome);
-    border-bottom: 1px solid var(--toolbar-border);
-    color: var(--muted-strong);
-    font-size: 12px;
   }
 
   .panes {

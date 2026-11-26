@@ -1,5 +1,5 @@
 /**
- * One document's local images as data URIs. Reads are shared per path and limited in
+ * One document's images, local or remote, as data URIs. Reads are shared per key and limited in
  * number; results are kept up to a byte cap, least recently used out first (Rulings 83, 95, 97).
  */
 export class ImageLoader {

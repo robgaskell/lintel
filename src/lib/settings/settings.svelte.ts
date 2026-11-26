@@ -5,6 +5,7 @@ import type { ViewMode } from '../docs/store.svelte';
 import { writeTextFile } from '../ipc';
 
 export type ThemeChoice = 'light' | 'dark' | 'system';
+export type RemoteImagesChoice = 'ask' | 'load' | 'block';
 
 export interface Palette {
   background: string; // #RRGGBB
@@ -26,6 +27,7 @@ export interface Settings {
   recentLimit: number; // 0–20; 0 hides Open Recent
   lint: { enabled: boolean; rules: Record<string, boolean | object> };
   updates: { autoCheck: boolean };
+  remoteImages: RemoteImagesChoice;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -54,6 +56,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   recentLimit: 5,
   lint: { enabled: true, rules: { default: true } },
   updates: { autoCheck: true },
+  remoteImages: 'ask',
 });
 
 const FILE = 'settings.json';
@@ -172,6 +175,7 @@ const READERS: { [K in Exclude<keyof Settings, 'version'>]: Reader<Settings[K]> 
     isRecord(value) && typeof value.autoCheck === 'boolean'
       ? { autoCheck: value.autoCheck }
       : undefined,
+  remoteImages: oneOf(['ask', 'load', 'block']),
 };
 
 function oneOf<T extends string>(allowed: readonly T[]): Reader<T> {
