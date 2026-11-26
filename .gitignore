@@ -3,3 +3,9 @@ docs/specs/
 docs/plans/
 docs/research/
 .plan-execution/
+
+# Build output and dependencies
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
