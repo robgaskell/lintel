@@ -1,4 +1,5 @@
 mod files;
+mod remote;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -25,7 +26,8 @@ pub fn run() {
             files::paths_exist,
             files::read_image_as_data_uri,
             files::read_text_file,
-            files::write_text_file
+            files::write_text_file,
+            remote::fetch_remote_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lintel");

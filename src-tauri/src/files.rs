@@ -16,9 +16,10 @@ const NOT_UTF8: &str = "Lintel opens UTF-8 text files only.";
 const READ_ONLY: &str = "This file is read-only.";
 const NOT_AN_IMAGE: &str = "Lintel shows png, jpg, jpeg, gif, webp and svg images only.";
 // 1 MB = 1,000,000 bytes, as for the large-file guard.
-const MAX_IMAGE_BYTES: usize = 10_000_000;
+pub(crate) const MAX_IMAGE_BYTES: usize = 10_000_000;
 const NETWORK_PATH: &str = "Lintel does not load images from network paths.";
-const NOT_IMAGE_FILE: &str = "Not an image file.";
+pub(crate) const NOT_IMAGE_FILE: &str = "Not an image file.";
+const TOO_MANY_LINKS: &str = "Too many links to follow.";
 // A stalled disk or mount must not hold a worker that Save also needs (Ruling 95).
 const IMAGE_BUDGET: Duration = Duration::from_secs(2);
 
@@ -145,8 +146,11 @@ where
 
 fn read_image(path: &str) -> Result<String, String> {
     // Opening a UNC path on Windows connects to that host and can leak the user's hash (Ruling 94).
-    if is_network_path(path) || walk_reaches_network_path(Path::new(path), &RealLinks) {
+    if is_network_path(path) {
         return Err(NETWORK_PATH.to_owned());
+    }
+    if let Some(why) = link_walk_refusal(Path::new(path), &RealLinks) {
+        return Err(why.to_owned());
     }
     let kind = image_kind(Path::new(path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
     let fail = |e: io::Error| format!("Could not read {path}: {e}");
@@ -169,7 +173,7 @@ fn read_image(path: &str) -> Result<String, String> {
     if !kind.matches(&bytes) {
         return Err(NOT_IMAGE_FILE.to_owned());
     }
-    Ok(format!("data:{};base64,{}", kind.mime(), BASE64_STANDARD.encode(&bytes)))
+    Ok(kind.data_uri(&bytes))
 }
 
 /// What the walk needs from the filesystem; tests supply a fake.
@@ -194,8 +198,8 @@ impl Links for RealLinks {
 /// Walks `path` one component at a time from the root, checking each symlink's target for a
 /// network prefix before following it. So no step opens a path through a link to a share,
 /// which on Windows would connect to that host (Ruling 116). A chain of more than 40 links
-/// also counts as reaching one, since its end was never checked (Ruling 118).
-fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
+/// is refused too, since its end was never checked (Rulings 118, 126).
+fn link_walk_refusal(path: &Path, links: &impl Links) -> Option<&'static str> {
     let mut resolved = PathBuf::new();
     let mut rest: VecDeque<PathBuf> = path.components().map(|c| PathBuf::from(c.as_os_str())).collect();
     let mut hops = 0;
@@ -216,12 +220,11 @@ fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
             continue;
         };
         if resolves_to_network_path(&target.to_string_lossy()) {
-            return true;
+            return Some(NETWORK_PATH);
         }
         hops += 1;
         if hops > 40 {
-            // A loop, or a chain too long to check to its end: refuse (Ruling 118).
-            return true;
+            return Some(TOO_MANY_LINKS);
         }
         resolved.pop();
         if target.has_root() {
@@ -231,7 +234,7 @@ fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
             rest.push_front(PathBuf::from(part.as_os_str()));
         }
     }
-    false
+    None
 }
 
 /// Windows canonical paths carry `\\?\`, which would look like a network path on its own.
@@ -261,7 +264,7 @@ fn is_network_path(path: &str) -> bool {
 }
 
 #[derive(Clone, Copy)]
-enum ImageKind {
+pub(crate) enum ImageKind {
     Png,
     Jpeg,
     Gif,
@@ -283,6 +286,16 @@ fn image_kind(path: &Path) -> Option<ImageKind> {
 }
 
 impl ImageKind {
+    /// The kind the bytes show, for images with no trustworthy name such as remote ones.
+    pub(crate) fn sniff(bytes: &[u8]) -> Option<ImageKind> {
+        use ImageKind::*;
+        [Png, Jpeg, Gif, Webp, Svg].into_iter().find(|kind| kind.matches(bytes))
+    }
+
+    pub(crate) fn data_uri(self, bytes: &[u8]) -> String {
+        format!("data:{};base64,{}", self.mime(), BASE64_STANDARD.encode(bytes))
+    }
+
     fn mime(self) -> &'static str {
         match self {
             ImageKind::Png => "image/png",
@@ -987,7 +1000,7 @@ mod tests {
     fn walk_refuses_a_folder_link_to_a_share_before_following_it() {
         let links = FakeLinks::new(&[("/docs/assets", "//evil.example/share")]);
 
-        assert!(walk_reaches_network_path(Path::new("/docs/assets/pics/a.png"), &links));
+        assert_eq!(link_walk_refusal(Path::new("/docs/assets/pics/a.png"), &links), Some(NETWORK_PATH));
         let asked = links.asked.borrow();
         assert_eq!(asked.last().unwrap(), Path::new("/docs/assets"));
         assert!(!asked.iter().any(|p| p.starts_with("/docs/assets/pics")));
@@ -997,23 +1010,23 @@ mod tests {
     fn walk_follows_relative_links_and_dot_dot() {
         let links = FakeLinks::new(&[("/docs/img", "../pics"), ("/pics", r"\\evil.example\share")]);
 
-        assert!(walk_reaches_network_path(Path::new("/docs/img/a.png"), &links));
+        assert_eq!(link_walk_refusal(Path::new("/docs/img/a.png"), &links), Some(NETWORK_PATH));
     }
 
     #[test]
     fn walk_allows_local_links_and_local_verbatim_targets() {
         let links = FakeLinks::new(&[("/docs/img", "/pics"), ("/pics/a.png", r"\\?\C:\pics\a.png")]);
 
-        assert!(!walk_reaches_network_path(Path::new("/docs/img/a.png"), &links));
-        assert!(!walk_reaches_network_path(Path::new("/docs/plain.png"), &links));
+        assert_eq!(link_walk_refusal(Path::new("/docs/img/a.png"), &links), None);
+        assert_eq!(link_walk_refusal(Path::new("/docs/plain.png"), &links), None);
     }
 
-    // Ruling 118: past the hop cap the walk cannot tell, so it refuses.
+    // Rulings 118, 126: past the hop cap the walk cannot tell, so it refuses and says why.
     #[test]
     fn walk_refuses_a_link_loop() {
         let links = FakeLinks::new(&[("/a", "/b"), ("/b", "/a")]);
 
-        assert!(walk_reaches_network_path(Path::new("/a/x.png"), &links));
+        assert_eq!(link_walk_refusal(Path::new("/a/x.png"), &links), Some(TOO_MANY_LINKS));
     }
 
     #[test]
@@ -1023,7 +1036,35 @@ mod tests {
         chain.push(("/l45", "//evil.example/share"));
         let links = FakeLinks::new(&chain);
 
-        assert!(walk_reaches_network_path(Path::new("/l0/a.png"), &links));
+        assert_eq!(link_walk_refusal(Path::new("/l0/a.png"), &links), Some(TOO_MANY_LINKS));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_in_a_symlink_loop_says_too_many_links() {
+        let dir = temp_dir();
+        std::os::unix::fs::symlink(dir.join("b"), dir.join("a")).unwrap();
+        std::os::unix::fs::symlink(dir.join("a"), dir.join("b")).unwrap();
+
+        assert_eq!(read_image(&dir.join("a").join("x.png")).unwrap_err(), TOO_MANY_LINKS);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Ruling 125: a remote image's type comes from its bytes, never from its URL.
+    #[test]
+    fn sniffs_the_image_type_from_its_bytes() {
+        for (bytes, mime) in [
+            (PNG, "image/png"),
+            (JPEG, "image/jpeg"),
+            (GIF, "image/gif"),
+            (WEBP, "image/webp"),
+            (SVG, "image/svg+xml"),
+        ] {
+            assert_eq!(ImageKind::sniff(bytes).map(ImageKind::mime), Some(mime));
+        }
+        for bytes in [&b"<html><svg/></html>"[..], b"-----BEGIN OPENSSH PRIVATE KEY-----", b"", &[0xFF, 0xD8]] {
+            assert!(ImageKind::sniff(bytes).is_none(), "{bytes:?}");
+        }
     }
 
     #[cfg(unix)]
