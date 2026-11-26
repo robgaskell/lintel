@@ -232,6 +232,36 @@ describe('Preview scroll sync', () => {
 
 describe('Preview diagrams', () => {
   const diagram = (name: string) => '# A\n\n```mermaid\ngraph TD; ' + name + '\n```\n\nc\n';
+  let restoreLayout: () => void;
+  beforeEach(() => (restoreLayout = fakePreviewLayout()));
+  afterEach(() => restoreLayout());
+
+  it('draws nothing in a hidden tab until it is shown (Ruling 115)', async () => {
+    restoreLayout(); // jsdom without the fake layout measures 0: hidden
+    restoreLayout = () => {};
+    const resized: (() => void)[] = [];
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) {
+        resized.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      const { container } = show(diagram('Hidden'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mermaid.initialize).not.toHaveBeenCalled();
+      expect(container.querySelector('pre.mermaid-src')).not.toBeNull();
+
+      Object.defineProperty(container.querySelector('.preview'), 'clientHeight', { value: 400 });
+      for (const callback of resized) callback();
+
+      await vi.waitFor(() => expect(container.querySelector('.mermaid-diagram svg')).not.toBeNull());
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
 
   it('draws a mermaid block as a diagram that keeps its source line', async () => {
     const { container } = show(diagram('Draw'));
@@ -258,7 +288,11 @@ describe('Preview diagrams', () => {
     mermaid.render.mockRejectedValue(new Error('Parse error on line 1:\nfoo'));
     const { container } = show(diagram('Broken'));
 
-    await vi.waitFor(() => expect(container.querySelector('.mermaid-error strong')?.textContent).toBe('Parse error on line 1:'));
+    await vi.waitFor(() =>
+      expect(container.querySelector('.mermaid-error strong')?.textContent).toBe(
+        'Parse error on line 1 of the diagram (file line 4):',
+      ),
+    );
     expect(container.querySelector('h1')?.textContent).toBe('A');
     expect(container.querySelector('.content p')?.textContent).toBe('c');
   });

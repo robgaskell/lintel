@@ -38,6 +38,8 @@
   // Follows the OS until M3.1's theme setting replaces it (Ruling 101).
   const darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
   let theme: DiagramTheme = darkQuery?.matches ? 'dark' : 'light';
+  // A hidden tab draws its diagrams when it is shown, not while out of sight (Ruling 115).
+  let diagramsWaiting = false;
 
   // The line this preview means to show at its top; kept across re-renders (Ruling 83).
   let topLine = 1;
@@ -70,13 +72,14 @@
   onMount(() => {
     // Images, diagrams, the front matter card, a resize or the reading width move blocks.
     const observer = new ResizeObserver(() => {
+      if (diagramsWaiting) drawDiagrams();
       anchorsStale = true;
       scrollToLine(topLine);
     });
     observer.observe(page);
     const onTheme = (event: MediaQueryListEvent) => {
       theme = event.matches ? 'dark' : 'light';
-      void renderMermaidIn(content, theme);
+      drawDiagrams();
     };
     darkQuery?.addEventListener('change', onTheme);
     return () => {
@@ -93,10 +96,15 @@
     prepareImages(template.content, path);
     content.replaceChildren(template.content);
     // Known diagrams go in now; new ones arrive later and the ResizeObserver re-syncs.
-    void renderMermaidIn(content, theme);
+    drawDiagrams();
     anchorsStale = true;
     scrollToLine(topLine);
     timing('lintel:patch', started);
+  }
+
+  function drawDiagrams() {
+    diagramsWaiting = scroller.clientHeight === 0;
+    if (!diagramsWaiting) void renderMermaidIn(content, theme);
   }
 
   function measureAnchors(): Anchor[] {
