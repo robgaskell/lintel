@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main and Settings windows",
-  "windows": ["main", "settings"],
+  "description": "Permissions for the main window",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
@@ -11,6 +11,12 @@
     "core:window:allow-set-theme",
     "core:window:allow-show",
     "core:window:allow-unminimize",
+    "allow-normalize-path",
+    "allow-paths-exist",
+    "allow-read-image-as-data-uri",
+    "allow-read-text-file",
+    "allow-write-text-file",
+    "allow-fetch-remote-image",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
     "opener:default",

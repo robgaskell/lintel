@@ -88,18 +88,20 @@ fn settings_window<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 ..
             } = event
             {
-                if closes_settings(label) {
+                on_window_destroyed(label, || {
                     if let Some(settings) = app.get_webview_window(SETTINGS) {
                         let _ = settings.destroy();
                     }
-                }
+                });
             }
         })
         .build()
 }
 
-fn closes_settings(destroyed: &str) -> bool {
-    destroyed == "main"
+fn on_window_destroyed(label: &str, close_settings: impl FnOnce()) {
+    if label == "main" {
+        close_settings();
+    }
 }
 
 // An empty menu of its own, not none: a window with no menu is given the app menu
@@ -158,9 +160,38 @@ mod tests {
 
     #[test]
     fn settings_closes_with_the_main_window_only() {
-        assert!(closes_settings("main"));
-        assert!(!closes_settings(SETTINGS));
-        assert!(!closes_settings("doc-2"));
+        let closed = |label: &str| {
+            let mut closed = false;
+            on_window_destroyed(label, || closed = true);
+            closed
+        };
+        assert!(closed("main"));
+        assert!(!closed(SETTINGS));
+        assert!(!closed("doc-2"));
+    }
+
+    #[test]
+    fn settings_capability_grants_no_files_dialogs_links_or_app_commands() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!([SETTINGS]));
+        let granted: Vec<&str> = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().expect("plain permission ids only"))
+            .collect();
+        for id in &granted {
+            let plugin = id.split(':').next().unwrap();
+            assert!(
+                matches!(plugin, "core" | "store"),
+                "{id} is more than Settings needs"
+            );
+            assert!(id.contains(':'), "{id} is an app command");
+        }
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert_eq!(main["windows"], serde_json::json!(["main"]));
     }
 
     fn url(s: &str) -> Url {
