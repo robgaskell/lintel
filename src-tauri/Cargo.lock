@@ -2258,6 +2258,8 @@ name = "lintel"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "objc2",
+ "objc2-app-kit",
  "reqwest",
  "rustls",
  "serde",

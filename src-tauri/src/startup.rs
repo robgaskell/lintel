@@ -36,7 +36,8 @@ pub fn stored_background(theme: Theme, json: Option<&str>) -> Color {
 
 fn stored_palette_background(theme: Theme, json: Option<&str>) -> Option<Color> {
     let value: serde_json::Value = serde_json::from_str(json?).ok()?;
-    if value.get("version")?.as_i64()? != 1 {
+    // JSON.parse reads 1.0 and 1e0 as 1, so loadSettings accepts them too.
+    if value.get("version")?.as_f64()? != 1.0 {
         return None;
     }
     let palettes = value.get("palettes")?;
@@ -67,6 +68,16 @@ fn parse_hex(colour: &str) -> Option<Color> {
     }
     let channel = |i: usize| u8::from_str_radix(&digits[i..i + 2], 16).ok();
     Some(Color(channel(0)?, channel(2)?, channel(4)?, 0xFF))
+}
+
+/// Lintel's tabs live in the page. With macOS window tabbing on, AppKit adds its own Show
+/// Next/Previous Tab to the Window menu and claims Ctrl+Tab (Ruling 173).
+#[cfg(target_os = "macos")]
+pub fn disable_window_tabbing() {
+    match objc2::MainThreadMarker::new() {
+        Some(mtm) => objc2_app_kit::NSWindow::setAllowsAutomaticWindowTabbing(false, mtm),
+        None => eprintln!("Could not turn off window tabbing: not on the main thread"),
+    }
 }
 
 pub fn prepare_main_window<R: Runtime>(window: &WebviewWindow<R>) {
@@ -190,6 +201,21 @@ mod tests {
         let json = format!(r#"{{"version":1,"palettes":{{"light":{PALETTE}}}}}"#);
         assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
         let json = format!(r#"{{"version":2,"palettes":{{"light":{PALETTE},"dark":{PALETTE}}}}}"#);
+        assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
+    }
+
+    #[test]
+    fn reads_a_version_written_as_a_float_like_the_settings_loader() {
+        for version in ["1.0", "1e0"] {
+            let json = with_palettes(PALETTE, PALETTE)
+                .replace(r#""version":1"#, &format!(r#""version":{version}"#));
+            assert_eq!(
+                hex(stored_background(Theme::Light, Some(&json))),
+                "#7E8080",
+                "{version}"
+            );
+        }
+        let json = with_palettes(PALETTE, PALETTE).replace(r#""version":1"#, r#""version":1.5"#);
         assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
     }
 

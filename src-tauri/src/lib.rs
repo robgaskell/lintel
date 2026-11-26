@@ -29,6 +29,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            startup::disable_window_tabbing();
             if let Some(window) = app.get_webview_window("main") {
                 startup::prepare_main_window(&window);
             }
