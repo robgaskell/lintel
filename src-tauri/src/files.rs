@@ -106,7 +106,6 @@ where
 }
 
 /// Windows canonical paths start with `\\?\`, which other tools and file dialogs do not use.
-#[cfg(any(windows, test))]
 fn strip_verbatim_prefix(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
@@ -145,14 +144,19 @@ where
 
 fn read_image(path: &str) -> Result<String, String> {
     // Opening a UNC path on Windows connects to that host and can leak the user's hash (Ruling 94).
-    if is_network_path(path) {
+    if is_network_path(path) || links_to_network_path(Path::new(path)) {
         return Err(NETWORK_PATH.to_owned());
     }
     let kind = image_kind(Path::new(path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
     let fail = |e: io::Error| format!("Could not read {path}: {e}");
+    // A symlinked folder can still lead to a share; judge where the path really goes (Ruling 104).
+    let real = fs::canonicalize(path).map_err(fail)?;
+    if resolves_to_network_path(&real.to_string_lossy()) {
+        return Err(NETWORK_PATH.to_owned());
+    }
     let mut bytes = Vec::new();
     // Reading one byte past the limit catches a file that grows after a size check would.
-    File::open(path)
+    File::open(&real)
         .map_err(fail)?
         .take(MAX_IMAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -165,6 +169,27 @@ fn read_image(path: &str) -> Result<String, String> {
         return Err(NOT_IMAGE_FILE.to_owned());
     }
     Ok(format!("data:{};base64,{}", kind.mime(), BASE64_STANDARD.encode(&bytes)))
+}
+
+/// Follows the file's own symlink chain without opening the target, so a link to a share is
+/// refused before anything connects to it. `canonicalize` alone would connect first on Windows.
+fn links_to_network_path(path: &Path) -> bool {
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(target) = fs::read_link(&current) else {
+            return false;
+        };
+        if is_network_path(&target.to_string_lossy()) {
+            return true;
+        }
+        current = current.parent().map_or_else(|| target.clone(), |dir| dir.join(&target));
+    }
+    false
+}
+
+/// Windows canonical paths carry `\\?\`, which would look like a network path on its own.
+fn resolves_to_network_path(canonical: &str) -> bool {
+    is_network_path(&strip_verbatim_prefix(canonical))
 }
 
 /// Two leading separators in any mix (`//`, `\\`, `/\`, `\/`) mean UNC, `\\?\` or `\\.\` on
@@ -860,6 +885,41 @@ mod tests {
             assert_eq!(read_image(&file).unwrap_err(), NOT_IMAGE_FILE, "{name}");
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Ruling 104: a local name must not lead to a share. The target is never opened here.
+    #[cfg(unix)]
+    #[test]
+    fn image_refuses_a_symlink_that_points_at_a_network_path() {
+        let dir = temp_dir();
+        let direct = dir.join("share.png");
+        std::os::unix::fs::symlink("//evil.example/share/a.png", &direct).unwrap();
+        let chained = dir.join("logo.png");
+        std::os::unix::fs::symlink(&direct, &chained).unwrap();
+
+        assert_eq!(read_image(&direct).unwrap_err(), NETWORK_PATH);
+        assert_eq!(read_image(&chained).unwrap_err(), NETWORK_PATH);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_reads_through_a_local_symlink() {
+        let dir = temp_dir();
+        let real = dir.join("real.png");
+        fs::write(&real, PNG).unwrap();
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink("real.png", &link).unwrap();
+
+        assert_eq!(read_image(&link).unwrap(), "data:image/png;base64,iVBORw0KGgo=");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn canonical_windows_paths_are_judged_without_their_verbatim_prefix() {
+        assert!(!resolves_to_network_path(r"\\?\C:\pics\a.png"));
+        assert!(resolves_to_network_path(r"\\?\UNC\evil.example\share\a.png"));
+        assert!(!resolves_to_network_path("/Users/me/a.png"));
     }
 
     #[cfg(unix)]

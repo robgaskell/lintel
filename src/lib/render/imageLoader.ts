@@ -65,14 +65,17 @@ export class ImageLoader {
   }
 
   // A document with many images on a stalled disk must not tie up every IPC worker.
+  // A finished read hands its slot straight to the next waiter; freeing it first would let
+  // a load arriving before the waiter wakes take it too (Ruling 105).
   private async limited<T>(task: () => Promise<T>): Promise<T> {
     if (this.running >= this.maxInFlight) await new Promise<void>((go) => this.waiting.push(go));
-    this.running += 1;
+    else this.running += 1;
     try {
       return await task();
     } finally {
-      this.running -= 1;
-      this.waiting.shift()?.();
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.running -= 1;
     }
   }
 }

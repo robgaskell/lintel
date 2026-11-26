@@ -44,6 +44,33 @@ describe('ImageLoader', () => {
     expect(read).toHaveBeenCalledTimes(6);
   });
 
+  it('never runs a 5th read, even when a new load lands while a slot is handed over (Ruling 105)', async () => {
+    let inFlight = 0;
+    let most = 0;
+    const finishers: (() => void)[] = [];
+    const loader = new ImageLoader(
+      () =>
+        new Promise<string>((resolve) => {
+          inFlight += 1;
+          most = Math.max(most, inFlight);
+          finishers.push(() => {
+            inFlight -= 1;
+            resolve('data:x');
+          });
+        }),
+    );
+    for (const n of [1, 2, 3, 4, 5]) void loader.load(`/${n}.png`);
+
+    finishers.shift()!();
+    // A load on every microtask turn, so one lands between the release and the waiter waking.
+    for (let n = 0; n < 10; n++) {
+      void loader.load(`/late${n}.png`);
+      await Promise.resolve();
+    }
+
+    expect(most).toBe(4);
+  });
+
   it('does not keep a failure, so a later render tries again', async () => {
     const { read, pending } = manualRead();
     const loader = new ImageLoader(read);
