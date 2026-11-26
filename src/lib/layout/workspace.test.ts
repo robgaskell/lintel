@@ -762,7 +762,7 @@ describe('Workspace outline placement (Rulings 181, 191)', () => {
     expect(paneOf(nav)).toBe(a.id);
     // Below the strip (outside the pane) and the toolbar, beside the document.
     expect(nav.closest('.panes')?.previousElementSibling?.classList.contains('toolbar')).toBe(true);
-    expect(nav.nextElementSibling?.classList.contains('doc-column')).toBe(true);
+    expect(nav.closest('.window-outline')?.nextElementSibling?.classList.contains('doc-column')).toBe(true);
 
     ws.activate(a.id);
     await vi.waitFor(() => expect(outlineTexts()).toEqual(['a.md']));
@@ -812,5 +812,70 @@ describe('Workspace layout changes', () => {
     await ws.closeDoc(b.id);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(changed).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Workspace groups and the outline under the pointer (Ruling 195)', () => {
+  const outlineLink = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('nav[aria-label="Outline"] a')].find((a) => a.textContent === text);
+  const settle = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  };
+
+  // a on the left, which hosts the outline; b on the right and active.
+  async function twoGroups() {
+    const a = fileDoc('a.md');
+    const b = createDoc({ path: '/notes/b.md', raw: '# B\n\ntext\n\n## Two\n', hash: 'h', mode: 'split' });
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'right');
+    await vi.waitFor(() => expect(outlineLink('Two')).toBeDefined());
+    return { a, b };
+  }
+
+  it('picks a heading in the doc the outline lists, and leaves the active group alone', async () => {
+    const { b } = await twoGroups();
+    const link = outlineLink('Two')!;
+
+    // As a browser does: a press focuses the link unless its mousedown is cancelled.
+    link.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(down);
+    if (!down.defaultPrevented) link.focus();
+    await settle();
+    (outlineLink('Two') ?? link).click();
+    await settle();
+
+    expect(ws.activeDocId()).toBe(b.id);
+    expect(outlineLink('Two')).toBeDefined();
+    const view = EditorView.findFromDOM(host.querySelector(`[data-doc-pane="${b.id}"] .cm-editor`) as HTMLElement)!;
+    expect(view.state.selection.main.head).toBe(view.state.doc.line(5).from);
+  });
+
+  it('leaves the active group alone when the keyboard moves into the outline', async () => {
+    const { b } = await twoGroups();
+
+    outlineLink('Two')!.focus();
+    await settle();
+
+    expect(ws.activeDocId()).toBe(b.id);
+    expect(outlineLink('Two')).toBeDefined();
+  });
+
+  it("makes a group active on a press anywhere in its preview or editor, without moving focus", async () => {
+    const { a, b } = await twoGroups();
+    const press = (el: Element) =>
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    await settle();
+    const before = document.activeElement;
+
+    press(host.querySelector(`[data-doc-pane="${a.id}"] .preview`)!);
+    expect(ws.activeDocId()).toBe(a.id);
+    await settle();
+    expect(document.activeElement).toBe(before);
+
+    press(host.querySelector(`[data-doc-pane="${b.id}"] .cm-scroller`)!);
+    expect(ws.activeDocId()).toBe(b.id);
   });
 });

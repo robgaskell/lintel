@@ -31,4 +31,20 @@ describe('WindowOutline', () => {
     const { container } = render(WindowOutline, { docId: 'a' });
     expect(container.querySelector('nav')).toBeNull();
   });
+
+  it("keeps a press on a heading from the host group: no focus change, no pointer events (Ruling 195)", () => {
+    outlineSources.set('a', source('Intro'));
+    const { container } = render(WindowOutline, { docId: 'a' });
+    const heard = vi.fn();
+    container.addEventListener('pointerdown', heard);
+    container.addEventListener('mousedown', heard);
+    const link = container.querySelector('a')!;
+
+    link.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    link.dispatchEvent(down);
+
+    expect(down.defaultPrevented).toBe(true);
+    expect(heard).not.toHaveBeenCalled();
+  });
 });

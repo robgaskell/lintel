@@ -49,7 +49,10 @@ export class Workspace {
   private readonly detachTabMenu: () => void;
   private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
   private readonly onClick = (e: MouseEvent) => this.selectTabOnClick(e);
+  private readonly onFocus = (e: FocusEvent) => this.keepGroupOnOutlineFocus(e);
+  private readonly onPointerDown = (e: PointerEvent) => this.activateGroupUnderPointer(e);
   private sorting = false;
+  private pointerActivating = false;
 
   constructor(private readonly el: HTMLElement) {
     this.api = createDockview(el, {
@@ -60,7 +63,7 @@ export class Workspace {
       createTabComponent: () => this.createTab(),
     });
     this.focusListener = this.api.onDidActivePanelChange((e) => {
-      if (e.panel) this.focusEditor(e.panel.id);
+      if (e.panel && !this.pointerActivating) this.focusEditor(e.panel.id);
     });
     // Dockview's own overlay colours (drag targets, scrollbars) follow the app theme.
     this.stopTheme = resolvedTheme.subscribe((theme) => this.api.updateOptions({ theme: dockTheme(theme) }));
@@ -74,6 +77,9 @@ export class Workspace {
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
     el.addEventListener('click', this.onClick);
+    // Capture phase, so this runs before the focus tracking dockview puts on each group.
+    el.addEventListener('focus', this.onFocus, true);
+    el.addEventListener('pointerdown', this.onPointerDown);
     this.detachTabMenu = attachTabMenu(el, this);
   }
 
@@ -201,6 +207,8 @@ export class Workspace {
   dispose(): void {
     this.el.removeEventListener('keydown', this.onKeydown, true);
     this.el.removeEventListener('click', this.onClick);
+    this.el.removeEventListener('focus', this.onFocus, true);
+    this.el.removeEventListener('pointerdown', this.onPointerDown);
     this.detachTabMenu();
     this.focusListener.dispose();
     this.moveListener.dispose();
@@ -284,6 +292,26 @@ export class Workspace {
     // A pinned tab has no close button, so the keys do nothing either (Ruling 48).
     if (docs.get(id)?.pinned) return;
     void this.closeDoc(id);
+  }
+
+  // Dockview makes a group active when focus enters it. The outline lists the active doc
+  // from inside another group's pane, so focus there must not switch groups (Ruling 195).
+  private keepGroupOnOutlineFocus(e: FocusEvent): void {
+    if (e.target instanceof Element && e.target.closest('.window-outline')) e.stopPropagation();
+  }
+
+  // A press on a group's preview moves no focus, so dockview would leave the group inactive.
+  private activateGroupUnderPointer(e: PointerEvent): void {
+    const pane = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-doc-pane]') : null;
+    const panel = pane?.dataset.docPane ? this.api.getPanel(pane.dataset.docPane) : undefined;
+    if (!panel || panel === this.api.activePanel) return;
+    // Focus stays where the press puts it, so a press in the preview keeps its selection.
+    this.pointerActivating = true;
+    try {
+      panel.api.setActive();
+    } finally {
+      this.pointerActivating = false;
+    }
   }
 
   // dockview selects on pointerdown only, so a click with no pointer (an accessibility
