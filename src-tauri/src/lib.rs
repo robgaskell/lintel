@@ -1,6 +1,8 @@
 mod files;
 
-use tauri::{Manager, Runtime, Url};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use tauri::{Manager, RunEvent, Runtime, Url, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,35 +24,71 @@ pub fn run() {
         .expect("error while running Lintel");
 }
 
-/// Refuses any navigation away from the app's own pages, so a link in a document
-/// can never replace the editor (Ruling 70).
+/// Lets each webview load the app once; any later top-level navigation, even to the
+/// app's own URL, is refused. A reload would drop every unsaved edit (Ruling 84).
 fn navigation_guard<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    let loaded = Arc::new(LoadedWebviews::default());
+    let on_destroyed = Arc::clone(&loaded);
     tauri::plugin::Builder::new("navigation-guard")
-        .on_navigation(|webview, url| {
-            // Only `tauri dev` loads from the dev server; built apps serve their own assets.
-            let dev_url = if tauri::is_dev() {
-                webview.config().build.dev_url.clone()
-            } else {
-                None
-            };
-            is_app_url(url, dev_url.as_ref())
+        .on_navigation(move |webview, url| {
+            let dev_url = dev_server(tauri::is_dev(), webview.config().build.dev_url.as_ref());
+            loaded.allow(webview.label(), url, dev_url)
+        })
+        .on_event(move |_, event| {
+            // A new window may reuse a closed window's label.
+            if let RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } = event
+            {
+                on_destroyed.forget(label);
+            }
         })
         .build()
 }
 
-fn is_app_url(url: &Url, dev_url: Option<&Url>) -> bool {
-    // Url::origin is opaque for tauri://, so compare the parts.
-    let same_origin = |allowed: &Url| {
-        url.scheme() == allowed.scheme()
-            && url.host_str() == allowed.host_str()
-            && url.port_or_known_default() == allowed.port_or_known_default()
+/// Only `tauri dev` loads from the dev server; built apps serve their own assets.
+fn dev_server(is_dev: bool, configured: Option<&Url>) -> Option<&Url> {
+    configured.filter(|_| is_dev)
+}
+
+/// Labels of the webviews that have already loaded the app.
+#[derive(Default)]
+struct LoadedWebviews(Mutex<HashSet<String>>);
+
+impl LoadedWebviews {
+    fn allow(&self, label: &str, url: &Url, dev_url: Option<&Url>) -> bool {
+        // Vite's hot reload navigates the page again, so dev keeps reloads.
+        if dev_url.is_some_and(|dev| same_origin(url, dev)) {
+            return true;
+        }
+        same_origin(url, &app_origin()) && self.labels().insert(label.to_owned())
+    }
+
+    fn forget(&self, label: &str) {
+        self.labels().remove(label);
+    }
+
+    fn labels(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+fn app_origin() -> Url {
+    let origin = if cfg!(windows) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
     };
-    // macOS and Linux serve tauri://localhost; Windows serves http://tauri.localhost.
-    ["tauri://localhost", "http://tauri.localhost"]
-        .iter()
-        .filter_map(|s| Url::parse(s).ok())
-        .chain(dev_url.cloned())
-        .any(|allowed| same_origin(&allowed))
+    Url::parse(origin).expect("valid app origin")
+}
+
+// Url::origin is opaque for tauri://, so compare the parts.
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 #[cfg(test)]
@@ -61,23 +99,47 @@ mod tests {
         Url::parse(s).unwrap()
     }
 
-    #[test]
-    fn allows_the_app_origin_on_every_platform() {
-        assert!(is_app_url(&url("tauri://localhost"), None));
-        assert!(is_app_url(&url("tauri://localhost/index.html#h-intro"), None));
-        assert!(is_app_url(&url("http://tauri.localhost/"), None));
+    fn app(path: &str) -> Url {
+        app_origin().join(path).unwrap()
     }
 
     #[test]
-    fn allows_the_dev_server_only_when_given() {
-        let dev = url("http://localhost:1420");
-        assert!(is_app_url(&url("http://localhost:1420/"), Some(&dev)));
-        assert!(!is_app_url(&url("http://localhost:1420/"), None));
-        assert!(!is_app_url(&url("http://localhost:1421/"), Some(&dev)));
+    fn allows_only_the_first_load_of_the_app() {
+        let loaded = LoadedWebviews::default();
+        assert!(loaded.allow("main", &app("/"), None));
+        assert!(!loaded.allow("main", &app("/"), None), "a reload is refused");
+        assert!(!loaded.allow("main", &app("/other.md"), None));
+        assert!(!loaded.allow("main", &app("/?x"), None));
     }
 
     #[test]
-    fn refuses_everything_else() {
+    fn each_webview_gets_its_own_first_load() {
+        let loaded = LoadedWebviews::default();
+        assert!(loaded.allow("main", &app("/"), None));
+        assert!(loaded.allow("doc-2", &app("/"), None));
+        loaded.forget("main");
+        assert!(loaded.allow("main", &app("/"), None), "a reused label loads again");
+    }
+
+    #[test]
+    fn a_refused_navigation_does_not_use_up_the_first_load() {
+        let loaded = LoadedWebviews::default();
+        assert!(!loaded.allow("main", &url("https://example.com/"), None));
+        assert!(loaded.allow("main", &app("/"), None));
+    }
+
+    #[test]
+    fn allows_only_this_platforms_app_origin() {
+        let other = if cfg!(windows) {
+            "tauri://localhost/"
+        } else {
+            "http://tauri.localhost/"
+        };
+        assert!(!LoadedWebviews::default().allow("main", &url(other), None));
+    }
+
+    #[test]
+    fn refuses_foreign_urls_even_as_the_first_load() {
         for s in [
             "https://example.com/",
             "https://tauri.localhost/",
@@ -89,8 +151,30 @@ mod tests {
             "about:blank",
             "data:text/html,hi",
             "javascript:alert(1)",
+            "http://localhost:1420/",
         ] {
-            assert!(!is_app_url(&url(s), None), "{s} should be refused");
+            let loaded = LoadedWebviews::default();
+            assert!(!loaded.allow("main", &url(s), None), "{s} should be refused");
         }
+    }
+
+    #[test]
+    fn dev_server_reloads_are_allowed_in_dev_only() {
+        let dev = url("http://localhost:1420");
+        let loaded = LoadedWebviews::default();
+        for _ in 0..2 {
+            assert!(loaded.allow("main", &url("http://localhost:1420/"), Some(&dev)));
+        }
+        assert!(!loaded.allow("main", &url("http://localhost:1421/"), Some(&dev)));
+        assert_eq!(dev_server(true, Some(&dev)), Some(&dev));
+        assert_eq!(dev_server(false, Some(&dev)), None);
+    }
+
+    #[test]
+    fn csp_matches_ruling_69() {
+        const RULING_69: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["app"]["security"]["csp"], RULING_69);
     }
 }
