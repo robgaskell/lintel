@@ -11,7 +11,11 @@ export interface Cursor {
 /** The cursor of each open doc's editor, by doc id, for the status bar. */
 export const cursors: ReadonlyMap<string, Cursor> = new SvelteMap<string, Cursor>();
 
-/** Keeps `cursors` up to date for `docId` from `view` (Ruling 109). Returns the undo. */
+/**
+ * Keeps `cursors` up to date for `docId` from `view` (Ruling 109). Returns the undo.
+ * Trap: `view.setState` or a full `StateEffect.reconfigure` drops the appended listener,
+ * and the status bar then freezes. Whatever replaces the state must call this again.
+ */
 export function trackCursor(docId: string, view: EditorView): () => void {
   const map = cursors as SvelteMap<string, Cursor>;
   let stopped = false;

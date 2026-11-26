@@ -22,6 +22,27 @@ beforeEach(() => {
 
 afterEach(() => vi.useRealTimers());
 
+// Lets a test report a pane's size, as dockview's show and hide do.
+function fakeResizeObservers() {
+  const real = globalThis.ResizeObserver;
+  const callbacks: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(cb: ResizeObserverCallback) {
+      callbacks.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  return {
+    resize(height: number) {
+      const entry = { contentRect: { height } } as ResizeObserverEntry;
+      for (const cb of callbacks) cb([entry], {} as ResizeObserver);
+    },
+    restore: () => (globalThis.ResizeObserver = real),
+  };
+}
+
 function pane(mode: ViewMode, raw = '# Title\n') {
   const doc = createDoc({ path: '/notes/a.md', raw, hash: 'h', mode });
   const view = render(DocPane, { doc });
@@ -102,6 +123,17 @@ describe('DocPane large-file notice', () => {
     expect(queryByText(NOTICE)).toBeNull();
   });
 
+  it('spans the document column only, not the outline (Ruling 122)', () => {
+    const doc = createDoc({ path: '/big.md', raw: '# x', hash: 'h', mode: 'edit' });
+    largeFileNotices.add(doc.id);
+    const { getByRole, container } = render(DocPane, { doc });
+
+    const column = getByRole('status').closest('.doc-column');
+    expect(column).not.toBeNull();
+    expect(column!.querySelector('nav')).toBeNull();
+    expect(container.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
+  });
+
   it('shows no notice for an ordinary doc', () => {
     const { queryByText } = pane('edit');
     expect(queryByText(NOTICE)).toBeNull();
@@ -165,17 +197,68 @@ describe('DocPane outline', () => {
   const editorOf = (q: (s: string) => Element | null) =>
     EditorView.findFromDOM(q('.cm-editor') as HTMLElement)!;
 
-  it('lists headings in Edit mode, where nothing is rendered (Ruling 107)', () => {
-    const { getByRole, q } = pane('edit', src);
+  it('lists headings in Edit mode, where nothing is rendered, after the debounce (Rulings 107, 119)', () => {
+    vi.useFakeTimers();
+    const { getByRole, getByText, q } = pane('edit', src);
 
     expect(q('.preview')).toBeNull();
+    expect(getByText('No headings')).toBeTruthy();
+    vi.advanceTimersByTime(150);
+    flushSync();
     expect(links(getByRole).map((a) => a.textContent)).toEqual(['A', 'C', 'E']);
     expect(current(links(getByRole))).toEqual(['A']);
+  });
+
+  it('waits until a hidden tab is shown before extracting its headings (Ruling 119)', () => {
+    vi.useFakeTimers();
+    const observers = fakeResizeObservers();
+    const { getByRole, getByText } = pane('edit', src);
+
+    observers.resize(0);
+    flushSync();
+    vi.advanceTimersByTime(1000);
+    flushSync();
+    expect(getByText('No headings')).toBeTruthy();
+
+    observers.resize(500);
+    flushSync();
+    vi.advanceTimersByTime(150);
+    flushSync();
+    expect(links(getByRole)).toHaveLength(3);
+    observers.restore();
+  });
+
+  it('marks the last heading once the preview is scrolled to its end (Ruling 122)', () => {
+    const { getByRole, q } = pane('read', src);
+    const preview = q('.preview') as HTMLElement;
+    Object.defineProperty(preview, 'scrollHeight', { configurable: true, value: 700 });
+
+    preview.scrollTop = 300;
+    preview.dispatchEvent(new Event('scroll'));
+    flushSync();
+
+    expect(current(links(getByRole))).toEqual(['E']);
+  });
+
+  it('marks the last heading once the editor is scrolled to its end', () => {
+    vi.useFakeTimers();
+    const { getByRole, q } = pane('edit', src);
+    vi.advanceTimersByTime(150);
+    const scroller = q('.cm-scroller') as HTMLElement;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 405 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
+
+    scroller.scrollTop = 5;
+    scroller.dispatchEvent(new Event('scroll'));
+    flushSync();
+
+    expect(current(links(getByRole))).toEqual(['E']);
   });
 
   it('updates the headings after an edit only after the debounce', () => {
     vi.useFakeTimers();
     const { doc, getByRole } = pane('edit', src);
+    vi.advanceTimersByTime(150);
 
     doc.text = '# Only\n';
     flushSync();
@@ -211,7 +294,10 @@ describe('DocPane outline', () => {
   });
 
   it('in Edit, a pick moves the cursor and marks the heading at once', async () => {
+    vi.useFakeTimers();
     const { getByRole, q } = pane('edit', src);
+    vi.advanceTimersByTime(150);
+    flushSync();
     const view = editorOf(q);
 
     await fireEvent.click(links(getByRole)[2]);

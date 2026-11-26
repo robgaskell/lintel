@@ -26,9 +26,11 @@
 
   // First visible source line, from whichever side the user scrolled last.
   let topLine = $state(1);
+  // At the end, the last heading is on screen though it never reaches the top (Ruling 122).
+  let scrolledToEnd = $state(false);
   // Marks the editor scroll that following the preview causes, so it is not sent back.
   const editorLock = createScrollLock(300);
-  let paneHidden = false;
+  let paneHidden = $state(false);
   const cleanups: (() => void)[] = [];
 
   function onReady(editor: EditorView) {
@@ -45,13 +47,20 @@
   function onEditorScroll() {
     if (!view || paneHidden || editorLock.skip()) return;
     topLine = editorTopLine(view);
+    scrolledToEnd = atEnd(view.scrollDOM);
     if (doc.mode === 'split') preview?.scrollToLine(topLine);
   }
 
   function onPreviewLine(line: number) {
     if (paneHidden) return;
     topLine = line;
+    scrolledToEnd = atEnd(pane.querySelector('.preview'));
     if (doc.mode === 'split') scrollEditorTo(line);
+  }
+
+  function atEnd(scroller: Element | null): boolean {
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight) return false;
+    return scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
   }
 
   // Fractional, so the preview moves smoothly through a long wrapped line.
@@ -81,6 +90,7 @@
   // Ruling 108: the hidden editor in Read is left alone.
   function pickHeading(heading: Heading) {
     topLine = heading.line;
+    scrolledToEnd = false;
     if (doc.mode !== 'read' && view) {
       view.dispatch({ selection: { anchor: lineStart(view, heading.line) } });
       scrollEditorTo(heading.line);
@@ -121,19 +131,15 @@
     performance.measure?.('lintel:render', { start: started, end: performance.now() });
   }
 
-  // The preview's render carries headings; Edit mode extracts its own (Ruling 107).
+  // The preview's render carries headings; Edit mode extracts its own (Ruling 107), always
+  // debounced and never while the tab is hidden, so opening a tab does not wait on it (Ruling 119).
   let extracted = $state.raw<Heading[]>([]);
   let extractedText: string | null = null;
-  let extracting = false;
   $effect(() => {
     const text = doc.text;
-    const needed = outline.visible && doc.mode === 'edit';
-    const justNeeded = needed && !extracting;
-    extracting = needed;
-    if (!needed || text === extractedText) return;
-    if (justNeeded) {
-      if (result && renderedText === text) extracted = result.headings;
-      else extracted = extractHeadings(text);
+    if (!outline.visible || doc.mode !== 'edit' || paneHidden || text === extractedText) return;
+    if (result && renderedText === text) {
+      extracted = result.headings;
       extractedText = text;
       return;
     }
@@ -190,30 +196,38 @@
 
 <div class="doc-pane" data-doc-pane={doc.id} bind:this={pane}>
   <Toolbar docId={doc.id} mode={doc.mode} onModeChange={(m) => (doc.mode = m)} />
-  {#if largeFileNotices.has(doc.id)}
-    <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>
-  {/if}
   <div class="panes mode-{doc.mode}">
     {#if outline.visible}
-      <Outline {headings} activeLine={topLine} onPick={pickHeading} />
+      <Outline
+        {headings}
+        activeLine={scrolledToEnd ? Number.POSITIVE_INFINITY : topLine}
+        onPick={pickHeading}
+      />
     {/if}
-    <!-- Inert in Read, so keys never edit a hidden document. -->
-    <div class="editor-host" inert={doc.mode === 'read'}>
-      <Editor {doc} onChange={(text) => (doc.text = text)} {onReady} />
-    </div>
-    <div class="preview-host">
-      {#if renderError}
-        <p class="render-error" role="alert">{renderError}</p>
-      {:else if result}
-        <Preview
-          bind:this={preview}
-          {result}
-          docPath={doc.path}
-          reading={doc.mode === 'read'}
-          lineCount={renderedLines}
-          onLineVisible={onPreviewLine}
-        />
+    <div class="doc-column">
+      {#if largeFileNotices.has(doc.id)}
+        <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>
       {/if}
+      <div class="doc-row">
+        <!-- Inert in Read, so keys never edit a hidden document. -->
+        <div class="editor-host" inert={doc.mode === 'read'}>
+          <Editor {doc} onChange={(text) => (doc.text = text)} {onReady} />
+        </div>
+        <div class="preview-host">
+          {#if renderError}
+            <p class="render-error" role="alert">{renderError}</p>
+          {:else if result}
+            <Preview
+              bind:this={preview}
+              {result}
+              docPath={doc.path}
+              reading={doc.mode === 'read'}
+              lineCount={renderedLines}
+              onLineVisible={onPreviewLine}
+            />
+          {/if}
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -235,6 +249,19 @@
   }
 
   .panes {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .doc-column {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .doc-row {
     display: flex;
     flex: 1;
     min-height: 0;

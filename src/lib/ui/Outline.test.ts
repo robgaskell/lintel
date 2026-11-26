@@ -48,6 +48,73 @@ describe('Outline', () => {
     expect(notPrevented).toBe(false);
   });
 
+  it('ignores modifier clicks and stops middle-click defaults (Ruling 122)', async () => {
+    const { links, onPick } = outline(1);
+
+    expect(await fireEvent.click(links[1], { metaKey: true })).toBe(false);
+    expect(await fireEvent.click(links[1], { shiftKey: true })).toBe(false);
+    expect(await fireEvent(links[1], new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))).toBe(false);
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('is one tab stop, on the current heading, moved by arrow keys; Enter picks (Ruling 122)', async () => {
+    const { links, onPick } = outline(5);
+    expect(links.map((a) => a.tabIndex)).toEqual([-1, 0, -1]);
+
+    links[1].focus();
+    await fireEvent.keyDown(links[1], { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(links[2]);
+    expect(links.map((a) => a.tabIndex)).toEqual([-1, -1, 0]);
+
+    await fireEvent.keyDown(links[2], { key: 'Home' });
+    expect(document.activeElement).toBe(links[0]);
+    await fireEvent.keyDown(links[0], { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(links[0]);
+    await fireEvent.keyDown(links[0], { key: 'End' });
+    expect(document.activeElement).toBe(links[2]);
+
+    await fireEvent.keyDown(links[2], { key: 'Enter' });
+    expect(onPick).toHaveBeenCalledExactlyOnceWith(headings[2]);
+  });
+
+  it('makes the first row the tab stop when no heading is current', () => {
+    const { links } = outline(0.5);
+    expect(links.map((a) => a.tabIndex)).toEqual([0, -1, -1]);
+  });
+
+  it('updates at most two rows when the current heading changes (Ruling 119)', async () => {
+    const reads = new Set<number>();
+    const many = Array.from({ length: 100 }, (_, i) => {
+      const plain = { level: 2 as const, id: `h-s${i}`, line: i * 10 + 1 };
+      // Rows re-render by reading text; count which headings were read.
+      return Object.defineProperty(plain, 'text', {
+        enumerable: true,
+        get: () => (reads.add(i), `Section ${i}`),
+      }) as Heading;
+    });
+    const view = render(Outline, { headings: many, activeLine: 1, onPick: vi.fn() });
+    reads.clear();
+
+    await view.rerender({ activeLine: 41 });
+
+    expect([...reads].every((i) => i === 0 || i === 4)).toBe(true);
+    const current = view.container.querySelector('[aria-current="true"]');
+    expect(current?.textContent).toBe('Section 4');
+  });
+
+  it('shows at most 5,000 rows and says how many more there are (Ruling 119)', () => {
+    const many: Heading[] = Array.from({ length: 5003 }, (_, i) => ({
+      level: 2,
+      text: `S${i}`,
+      id: `h-s${i}`,
+      line: i + 1,
+    }));
+    const view = render(Outline, { headings: many, activeLine: 1, onPick: vi.fn() });
+
+    expect(view.container.querySelectorAll('a')).toHaveLength(5000);
+    expect(view.getByText('… 3 more headings')).toBeTruthy();
+  });
+
   it('says so when the document has no headings', () => {
     const { getByText } = render(Outline, { headings: [], activeLine: 1, onPick: vi.fn() });
     expect(getByText('No headings')).toBeTruthy();

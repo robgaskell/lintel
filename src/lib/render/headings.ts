@@ -1,4 +1,4 @@
-import MarkdownIt, { type Token } from 'markdown-it';
+import MarkdownIt, { type Env, type Token } from 'markdown-it';
 import { splitFrontMatter } from './frontMatter';
 import { headingText, MARKDOWN_OPTIONS, slugify, type Heading } from './markdown';
 
@@ -31,12 +31,12 @@ export function extractHeadings(src: string): Heading[] {
  * The block tokens of the document after its front matter; inline content stays unparsed.
  * `env` holds the link reference definitions, which decide how inline text parses.
  */
-export function parseBlocks(src: string): { tokens: Token[]; env: object; bodyStartLine: number } {
+export function parseBlocks(src: string): { tokens: Token[]; env: Env; bodyStartLine: number } {
   const { body, bodyStartLine } = splitFrontMatter(src);
-  const env = {};
+  const env: Env = {};
   const tokens: Token[] = [];
   // markdown-it's own normalize step, which block.parse skips.
-  const normalized = body.replace(/\r\n?/g, '\n').replace(/\0/g, '�');
+  const normalized = body.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD');
   parser.block.parse(normalized, parser, env, tokens);
   return { tokens, env, bodyStartLine };
 }
