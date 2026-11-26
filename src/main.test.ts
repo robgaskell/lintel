@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount } from 'svelte';
-import { restoreTheme } from './lib/theme/theme';
+import { restoreTheme, setsWindowAppearance } from './lib/theme/theme';
 
 vi.mock('svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('svelte')>()),
@@ -8,7 +8,7 @@ vi.mock('svelte', async (importOriginal) => ({
 }));
 vi.mock('./App.svelte', () => ({ default: 'App' }));
 vi.mock('./settings/SettingsApp.svelte', () => ({ default: 'SettingsApp' }));
-vi.mock('./lib/theme/theme', () => ({ restoreTheme: vi.fn() }));
+vi.mock('./lib/theme/theme', () => ({ restoreTheme: vi.fn(), setsWindowAppearance: vi.fn() }));
 const win = vi.hoisted(() => ({ label: 'main', show: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }));
 const adoption = vi.hoisted(() => ({ resolve: () => {}, promise: Promise.resolve() }));
@@ -30,6 +30,7 @@ async function start(search: string, label = 'main') {
   vi.resetModules();
   vi.mocked(mount).mockClear();
   vi.mocked(restoreTheme).mockClear();
+  vi.mocked(setsWindowAppearance).mockClear();
   win.show.mockClear();
   frames = [];
   // main.ts sets a show timer; fake timers keep one test's timer out of the next.
@@ -66,6 +67,16 @@ describe('main', () => {
 
     await start('');
     expect(restoreTheme).toHaveBeenCalledWith({ defaultPalettes: false });
+  });
+
+  it('leaves window appearance to the document windows in Settings, before restoring (Rulings 160, 195)', async () => {
+    await start('?view=settings');
+    expect(setsWindowAppearance).toHaveBeenCalledWith(false);
+    const [set] = vi.mocked(setsWindowAppearance).mock.invocationCallOrder;
+    expect(set).toBeLessThan(vi.mocked(restoreTheme).mock.invocationCallOrder[0]);
+
+    await start('');
+    expect(setsWindowAppearance).not.toHaveBeenCalled();
   });
 
   it('shows the hidden window two frames after the theme is restored (Ruling 154)', async () => {

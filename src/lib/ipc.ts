@@ -49,3 +49,11 @@ export function claimPath(path: string): Promise<string | null> {
 export function releasePath(path: string): Promise<void> {
   return invoke<void>('release_path', { path });
 }
+
+/**
+ * Sets the native appearance of every window on macOS: "light", "dark", or null to follow
+ * the system. A no-op elsewhere (Ruling 195).
+ */
+export function setWindowAppearance(theme: 'light' | 'dark' | null): Promise<void> {
+  return invoke<void>('set_window_appearance', { theme });
+}

@@ -19,6 +19,7 @@
     "allow-fetch-remote-image",
     "allow-claim-path",
     "allow-release-path",
+    "allow-set-window-appearance",
     "clipboard-manager:allow-write-text",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },

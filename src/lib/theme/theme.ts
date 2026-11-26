@@ -1,5 +1,6 @@
 import { readonly, writable } from 'svelte/store';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { setWindowAppearance } from '../ipc';
 import {
   DEFAULT_SETTINGS,
   isFontFamily,
@@ -142,13 +143,27 @@ function paint(resolved: ResolvedTheme, vars: Record<string, string>): void {
   current.set(resolved);
 }
 
+let ownsAppearance = true;
+
+/**
+ * Whether this page also sets every window's native appearance (Ruling 195). The Settings
+ * window has no app commands (Ruling 160), so the document windows set it for it.
+ */
+export function setsWindowAppearance(owns: boolean): void {
+  ownsAppearance = owns;
+}
+
 // Native menus, dialogs and the title bar follow this; null lets them follow the OS (Ruling 151).
 // Set on every application, never skipped as unchanged: a window opened with a forced theme
 // can disagree with what this page last set (Ruling 194).
 function setWindowTheme(choice: ThemeChoice): void {
+  const theme = choice === 'system' ? null : choice;
   getCurrentWindow()
-    .setTheme(choice === 'system' ? null : choice)
+    .setTheme(theme)
     .catch((err) => console.error('Could not set the window theme:', err));
+  // On macOS setTheme sets the app's appearance only, which left title bars dark (Ruling 195).
+  if (!ownsAppearance) return;
+  setWindowAppearance(theme).catch((err) => console.error('Could not set the window appearance:', err));
 }
 
 function systemQuery(): MediaQueryList {

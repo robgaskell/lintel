@@ -2,7 +2,7 @@ import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App.svelte';
 import SettingsApp from './settings/SettingsApp.svelte';
-import { restoreTheme } from './lib/theme/theme';
+import { restoreTheme, setsWindowAppearance } from './lib/theme/theme';
 import { whenAdopted } from './lib/os/windows';
 import './app.css';
 
@@ -11,6 +11,8 @@ const view = new URLSearchParams(location.search).get('view');
 
 // Before the first render, so the app never paints in the wrong theme (Ruling 150).
 // Settings never wears a custom palette, so it stays readable while one is edited (Ruling 158).
+// Nor may it call app commands; the document windows set its appearance (Rulings 160, 195).
+if (view === 'settings') setsWindowAppearance(false);
 restoreTheme({ defaultPalettes: view === 'settings' });
 
 const app = mount(view === 'settings' ? SettingsApp : App, { target: document.getElementById('app')! });

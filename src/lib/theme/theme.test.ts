@@ -10,7 +10,9 @@ import {
   resolvedTheme,
   resolveTheme,
   restoreTheme,
+  setsWindowAppearance,
 } from './theme';
+import { setWindowAppearance } from '../ipc';
 
 const fake = vi.hoisted(() => ({
   settingsChanged: null as ((s: Settings) => void) | null,
@@ -24,6 +26,7 @@ vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   },
 }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: fake.setTheme }) }));
+vi.mock('../ipc', () => ({ setWindowAppearance: vi.fn(async (_theme: string | null) => {}) }));
 
 function settingsWith(patch: Partial<Settings>): Settings {
   return { ...structuredClone(DEFAULT_SETTINGS), ...patch } as Settings;
@@ -296,6 +299,8 @@ beforeEach(() => {
   osListeners.clear();
   localStorage.clear();
   fake.setTheme.mockClear();
+  vi.mocked(setWindowAppearance).mockClear();
+  setsWindowAppearance(true);
   vi.spyOn(window, 'matchMedia').mockImplementation(
     () =>
       ({
@@ -351,6 +356,26 @@ describe('applyTheme', () => {
     expect(fake.setTheme).toHaveBeenLastCalledWith('light');
     applyTheme(settingsWith({ theme: 'system' }));
     expect(fake.setTheme).toHaveBeenLastCalledWith(null);
+  });
+
+  it('passes the exact value for Light, Dark and System, to setTheme and to each window (Ruling 195)', () => {
+    for (const [theme, value] of [['light', 'light'], ['dark', 'dark'], ['system', null]] as const) {
+      fake.setTheme.mockClear();
+      vi.mocked(setWindowAppearance).mockClear();
+      applyTheme(settingsWith({ theme }));
+      expect(fake.setTheme.mock.calls, theme).toEqual([[value]]);
+      expect(vi.mocked(setWindowAppearance).mock.calls, theme).toEqual([[value]]);
+    }
+  });
+
+  it('leaves window appearance to the document windows in the Settings window (Rulings 160, 195)', () => {
+    setsWindowAppearance(false);
+
+    applyTheme(settingsWith({ theme: 'light' }), false);
+    restoreTheme();
+
+    expect(fake.setTheme).toHaveBeenCalledWith('light');
+    expect(setWindowAppearance).not.toHaveBeenCalled();
   });
 
   it('sets the window theme on every application, even when the choice is unchanged (Ruling 194)', () => {

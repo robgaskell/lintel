@@ -1,3 +1,4 @@
+mod appearance;
 mod files;
 mod remote;
 mod startup;
@@ -53,7 +54,8 @@ pub fn run() {
             files::write_text_file,
             remote::fetch_remote_image,
             windows::claim_path,
-            windows::release_path
+            windows::release_path,
+            appearance::set_window_appearance
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lintel");
@@ -219,6 +221,14 @@ mod tests {
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         assert_eq!(main["windows"], serde_json::json!(["main", "w-*"]));
+    }
+
+    #[test]
+    fn document_windows_may_set_every_windows_appearance() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let granted = main["permissions"].as_array().unwrap();
+        assert!(granted.contains(&serde_json::json!("allow-set-window-appearance")));
     }
 
     fn url(s: &str) -> Url {
