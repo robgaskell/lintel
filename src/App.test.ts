@@ -34,6 +34,7 @@ vi.mock('@tauri-apps/api/window', () => ({
       fake.focusHandler = handler;
       return () => {};
     },
+    setTheme: async () => {},
   }),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn(), save: vi.fn() }));
@@ -83,6 +84,9 @@ beforeEach(() => {
   fake.focusHandler = null;
   outline.visible = true;
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
+  localStorage.clear();
+  document.documentElement.removeAttribute('style');
+  delete document.documentElement.dataset.theme;
   vi.clearAllMocks();
 });
 
@@ -170,7 +174,7 @@ describe('App outline tick (Ruling 120)', () => {
 });
 
 describe('App theme (Ruling 128)', () => {
-  it('applies the defaults at mount, then the stored settings once they load', async () => {
+  it('leaves the restored theme alone until the stored settings load, then applies them (Ruling 150)', async () => {
     let finishLoad = () => {};
     vi.mocked(loadSettings).mockImplementation(
       () =>
@@ -184,8 +188,9 @@ describe('App theme (Ruling 128)', () => {
     );
     render(App);
     const root = document.documentElement;
-    expect(root.dataset.theme).toBe('light');
-    expect(root.style.getPropertyValue('--size-read')).toBe('16px');
+    // No defaults painted over what main.ts restored: a forced theme would flash.
+    expect(root.dataset.theme).toBeUndefined();
+    expect(root.style.getPropertyValue('--size-read')).toBe('');
 
     finishLoad();
 

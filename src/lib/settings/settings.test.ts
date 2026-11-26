@@ -3,6 +3,7 @@ import { writeTextFile } from '../ipc';
 import { calls, events, fakeStore, loads, resetFakes } from '../../test/fakes';
 import {
   DEFAULT_SETTINGS,
+  isFontFamily,
   loadSettings,
   onSettingsChanged,
   settings,
@@ -254,5 +255,36 @@ describe('onSettingsChanged', () => {
     await updateSettings({ fontSize: 20 });
 
     expect(seen).not.toHaveBeenCalled();
+  });
+});
+
+describe('font settings (Ruling 152)', () => {
+  it('keeps a CSS font-family list and drops anything else to the system font', async () => {
+    store().data.set('version', 1);
+    store().data.set('readingFont', `"Iowan Old Style", Georgia, serif`);
+    store().data.set('editorFont', 'x; } body { display: none');
+
+    const loaded = await loadSettings();
+
+    expect(loaded.readingFont).toBe(`"Iowan Old Style", Georgia, serif`);
+    expect(loaded.editorFont).toBe('');
+  });
+
+  it('tells a font-family list from other CSS', () => {
+    for (const ok of ['Georgia', 'Georgia, serif', "'SF Mono', ui-monospace", '"A, B" , C', 'Source Code Pro']) {
+      expect(isFontFamily(ok), ok).toBe(true);
+    }
+    for (const bad of ['', '  ', 'Georgia;', 'a !important', ')', 'url(x)', 'A,', ',B', '"open', 'a{b}']) {
+      expect(isFontFamily(bad), bad).toBe(false);
+    }
+  });
+});
+
+describe('DEFAULT_SETTINGS', () => {
+  it('is frozen all the way down, so no caller can change the defaults', () => {
+    const palette = DEFAULT_SETTINGS.palettes.light as { text: string };
+    expect(() => (palette.text = '#000000')).toThrow(TypeError);
+    expect(() => ((DEFAULT_SETTINGS.lint as { enabled: boolean }).enabled = false)).toThrow(TypeError);
+    expect(DEFAULT_SETTINGS.palettes.light.text).toBe('#1F1F1E');
   });
 });

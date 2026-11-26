@@ -45,7 +45,8 @@
   button[aria-pressed='true'] {
     background: var(--mode-selected-bg);
     font-weight: 600;
-    color: var(--accent);
+    /* Accent text on the accent tint falls below 4.5:1 in light. */
+    color: var(--text);
     box-shadow: var(--mode-selected-shadow);
   }
 

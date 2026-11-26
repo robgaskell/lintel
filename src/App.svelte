@@ -15,7 +15,7 @@
   import { handleCloseRequested } from './lib/os/window';
   import { renderDelayMs } from './lib/render/scrollSync';
   import { loadSettings, settings } from './lib/settings/settings.svelte';
-  import { applyTheme, followTheme } from './lib/theme/theme';
+  import { followTheme } from './lib/theme/theme';
   import EmptyState from './lib/ui/EmptyState.svelte';
   import StatusBar from './lib/ui/StatusBar.svelte';
 
@@ -82,14 +82,14 @@
     const showError = (err: unknown) => message(String(err), { title: 'Lintel', kind: 'error' });
     let disposed = false;
     let stopMenu = () => {};
-    // The defaults apply until the stored settings arrive (Ruling 128).
-    const stopTheme = followTheme(() => settings);
-    // Settings decide whether Open Recent shows; a failed load keeps the defaults.
+    let stopTheme = () => {};
+    // Settings decide whether Open Recent shows; a failed load keeps the defaults. Until they
+    // load, the theme is the one main.ts restored, so a forced theme never flashes (Ruling 150).
     loadSettings()
       .catch(showError)
       .then(() => {
         if (disposed) return;
-        applyTheme(settings);
+        stopTheme = followTheme(() => settings);
         stopMenu = syncAppMenu(menuHandlers, showError);
       });
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
@@ -160,8 +160,8 @@
     height: 100%;
   }
 
-  /* Dockview's light theme forces color-scheme: light; take the resolved theme instead. */
-  :global(.dockview-theme-light.lintel-dock) {
+  /* Dockview's theme classes force a color-scheme; take the resolved theme instead. */
+  :global(:is(.dockview-theme-light, .dockview-theme-dark).lintel-dock) {
     color-scheme: inherit;
     --dv-group-view-background-color: var(--editor-bg);
     --dv-tabs-and-actions-container-background-color: var(--tab-strip);

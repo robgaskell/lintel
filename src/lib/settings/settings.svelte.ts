@@ -30,7 +30,7 @@ export interface Settings {
   remoteImages: RemoteImagesChoice;
 }
 
-export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
+export const DEFAULT_SETTINGS: Readonly<Settings> = deepFreeze({
   version: 1,
   theme: 'system',
   palettes: {
@@ -57,7 +57,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   lint: { enabled: true, rules: { default: true } },
   updates: { autoCheck: true },
   remoteImages: 'ask',
-});
+} satisfies Settings);
 
 const FILE = 'settings.json';
 const CHANGED = 'lintel://settings-changed';
@@ -162,8 +162,8 @@ const READERS: { [K in Exclude<keyof Settings, 'version'>]: Reader<Settings[K]> 
     const dark = readPalette(value.dark);
     return light && dark ? { light, dark } : undefined;
   },
-  readingFont: readString,
-  editorFont: readString,
+  readingFont: readFont,
+  editorFont: readFont,
   fontSize: intIn(12, 24),
   defaultMode: oneOf(['edit', 'split', 'read']),
   recentLimit: intIn(0, 20),
@@ -189,8 +189,20 @@ function intIn(min: number, max: number): Reader<number> {
       : undefined;
 }
 
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
+// A family is a quoted string or a run of unquoted words; anything else, such as `;`,
+// braces or `!important`, could end the declaration it is put in.
+const FAMILY = String.raw`(?:"[^"\\;{}]*"|'[^'\\;{}]*'|[A-Za-z0-9_-]+(?:[ ]+[A-Za-z0-9_-]+)*)`;
+const FONT_FAMILY = new RegExp(String.raw`^\s*${FAMILY}(?:\s*,\s*${FAMILY})*\s*$`);
+
+/** True for a CSS font-family list such as `"SF Mono", Menlo, monospace`. */
+export function isFontFamily(value: string): boolean {
+  return FONT_FAMILY.test(value);
+}
+
+// '' means the system font; any other value must be a font-family list (Ruling 152).
+function readFont(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value === '' || isFontFamily(value) ? value : '';
 }
 
 const COLOUR = /^#[0-9A-Fa-f]{6}$/;
@@ -202,6 +214,13 @@ function readPalette(value: unknown): Palette | undefined {
     return undefined;
   }
   return Object.fromEntries(keys.map((key) => [key, value[key]])) as unknown as Palette;
+}
+
+function deepFreeze<T extends object>(value: T): Readonly<T> {
+  for (const child of Object.values(value)) {
+    if (typeof child === 'object' && child !== null) deepFreeze(child);
+  }
+  return Object.freeze(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

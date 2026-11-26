@@ -1,7 +1,7 @@
 /*
- * --bg --text --accent --link --code-bg --chrome --border --muted, the fonts and sizes
- * are set on <html> by the theme engine (src/lib/theme/theme.ts). The tokens below have
- * no palette source, so each theme has a fixed set (Ruling 129).
+ * The palette variables and the surfaces derived from them are set on <html> by the theme
+ * engine (src/lib/theme/theme.ts). Everything below maps onto them, except the syntax
+ * colours and a shadow, which have a fixed set per theme (Rulings 129, 148).
  */
 :root {
   --editor-bg: var(--bg);
@@ -9,91 +9,107 @@
   --preview-text: var(--text);
   --preview-link: var(--link);
   --preview-code-bg: var(--code-bg);
+  --toolbar-border: var(--border);
+  --toolbar-divider: var(--border);
+  --toolbar-icon: var(--text);
+  --toolbar-hover: var(--hover);
+  --mode-bg: var(--inset);
+  --mode-text: var(--muted-strong);
+  --mode-selected-bg: var(--accent-tint);
+  --tab-strip: var(--chrome);
+  --tab-close: var(--muted);
+  --tab-close-hover-bg: var(--hover);
+  --preview-code-border: var(--border);
+  --preview-quote-border: var(--border);
+  --preview-quote-text: var(--muted-strong);
+  --preview-rule: var(--border);
+  --preview-table-border: var(--border);
+  --preview-table-head: var(--chrome);
+  --card-bg: var(--chrome);
+  --card-border: var(--border);
+  --card-label: var(--muted);
+  --pill-bg: var(--inset);
+  --outline-bg: var(--chrome);
+  --outline-label: var(--muted);
+  --outline-text-2: var(--muted-strong);
+  --outline-text-3: var(--muted);
+  --outline-active: var(--accent-tint);
 
-  --muted-strong: #4b4b48;
-  --active-line: #f3f6fd;
-  --selection: #d4e0fb;
-  --selection-unfocused: #e4e4e1;
-  --search-match: #fde68a;
-  --search-match-current: #fbbf24;
   --editor-code: #b42318;
-  --toolbar-border: #e4e4e1;
-  --toolbar-divider: #e0e0dd;
-  --toolbar-icon: #2e2e2c;
-  --toolbar-hover: rgba(0, 0, 0, 0.06);
-  --mode-bg: #eeeeec;
-  --mode-text: #4b4b48;
-  --mode-selected-bg: #ffffff;
-  --mode-selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  --tab-strip: #ececea;
-  --tab-close: #6b6b67;
-  --tab-close-hover-bg: rgba(0, 0, 0, 0.07);
-  --preview-code-border: #e8e8e5;
   --preview-code-keyword: #1d4ed8;
   --preview-code-string: #15803d;
   --preview-code-title: #9a3412;
   --preview-code-comment: #6b6b67;
-  --preview-quote-border: #dadad7;
-  --preview-quote-text: #4b4b48;
-  --preview-rule: #ececea;
-  --preview-table-border: #e0e0dd;
-  --preview-table-head: #f8f8f7;
-  /* Front matter card and diagram boxes, from the Reading artboard. */
-  --card-bg: #f8f8f7;
-  --card-border: #e0e0dd;
-  --card-label: #6b6b67;
-  --pill-bg: #ececea;
-  /* Outline panel and status bar, from the Main and Reading artboards. */
-  --outline-bg: #f8f8f7;
-  --outline-label: #5f5f5b;
-  --outline-text-2: #3a3a38;
-  --outline-text-3: #5f5f5b;
-  --outline-active: #e8eefc;
   --lint-warning: #b45309;
+  --mode-selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
   color-scheme: light;
 }
 
 /* Keyed on the resolved theme, not the OS, so a forced Light or Dark holds (Ruling 131). */
 :root[data-theme='dark'] {
-  --muted-strong: #c4c4c0;
-  --active-line: #22262e;
-  --selection: #2e3d5c;
-  --selection-unfocused: #2c2c2a;
-  --search-match: #5c4a12;
-  --search-match-current: #7a5c0c;
   --editor-code: #ff9e8a;
-  --toolbar-border: #2c2c2a;
-  --toolbar-divider: #3a3a38;
-  --toolbar-icon: #d6d6d2;
-  --toolbar-hover: rgba(255, 255, 255, 0.08);
-  --mode-bg: #2c2c30;
-  --mode-text: #b4b4bb;
-  --mode-selected-bg: #3a3a40;
-  --mode-selected-shadow: none;
-  --tab-strip: #252524;
-  --tab-close: #a3a39e;
-  --tab-close-hover-bg: rgba(255, 255, 255, 0.1);
-  --preview-code-border: #333337;
   --preview-code-keyword: #8ab4ff;
   --preview-code-string: #86c99a;
   --preview-code-title: #f0b37e;
   --preview-code-comment: #9a9a95;
-  --preview-quote-border: #4a4a52;
-  --preview-quote-text: #c4c4ca;
-  --preview-rule: #333337;
-  --preview-table-border: #36363b;
-  --preview-table-head: #26262a;
-  --card-bg: #26262a;
-  --card-border: #36363b;
-  --card-label: #a0a0a8;
-  --pill-bg: #34343a;
-  --outline-bg: #1c1c1f;
-  --outline-label: #a0a0a8;
-  --outline-text-2: #c4c4ca;
-  --outline-text-3: #a0a0a8;
-  --outline-active: #2a3550;
   --lint-warning: #f0b37e;
+  --mode-selected-shadow: none;
   color-scheme: dark;
+}
+
+/*
+ * First launch only: the default palettes until the engine runs. Later launches start
+ * from the theme main.ts restores (Ruling 150). theme.test.ts keeps these in step.
+ */
+:root:not([data-theme]) {
+  --bg: #ffffff;
+  --text: #1f1f1e;
+  --accent: #2563eb;
+  --link: #2563eb;
+  --code-bg: #f4f4f3;
+  --chrome: #f6f6f6;
+  --border: #e0e0e0;
+  --muted: #70706f;
+  --font-read: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-edit: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --size-read: 16px;
+  --size-edit: 14px;
+  --active-line: #f4f7fe;
+  --muted-strong: #484847;
+  --inset: #e9e9e9;
+  --accent-tint: #dde4f5;
+  --hover: rgba(31, 31, 30, 0.06);
+  --selection: #d3e0fb;
+  --selection-unfocused: #e9e9e9;
+  --search-match: #fddc87;
+  --search-match-current: #fbc53a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #181817;
+    --text: #ececea;
+    --accent: #8ab4ff;
+    --link: #8ab4ff;
+    --code-bg: #1f1f1e;
+    --chrome: #151514;
+    --border: #363635;
+    --muted: #8a8a89;
+    --font-read: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --font-edit: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --size-read: 16px;
+    --size-edit: 14px;
+    --active-line: #21242a;
+    --muted-strong: #bbbbba;
+    --inset: #222221;
+    --accent-tint: #2c3543;
+    --hover: rgba(236, 236, 234, 0.08);
+    --selection: #3a475d;
+    --selection-unfocused: #2d2d2c;
+    --search-match: #5c4a1b;
+    --search-match-current: #7e631d;
+    color-scheme: dark;
+  }
 }
 
 html,

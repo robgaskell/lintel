@@ -8,6 +8,7 @@ import {
 import { mount, unmount } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import { closeDocWithPrompt, docs, type DocState } from '../docs/store.svelte';
+import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
 import DocPane from './DocPane.svelte';
 import Tab from './Tab.svelte';
 import './vendor/dockview.css';
@@ -23,17 +24,22 @@ type GridNode =
 
 const COMPONENT = 'doc';
 
+function dockTheme(theme: ResolvedTheme) {
+  return { name: `lintel-${theme}`, className: `dockview-theme-${theme} lintel-dock` };
+}
+
 /** The tabbed editor groups of one window, one panel per open doc (panel id = doc id). */
 export class Workspace {
   private readonly api: DockviewApi;
   private readonly panes = new Map<string, HTMLElement>();
   private readonly closing = new Map<string, Promise<boolean>>();
   private readonly focusListener: { dispose(): void };
+  private readonly stopTheme: () => void;
   private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
 
   constructor(private readonly el: HTMLElement) {
     this.api = createDockview(el, {
-      theme: { name: 'lintel', className: 'dockview-theme-light lintel-dock' },
+      theme: dockTheme('light'),
       disableFloatingGroups: true,
       defaultTabComponent: COMPONENT,
       createComponent: () => this.createPane(),
@@ -42,6 +48,8 @@ export class Workspace {
     this.focusListener = this.api.onDidActivePanelChange((e) => {
       if (e.panel) this.focusEditor(e.panel.id);
     });
+    // Dockview's own overlay colours (drag targets, scrollbars) follow the app theme.
+    this.stopTheme = resolvedTheme.subscribe((theme) => this.api.updateOptions({ theme: dockTheme(theme) }));
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
   }
@@ -114,6 +122,7 @@ export class Workspace {
   dispose(): void {
     this.el.removeEventListener('keydown', this.onKeydown, true);
     this.focusListener.dispose();
+    this.stopTheme();
     this.api.dispose();
   }
 

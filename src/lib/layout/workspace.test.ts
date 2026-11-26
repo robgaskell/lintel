@@ -3,6 +3,8 @@ import { flushSync } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
+import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
+import { applyTheme } from '../theme/theme';
 import { Workspace } from './workspace';
 
 vi.mock('../ipc', () => ({
@@ -10,6 +12,7 @@ vi.mock('../ipc', () => ({
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
 }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: async () => {} }) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
   save: vi.fn(),
@@ -316,5 +319,19 @@ describe('Workspace', () => {
 
     await vi.waitFor(() => expect(document.activeElement).toBe(editor()));
     elsewhere.remove();
+  });
+});
+
+describe('Workspace theme (Ruling 152)', () => {
+  it("switches dockview's theme class with the resolved theme", () => {
+    const themed = () => host.querySelector('.lintel-dock')!;
+    expect(themed().classList.contains('dockview-theme-light')).toBe(true);
+
+    applyTheme({ ...structuredClone(DEFAULT_SETTINGS), theme: 'dark' } as Settings);
+    expect(themed().classList.contains('dockview-theme-dark')).toBe(true);
+    expect(themed().classList.contains('dockview-theme-light')).toBe(false);
+
+    applyTheme({ ...structuredClone(DEFAULT_SETTINGS), theme: 'light' } as Settings);
+    expect(themed().classList.contains('dockview-theme-light')).toBe(true);
   });
 });

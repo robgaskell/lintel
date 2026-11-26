@@ -67,7 +67,7 @@
     gap: 12px;
     flex-wrap: wrap;
     padding: 6px 12px;
-    background: var(--editor-bg);
+    background: var(--chrome);
     border-bottom: 1px solid var(--toolbar-border);
   }
 
