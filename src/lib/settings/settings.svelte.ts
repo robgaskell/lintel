@@ -91,34 +91,38 @@ export function loadSettings(): Promise<Settings> {
   });
 }
 
-/** Saves the patched settings to settings.json, then tells every window. */
+/**
+ * Saves the patched keys to settings.json, then tells every window. Only those keys are
+ * written and sent: another window's copy may be stale, and must not undo newer values
+ * (Ruling 140). Missing keys load as their defaults.
+ */
 export function updateSettings(patch: Partial<Settings>): Promise<void> {
   return oneAtATime(async () => {
-    // Merged inside the queue, so an update made at the same time is not overwritten.
-    const changes = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-    const next: Settings = { ...$state.snapshot(settings), ...changes, version: 1 };
+    const changes: Partial<Settings> = {
+      ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
+      version: 1,
+    };
     const store = await settingsStore();
-    // Every key is written, so the file is whole even if it started empty.
-    for (const [key, value] of Object.entries(next)) await store.set(key, value);
+    for (const [key, value] of Object.entries(changes)) await store.set(key, value);
     await store.save();
-    Object.assign(settings, next);
-    await emit(CHANGED, next);
+    Object.assign(settings, changes);
+    await emit(CHANGED, changes);
   });
 }
 
 /**
- * Calls `cb` after any window changes settings, this one included. Returns an unsubscribe.
- * `onError` hears about a listener that could not be registered.
+ * Calls `cb` with this window's merged settings after any window changes them, this one
+ * included. Returns an unsubscribe. `onError` hears about a listener that could not be registered.
  */
 export function onSettingsChanged(
   cb: (s: Settings) => void,
   onError: (err: unknown) => void = (err) => console.error('Could not watch settings:', err),
 ): () => void {
   let active = true;
-  const unlisten = listen<Settings>(CHANGED, ({ payload }) => {
+  const unlisten = listen<Partial<Settings>>(CHANGED, ({ payload }) => {
     if (!active) return;
     Object.assign(settings, payload);
-    cb(payload);
+    cb($state.snapshot(settings) as Settings);
   });
   unlisten.catch(onError);
   return () => {

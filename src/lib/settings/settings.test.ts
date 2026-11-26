@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeTextFile } from '../ipc';
+import * as fakes from '../../test/fakes';
 import { calls, events, fakeStore, loads, resetFakes } from '../../test/fakes';
 import {
   DEFAULT_SETTINGS,
@@ -188,7 +189,7 @@ describe('loadSettings', () => {
 });
 
 describe('updateSettings', () => {
-  it('saves the whole settings object, then tells every window', async () => {
+  it('saves only the patched keys and the version, then tells every window (Ruling 140)', async () => {
     const seen = vi.fn();
     onSettingsChanged(seen);
     await Promise.resolve();
@@ -198,7 +199,7 @@ describe('updateSettings', () => {
     expect(settings.recentLimit).toBe(0);
     expect(await store().get('recentLimit')).toBe(0);
     expect(await store().get('version')).toBe(1);
-    expect(await store().get('theme')).toBe('system');
+    expect([...store().data.keys()].sort()).toEqual(['recentLimit', 'version']);
     expect(store().saves).toBe(1);
     expect(calls.indexOf('save settings.json')).toBeLessThan(
       calls.indexOf('emit lintel://settings-changed'),
@@ -232,6 +233,45 @@ describe('updateSettings', () => {
 
     expect(loaded.theme).toBe('dark');
     expect(loaded.fontSize).toBe(14);
+  });
+});
+
+describe('two windows (Ruling 140)', () => {
+  // A second module instance is a second window's JS context, sharing the store and events.
+  async function otherWindow() {
+    vi.resetModules();
+    vi.doMock('@tauri-apps/plugin-store', () => fakes.storeModule);
+    vi.doMock('@tauri-apps/api/event', () => fakes.eventModule);
+    const instance = await import('./settings.svelte');
+    await instance.loadSettings();
+    return instance;
+  }
+
+  it("keeps one window's change when the other, holding stale settings, changes another key", async () => {
+    const settingsWindow = await otherWindow();
+    await settingsWindow.updateSettings({ theme: 'dark' });
+    expect(settings.theme).toBe('system');
+
+    await updateSettings({ remoteImages: 'load' });
+
+    expect(await store().get('theme')).toBe('dark');
+    expect(await store().get('remoteImages')).toBe('load');
+    expect((await (await otherWindow()).loadSettings())).toMatchObject({ theme: 'dark', remoteImages: 'load' });
+  });
+
+  it("sends only the change, so a listening window keeps its newer values", async () => {
+    const settingsWindow = await otherWindow();
+    const seen = vi.fn();
+    settingsWindow.onSettingsChanged(seen);
+    await Promise.resolve();
+    await settingsWindow.updateSettings({ fontSize: 20 });
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
+
+    await updateSettings({ remoteImages: 'block' });
+
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(2));
+    expect(seen).toHaveBeenLastCalledWith(expect.objectContaining({ fontSize: 20, remoteImages: 'block' }));
+    expect(settingsWindow.settings).toMatchObject({ fontSize: 20, remoteImages: 'block' });
   });
 });
 
