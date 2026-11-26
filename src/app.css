@@ -35,6 +35,13 @@
   --card-border: #e0e0dd;
   --card-label: #6b6b67;
   --pill-bg: #ececea;
+  /* Outline panel and status bar, from the Main and Reading artboards. */
+  --outline-bg: #f8f8f7;
+  --outline-label: #5f5f5b;
+  --outline-text-2: #3a3a38;
+  --outline-text-3: #5f5f5b;
+  --outline-active: #e8eefc;
+  --lint-warning: #b45309;
   color-scheme: light dark;
 }
 
@@ -74,6 +81,12 @@
     --card-border: #36363b;
     --card-label: #a0a0a8;
     --pill-bg: #34343a;
+    --outline-bg: #1c1c1f;
+    --outline-label: #a0a0a8;
+    --outline-text-2: #c4c4ca;
+    --outline-text-3: #a0a0a8;
+    --outline-active: #2a3550;
+    --lint-warning: #f0b37e;
   }
 }
 

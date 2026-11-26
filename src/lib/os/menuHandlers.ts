@@ -14,10 +14,17 @@ export interface MenuHandlerDeps {
     'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate'
   >;
   currentWindow(): { destroy(): Promise<void> };
+  outline: { visible: boolean };
+  setOutlineChecked(checked: boolean): Promise<void>;
 }
 
 /** What each menu item does. Every handler shows its own errors in a dialog. */
-export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps): MenuHandlers {
+export function makeMenuHandlers({
+  workspace,
+  currentWindow,
+  outline,
+  setOutlineChecked,
+}: MenuHandlerDeps): MenuHandlers {
   async function saveActive(as: boolean) {
     const id = workspace.activeDocId();
     if (!id) return;
@@ -41,7 +48,11 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
     saveAs: guarded(() => saveActive(true)),
     closeTab: guarded(() => closeTabOrWindow(workspace, currentWindow())),
     setMode: (mode) => guarded(() => setMode(mode))(),
-    toggleOutline: notYet,
+    toggleOutline: guarded(() => {
+      outline.visible = !outline.visible;
+      // The native item flips its own tick on click; setting it keeps the two in step.
+      return setOutlineChecked(outline.visible);
+    }),
     print: notYet,
     exportPdf: notYet,
     exportHtml: notYet,

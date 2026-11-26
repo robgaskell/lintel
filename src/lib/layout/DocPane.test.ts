@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, within } from '@testing-library/svelte';
 import { EditorView } from '@codemirror/view';
 import { fakePreviewLayout } from '../../test/layout';
+import { cursors } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane from './DocPane.svelte';
+import { outline } from './outline.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
@@ -15,6 +17,7 @@ const NOTICE = 'Large file: preview is off. Switch to Split or Read to render it
 beforeEach(() => {
   docs.clear();
   largeFileNotices.clear();
+  outline.visible = true;
 });
 
 afterEach(() => vi.useRealTimers());
@@ -143,5 +146,119 @@ describe('DocPane scroll sync', () => {
 
     expect(measure).toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() }));
+  });
+});
+
+describe('DocPane outline', () => {
+  let restoreLayout: () => void;
+  beforeEach(() => (restoreLayout = fakePreviewLayout()));
+  afterEach(() => restoreLayout());
+
+  // With the fake layout each top-level block is 100 px: A at 0, C at 200, E at 400.
+  const src = '# A\n\nb\n\n## C\n\nd\n\n### E\n\nf\n';
+
+  function links(getByRole: (role: string, options: { name: string }) => HTMLElement) {
+    return within(getByRole('navigation', { name: 'Outline' })).getAllByRole('link');
+  }
+  const current = (all: HTMLElement[]) =>
+    all.filter((a) => a.getAttribute('aria-current') === 'true').map((a) => a.textContent);
+  const editorOf = (q: (s: string) => Element | null) =>
+    EditorView.findFromDOM(q('.cm-editor') as HTMLElement)!;
+
+  it('lists headings in Edit mode, where nothing is rendered (Ruling 107)', () => {
+    const { getByRole, q } = pane('edit', src);
+
+    expect(q('.preview')).toBeNull();
+    expect(links(getByRole).map((a) => a.textContent)).toEqual(['A', 'C', 'E']);
+    expect(current(links(getByRole))).toEqual(['A']);
+  });
+
+  it('updates the headings after an edit only after the debounce', () => {
+    vi.useFakeTimers();
+    const { doc, getByRole } = pane('edit', src);
+
+    doc.text = '# Only\n';
+    flushSync();
+    vi.advanceTimersByTime(149);
+    flushSync();
+    expect(links(getByRole)).toHaveLength(3);
+
+    vi.advanceTimersByTime(1);
+    flushSync();
+    expect(links(getByRole).map((a) => a.textContent)).toEqual(['Only']);
+  });
+
+  it('hides the panel when the outline is turned off for the window', () => {
+    const { queryByRole } = pane('split', src);
+    expect(queryByRole('navigation', { name: 'Outline' })).not.toBeNull();
+
+    outline.visible = false;
+    flushSync();
+    expect(queryByRole('navigation', { name: 'Outline' })).toBeNull();
+  });
+
+  it('in Split, a pick puts the cursor on the heading and scrolls both sides (Ruling 108)', async () => {
+    const { getByRole, q } = pane('split', src);
+    const view = editorOf(q);
+    const dispatch = vi.spyOn(view, 'dispatch');
+
+    await fireEvent.click(links(getByRole)[1]);
+
+    expect(view.state.selection.main.head).toBe(view.state.doc.line(5).from);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() }));
+    expect(q('.preview')!.scrollTop).toBe(200);
+    expect(current(links(getByRole))).toEqual(['C']);
+  });
+
+  it('in Edit, a pick moves the cursor and marks the heading at once', async () => {
+    const { getByRole, q } = pane('edit', src);
+    const view = editorOf(q);
+
+    await fireEvent.click(links(getByRole)[2]);
+
+    expect(view.state.selection.main.head).toBe(view.state.doc.line(9).from);
+    expect(current(links(getByRole))).toEqual(['E']);
+  });
+
+  it('in Read, a pick scrolls the preview and leaves the hidden editor alone', async () => {
+    const { getByRole, q } = pane('read', src);
+    const view = editorOf(q);
+
+    await fireEvent.click(links(getByRole)[1]);
+
+    expect(q('.preview')!.scrollTop).toBe(200);
+    expect(view.state.selection.main.head).toBe(0);
+    expect(current(links(getByRole))).toEqual(['C']);
+  });
+
+  it('marks the heading in view as the user scrolls the preview', () => {
+    const { getByRole, q } = pane('read', src);
+    const preview = q('.preview')!;
+
+    preview.scrollTop = 250;
+    preview.dispatchEvent(new Event('scroll'));
+    flushSync();
+
+    expect(current(links(getByRole))).toEqual(['C']);
+  });
+});
+
+describe('DocPane cursor', () => {
+  it('reports the cursor line and column for the status bar (Ruling 109)', () => {
+    const { doc, q } = pane('edit', 'ab\ncdef\n');
+    expect(cursors.get(doc.id)).toEqual({ line: 1, col: 1 });
+
+    const view = EditorView.findFromDOM(q('.cm-editor') as HTMLElement)!;
+    view.dispatch({ selection: { anchor: 6 } });
+    expect(cursors.get(doc.id)).toEqual({ line: 2, col: 4 });
+
+    view.dispatch({ changes: { from: 0, insert: 'x\n' } });
+    expect(cursors.get(doc.id)).toEqual({ line: 3, col: 4 });
+  });
+
+  it('forgets the cursor when the pane goes', () => {
+    const { doc, unmount } = pane('edit', 'a');
+    unmount();
+    expect(cursors.has(doc.id)).toBe(false);
   });
 });

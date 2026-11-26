@@ -1,5 +1,7 @@
 import {
+  CheckMenuItem,
   Menu,
+  type CheckMenuItemOptions,
   type MenuItemOptions,
   type PredefinedMenuItemOptions,
   type SubmenuOptions,
@@ -11,6 +13,7 @@ import type { ViewMode } from '../docs/store.svelte';
 import { openFindReplace } from '../editor/commands';
 import { docs } from '../docs/store.svelte';
 import { activeDocId, activeView } from '../editor/views';
+import { outline } from '../layout/outline.svelte';
 import { onSettingsChanged, settings } from '../settings/settings.svelte';
 import { currentPlatform, type Platform } from './platform';
 import { getRecent, knownRecent, onRecentChanged } from './recent';
@@ -33,10 +36,22 @@ export interface MenuHandlers {
   openSettings(): void;
 }
 
-type MenuEntry = MenuItemOptions | PredefinedMenuItemOptions | SubmenuOptions;
+type MenuEntry =
+  | MenuItemOptions
+  | CheckMenuItemOptions
+  | PredefinedMenuItemOptions
+  | SubmenuOptions
+  | CheckMenuItem;
 
 let installing: Promise<void> = Promise.resolve();
 let generation = 0;
+// View > Show Outline in the current menu bar, kept so its tick can change without a rebuild.
+let outlineItem: CheckMenuItem | null = null;
+
+/** Ticks or clears View > Show Outline (Ruling 110). */
+export async function setOutlineChecked(checked: boolean): Promise<void> {
+  await outlineItem?.setChecked(checked);
+}
 
 // One rebuild per burst, such as opening several files at once.
 const COALESCE_MS = 100;
@@ -115,12 +130,36 @@ export function buildAppMenu(h: MenuHandlers, recent: string[] | null): Promise<
 }
 
 async function install(h: MenuHandlers, recent: string[] | null): Promise<void> {
+  const checked = outline.visible;
   const entries = menuEntries(h, recent, currentPlatform());
   stampBuildIds(entries, ++generation);
+  const check = await liveCheckItem(entries, 'toggle-outline');
   const menu = await Menu.new({ items: entries });
   const previous = await menu.setAsAppMenu();
+  const previousCheck = outlineItem;
+  outlineItem = check;
   // Each menu holds native resources and action channels until closed (Ruling 37).
   await previous?.close();
+  await previousCheck?.close();
+  // The outline may have been toggled while this menu was being built.
+  if (outline.visible !== checked) await check?.setChecked(outline.visible);
+}
+
+/**
+ * Replaces a submenu's check item options with a live item and returns it. Keeping the
+ * item is the only way to tick it later: Menu.get finds top-level items only.
+ */
+async function liveCheckItem(entries: MenuEntry[], base: string): Promise<CheckMenuItem | null> {
+  for (const entry of entries) {
+    if (!('items' in entry) || !entry.items) continue;
+    const items = entry.items as MenuEntry[];
+    const i = items.findIndex((item) => 'checked' in item && baseId(item.id ?? '') === base);
+    if (i === -1) continue;
+    const item = await CheckMenuItem.new(items[i] as CheckMenuItemOptions);
+    items[i] = item;
+    return item;
+  }
+  return null;
 }
 
 /**
@@ -235,7 +274,12 @@ export function menuEntries(
       mode('split', 'Split', '2'),
       mode('read', 'Read', '3'),
       separator,
-      { id: 'toggle-outline', text: 'Show Outline', enabled: false, action: () => h.toggleOutline() },
+      {
+        id: 'toggle-outline',
+        text: 'Show Outline',
+        checked: outline.visible,
+        action: () => h.toggleOutline(),
+      },
     ],
   };
 

@@ -26,6 +26,8 @@ function deps(): MenuHandlerDeps {
       activate: vi.fn(),
     },
     currentWindow: vi.fn(() => ({ destroy: vi.fn(async () => {}) })),
+    outline: { visible: true },
+    setOutlineChecked: vi.fn(async () => {}),
   };
 }
 
@@ -137,6 +139,20 @@ describe('makeMenuHandlers', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(doc.mode).toBe('split');
+    expect(message).not.toHaveBeenCalled();
+  });
+
+  it('toggles the outline and ticks the menu item to match (Ruling 110)', async () => {
+    const d = deps();
+    const h = makeMenuHandlers(d);
+
+    h.toggleOutline();
+    await vi.waitFor(() => expect(d.setOutlineChecked).toHaveBeenLastCalledWith(false));
+    expect(d.outline.visible).toBe(false);
+
+    h.toggleOutline();
+    await vi.waitFor(() => expect(d.setOutlineChecked).toHaveBeenLastCalledWith(true));
+    expect(d.outline.visible).toBe(true);
     expect(message).not.toHaveBeenCalled();
   });
 

@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Menu } from '@tauri-apps/api/menu';
+import { CheckMenuItem, Menu } from '@tauri-apps/api/menu';
 import { history } from '@codemirror/commands';
 import { search } from '@codemirror/search';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { createDoc } from '../docs/store.svelte';
+import { outline } from '../layout/outline.svelte';
 import { registerView, setActiveDocSource } from '../editor/views';
 import { events, resetFakes } from '../../test/fakes';
 import { loadSettings, updateSettings } from '../settings/settings.svelte';
-import { buildAppMenu, menuEntries, syncAppMenu, type MenuHandlers } from './menu';
+import {
+  buildAppMenu,
+  menuEntries,
+  setOutlineChecked,
+  syncAppMenu,
+  type MenuHandlers,
+} from './menu';
 import { getRecent, knownRecent } from './recent';
 
 // Models Tauri: one app-wide id -> handler map; a later item with the same id replaces
@@ -46,6 +53,19 @@ vi.mock('@tauri-apps/api/menu', () => ({
       return menu;
     }),
   },
+  CheckMenuItem: {
+    new: vi.fn(async (opts: { id: string; action: (id: string) => void; checked: boolean }) => {
+      tauri.channels.set(opts.id, opts.action);
+      return {
+        id: opts.id,
+        checked: opts.checked,
+        setChecked: vi.fn(async function (this: { checked: boolean }, checked: boolean) {
+          this.checked = checked;
+        }),
+        close: vi.fn(async () => {}),
+      };
+    }),
+  },
 }));
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
@@ -69,6 +89,8 @@ beforeEach(async () => {
   vi.mocked(knownRecent).mockImplementation(async (limit) => ['/notes/a.md'].slice(0, limit));
   await loadSettings();
   vi.mocked(Menu.new).mockClear();
+  vi.mocked(CheckMenuItem.new).mockClear();
+  outline.visible = true;
 });
 
 type Entry = {
@@ -155,8 +177,8 @@ describe('menuEntries', () => {
   it('disables the items whose features come later', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
     const later = ['settings', 'print', 'export-pdf', 'export-html', 'export-docx'];
-    for (const id of [...later, 'toggle-outline']) expect(byId(entries, id).enabled).toBe(false);
-    const ready = ['new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find'];
+    for (const id of later) expect(byId(entries, id).enabled).toBe(false);
+    const ready = ['new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'];
     for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);
     }
@@ -176,6 +198,22 @@ describe('menuEntries', () => {
       item.action!();
       expect(h.setMode).toHaveBeenLastCalledWith(mode);
     }
+  });
+
+  it('makes View > Show Outline a check item that follows the outline and toggles it (Ruling 110)', () => {
+    const h = handlers();
+    const item = byId(menuEntries(h, [], 'macos') as Entry[], 'toggle-outline') as Entry & {
+      checked?: boolean;
+    };
+    expect(item.text).toBe('Show Outline');
+    expect(item.checked).toBe(true);
+
+    item.action!();
+    expect(h.toggleOutline).toHaveBeenCalledOnce();
+
+    outline.visible = false;
+    const hidden = byId(menuEntries(h, [], 'macos') as Entry[], 'toggle-outline') as { checked?: boolean };
+    expect(hidden.checked).toBe(false);
   });
 
   it('leaves the hidden editor alone in Read: Undo, Redo and Find do nothing (Ruling 97)', () => {
@@ -262,6 +300,36 @@ describe('buildAppMenu', () => {
     expect(h.quit).toHaveBeenCalledOnce();
     expect(h.save).toHaveBeenCalledOnce();
     expect(vi.mocked(Menu.new)).toHaveBeenCalledTimes(2);
+  });
+
+  it('builds Show Outline as a check item and ticks it without a rebuild (Ruling 110)', async () => {
+    const h = handlers();
+    await buildAppMenu(h, []);
+    const first = await vi.mocked(CheckMenuItem.new).mock.results[0].value;
+    expect(first.checked).toBe(true);
+
+    await setOutlineChecked(false);
+
+    expect(first.setChecked).toHaveBeenLastCalledWith(false);
+    expect(Menu.new).toHaveBeenCalledOnce();
+  });
+
+  it('moves the tick to the new item after a rebuild, which starts with the current value', async () => {
+    const h = handlers();
+    await buildAppMenu(h, []);
+    const first = await vi.mocked(CheckMenuItem.new).mock.results[0].value;
+    outline.visible = false;
+
+    await buildAppMenu(h, ['/notes/a.md']);
+    const second = await vi.mocked(CheckMenuItem.new).mock.results[1].value;
+    expect(second.checked).toBe(false);
+    expect(first.close).toHaveBeenCalled();
+
+    click('toggle-outline');
+    expect(h.toggleOutline).toHaveBeenCalledOnce();
+    await setOutlineChecked(true);
+    expect(second.setChecked).toHaveBeenLastCalledWith(true);
+    expect(first.setChecked).not.toHaveBeenCalledWith(true);
   });
 });
 

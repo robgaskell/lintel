@@ -2,21 +2,82 @@
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { message } from '@tauri-apps/plugin-dialog';
+  import { cursors } from './lib/docs/cursor.svelte';
+  import { countWords, saveStateOf } from './lib/docs/stats';
+  import { docs } from './lib/docs/store.svelte';
   import { setActiveDocSource } from './lib/editor/views';
+  import { outline } from './lib/layout/outline.svelte';
   import { Workspace } from './lib/layout/workspace';
-  import { syncAppMenu } from './lib/os/menu';
+  import { setOutlineChecked, syncAppMenu, type MenuHandlers } from './lib/os/menu';
   import { makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
+  import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
   import { handleCloseRequested } from './lib/os/window';
-  import { loadSettings } from './lib/settings/settings.svelte';
+  import { renderDelayMs } from './lib/render/scrollSync';
+  import { loadSettings, settings } from './lib/settings/settings.svelte';
+  import EmptyState from './lib/ui/EmptyState.svelte';
+  import StatusBar from './lib/ui/StatusBar.svelte';
+
+  const RECENT_SHOWN = 5;
 
   let host: HTMLElement;
+  let handlers = $state<MenuHandlers | null>(null);
+  let activeId = $state<string | null>(null);
+  const active = $derived(activeId === null ? undefined : docs.get(activeId));
+  const cursor = $derived(activeId === null ? undefined : cursors.get(activeId));
+
+  // Counted at once on a tab switch, then debounced like the preview (Ruling 109).
+  let words = $state(0);
+  let countedId: string | null = null;
+  $effect(() => {
+    if (!active) return;
+    const { id, text } = active;
+    if (id !== countedId) {
+      countedId = id;
+      words = countWords(text);
+      return;
+    }
+    const delay = renderDelayMs(new TextEncoder().encode(text).length);
+    const timer = setTimeout(() => (words = countWords(text)), delay);
+    return () => clearTimeout(timer);
+  });
+
+  // Open Recent's first entries for the empty window; the stored list first, then the checked one.
+  let recent = $state<string[]>([]);
+  let recentRequest = 0;
+  function loadRecent() {
+    const request = ++recentRequest;
+    const limit = Math.min(settings.recentLimit, RECENT_SHOWN);
+    const show = (paths: string[]) => {
+      if (request === recentRequest) recent = paths;
+    };
+    void knownRecent(limit)
+      .then(show)
+      .then(() => getRecent(limit))
+      .then(show)
+      .catch((err) => console.error('Could not read the Open Recent list:', err));
+  }
+  $effect(() => {
+    if (docs.size === 0) loadRecent();
+  });
 
   onMount(() => {
     const workspace = new Workspace(host);
     setWorkspace(workspace);
     setActiveDocSource(workspace);
-    const handlers = makeMenuHandlers({ workspace, currentWindow: getCurrentWindow });
+    // onActiveChange makes no first call, so read the current value too (Ruling 111).
+    activeId = workspace.activeDocId();
+    const stopActive = workspace.onActiveChange((id) => (activeId = id));
+    const stopRecent = onRecentChanged(() => {
+      if (docs.size === 0) loadRecent();
+    });
+    handlers = makeMenuHandlers({
+      workspace,
+      currentWindow: getCurrentWindow,
+      outline,
+      setOutlineChecked,
+    });
+    const menuHandlers = handlers;
     const showError = (err: unknown) => message(String(err), { title: 'Lintel', kind: 'error' });
     let disposed = false;
     let stopMenu = () => {};
@@ -24,26 +85,73 @@
     loadSettings()
       .catch(showError)
       .then(() => {
-        if (!disposed) stopMenu = syncAppMenu(handlers, showError);
+        if (!disposed) stopMenu = syncAppMenu(menuHandlers, showError);
       });
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
     );
+    // The menu bar is shared, so its tick shows the focused window's outline (Ruling 110).
+    const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) return;
+      setOutlineChecked(outline.visible).catch((err) =>
+        console.error('Could not tick View > Show Outline:', err),
+      );
+    });
     return () => {
       disposed = true;
       stopMenu();
+      stopActive();
+      stopRecent();
       unlistenClose.then((stop) => stop());
+      unlistenFocus.then((stop) => stop());
       setActiveDocSource(null);
       workspace.dispose();
     };
   });
 </script>
 
-<main class="app" bind:this={host}></main>
+<div class="app">
+  <div class="work">
+    <main class="dock" bind:this={host}></main>
+    {#if docs.size === 0 && handlers}
+      <EmptyState
+        {recent}
+        onOpen={handlers.open}
+        onNew={handlers.newDoc}
+        onOpenRecent={handlers.openRecent}
+      />
+    {/if}
+  </div>
+  {#if active}
+    <StatusBar
+      line={cursor?.line ?? 1}
+      col={cursor?.col ?? 1}
+      {words}
+      saveState={saveStateOf(active)}
+      lintCount={null}
+      lintFixable={false}
+      notice={null}
+      update="none"
+      reading={active.mode === 'read'}
+    />
+  {/if}
+</div>
 
 <style>
   .app {
+    display: flex;
+    flex-direction: column;
     height: 100vh;
+  }
+
+  .work {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .dock {
+    height: 100%;
   }
 
   :global(.dockview-theme-light.lintel-dock) {

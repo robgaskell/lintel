@@ -2,14 +2,18 @@
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { EditorView } from '@codemirror/view';
   import Editor from '../editor/Editor.svelte';
+  import Outline from '../ui/Outline.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
+  import { trackCursor } from '../docs/cursor.svelte';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { largeFileNotices } from '../os/open';
-  import { renderMarkdown, type RenderResult } from '../render/markdown';
+  import { extractHeadings } from '../render/headings';
+  import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
   import { createScrollLock, renderDelayMs } from '../render/scrollSync';
   import type { DocState, ViewMode } from '../docs/store.svelte';
+  import { outline } from './outline.svelte';
 
   let { doc }: { doc: DocState } = $props();
 
@@ -21,7 +25,7 @@
   let renderError = $state<string | null>(null);
 
   // First visible source line, from whichever side the user scrolled last.
-  let topLine = 1;
+  let topLine = $state(1);
   // Marks the editor scroll that following the preview causes, so it is not sent back.
   const editorLock = createScrollLock(300);
   let paneHidden = false;
@@ -32,6 +36,7 @@
     editor.scrollDOM.addEventListener('scroll', onEditorScroll, { passive: true });
     cleanups.push(
       registerView(doc.id, editor),
+      trackCursor(doc.id, editor),
       attachEditorContextMenu(editor),
       () => editor.scrollDOM.removeEventListener('scroll', onEditorScroll),
     );
@@ -60,12 +65,28 @@
 
   function scrollEditorTo(line: number) {
     if (!view) return;
-    const n = Math.min(Math.max(1, Math.floor(line)), view.state.doc.lines);
     editorLock.hold();
     // yMargin 0: the default 5 px would leave the line short of the top (Ruling 83).
     view.dispatch({
-      effects: EditorView.scrollIntoView(view.state.doc.line(n).from, { y: 'start', yMargin: 0 }),
+      effects: EditorView.scrollIntoView(lineStart(view, line), { y: 'start', yMargin: 0 }),
     });
+  }
+
+  // Headings can lag the text by a debounce, so the line may no longer exist.
+  function lineStart(editor: EditorView, line: number): number {
+    const n = Math.min(Math.max(1, Math.floor(line)), editor.state.doc.lines);
+    return editor.state.doc.line(n).from;
+  }
+
+  // Ruling 108: the hidden editor in Read is left alone.
+  function pickHeading(heading: Heading) {
+    topLine = heading.line;
+    if (doc.mode !== 'read' && view) {
+      view.dispatch({ selection: { anchor: lineStart(view, heading.line) } });
+      scrollEditorTo(heading.line);
+      view.focus();
+    }
+    if (doc.mode !== 'edit') preview?.scrollToLine(heading.line);
   }
 
   // Debounced render. Showing the preview renders at once; edits wait (spec: Large files).
@@ -99,6 +120,30 @@
     performance.clearMeasures?.('lintel:render');
     performance.measure?.('lintel:render', { start: started, end: performance.now() });
   }
+
+  // The preview's render carries headings; Edit mode extracts its own (Ruling 107).
+  let extracted = $state.raw<Heading[]>([]);
+  let extractedText: string | null = null;
+  let extracting = false;
+  $effect(() => {
+    const text = doc.text;
+    const needed = outline.visible && doc.mode === 'edit';
+    const justNeeded = needed && !extracting;
+    extracting = needed;
+    if (!needed || text === extractedText) return;
+    if (justNeeded) {
+      if (result && renderedText === text) extracted = result.headings;
+      else extracted = extractHeadings(text);
+      extractedText = text;
+      return;
+    }
+    const timer = setTimeout(() => {
+      extracted = extractHeadings(text);
+      extractedText = text;
+    }, renderDelayMs(new TextEncoder().encode(text).length));
+    return () => clearTimeout(timer);
+  });
+  const headings = $derived(doc.mode !== 'edit' && result ? result.headings : extracted);
 
   let shownMode: ViewMode | null = null;
   $effect(() => {
@@ -149,6 +194,9 @@
     <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>
   {/if}
   <div class="panes mode-{doc.mode}">
+    {#if outline.visible}
+      <Outline {headings} activeLine={topLine} onPick={pickHeading} />
+    {/if}
     <!-- Inert in Read, so keys never edit a hidden document. -->
     <div class="editor-host" inert={doc.mode === 'read'}>
       <Editor {doc} onChange={(text) => (doc.text = text)} {onReady} />
