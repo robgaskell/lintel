@@ -23,6 +23,16 @@ describe('countWords', () => {
     expect(countWords('```\nno\n````\nyes')).toBe(1);
   });
 
+  it('does not count code nested in a numbered step or a quote (Ruling 121)', () => {
+    expect(countWords('1. Install:\n\n    ```sh\n    npm install foo bar baz\n    ```\n')).toBe(1);
+    expect(countWords('> Example:\n> ```js\n> const a = b + c;\n> ```\n')).toBe(1);
+    expect(countWords('- Run:\n\n        indented code here\n')).toBe(1);
+  });
+
+  it('counts a line that only looks like a fence opener as text', () => {
+    expect(countWords('one\n```a`b\ntwo\n')).toBe(3);
+  });
+
   it('counts 0 for an empty document', () => {
     expect(countWords('')).toBe(0);
   });

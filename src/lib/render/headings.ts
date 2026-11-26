@@ -10,13 +10,7 @@ const parser = new MarkdownIt(MARKDOWN_OPTIONS);
  * mode. Parses blocks, then only the headings' inline text, and never renders (Ruling 107).
  */
 export function extractHeadings(src: string): Heading[] {
-  const { body, bodyStartLine } = splitFrontMatter(src);
-  // Link reference definitions land in env and decide how heading text parses.
-  const env = {};
-  const tokens: Token[] = [];
-  // markdown-it's own normalize step, which block.parse skips.
-  parser.block.parse(body.replace(/\r\n?/g, '\n').replace(/\0/g, '�'), parser, env, tokens);
-
+  const { tokens, env, bodyStartLine } = parseBlocks(src);
   const slugs = new Map<string, number>();
   const headings: Heading[] = [];
   tokens.forEach((token, i) => {
@@ -31,4 +25,18 @@ export function extractHeadings(src: string): Heading[] {
     });
   });
   return headings;
+}
+
+/**
+ * The block tokens of the document after its front matter; inline content stays unparsed.
+ * `env` holds the link reference definitions, which decide how inline text parses.
+ */
+export function parseBlocks(src: string): { tokens: Token[]; env: object; bodyStartLine: number } {
+  const { body, bodyStartLine } = splitFrontMatter(src);
+  const env = {};
+  const tokens: Token[] = [];
+  // markdown-it's own normalize step, which block.parse skips.
+  const normalized = body.replace(/\r\n?/g, '\n').replace(/\0/g, '�');
+  parser.block.parse(normalized, parser, env, tokens);
+  return { tokens, env, bodyStartLine };
 }
