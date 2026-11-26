@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderBody, renderMarkdown, slugify } from './markdown';
 import { highlightCode } from './highlight';
 
@@ -69,6 +69,65 @@ describe('renderMarkdown: sanitising', () => {
   it('removes javascript: links', () => {
     expect(renderMarkdown('<a href="javascript:alert(1)">x</a>').html).not.toContain('javascript:');
   });
+
+  // Ruling 85: a document must not be able to draw fake app UI.
+  it('removes style and popover attributes', () => {
+    const html = renderMarkdown('<div style="position:fixed;inset:0" popover id="h-p">Fake dialog</div>\n').html;
+    expect(html).not.toContain('style=');
+    expect(html).not.toContain('popover');
+    expect(html).toContain('Fake dialog');
+  });
+
+  it.each(['button', 'textarea', 'select', 'option', 'dialog', 'iframe', 'object', 'embed'])('removes <%s>', (tag) => {
+    const html = renderMarkdown(`<p><${tag} open>x</${tag}></p>\n`).html;
+    expect(html).not.toContain(`<${tag}`);
+  });
+
+  it('keeps details and summary', () => {
+    const html = renderMarkdown('<details><summary>More</summary>Body</details>\n').html;
+    expect(html).toContain('<details><summary>More</summary>Body</details>');
+  });
+
+  it('keeps only the renderer\'s own class names', () => {
+    const html = renderMarkdown('<div class="dv-tab hljs-string evil language-x">a</div>\n\n<p class="dv-dockview">b</p>\n').html;
+    const [div, p] = [...dom(html).children];
+    expect(div?.getAttribute('class')).toBe('hljs-string language-x');
+    expect(p?.hasAttribute('class')).toBe(false);
+  });
+
+  it('keeps the classes the renderer writes', () => {
+    const html = renderMarkdown('- [ ] a\n\n```mermaid\nx\n```\n').html;
+    expect(html).toContain('class="contains-task-list"');
+    expect(html).toContain('class="task-list-item"');
+    expect(html).toContain('class="task-list-item-checkbox"');
+    expect(html).toContain('class="mermaid-src"');
+  });
+
+  it('keeps only h- ids', () => {
+    const html = renderMarkdown('<div id="toolbar">a</div>\n\n<div id="h-fake">b</div>\n').html;
+    const [first, second] = [...dom(html).children];
+    expect(first?.hasAttribute('id')).toBe(false);
+    expect(second?.id).toBe('h-fake');
+  });
+
+  it('keeps data-source-line only when it is a number', () => {
+    const html = renderMarkdown('<div data-source-line="2 x">a</div>\n\n<div data-source-line="">b</div>\n').html;
+    expect([...dom(html).children].map((el) => el.hasAttribute('data-source-line'))).toEqual([false, false]);
+  });
+
+  it('refuses to render when DOMPurify cannot run', async () => {
+    vi.resetModules();
+    vi.doMock('dompurify', () => ({
+      default: () => ({ isSupported: false, addHook: () => {}, sanitize: (s: string) => s }),
+    }));
+    try {
+      const { renderMarkdown: render } = await import('./markdown');
+      expect(() => render('<script>alert(1)</script>')).toThrow(/DOMPurify/);
+    } finally {
+      vi.doUnmock('dompurify');
+      vi.resetModules();
+    }
+  });
 });
 
 describe('slugify', () => {
@@ -115,6 +174,14 @@ describe('renderMarkdown: headings', () => {
   it('uses the plain text of formatted headings', () => {
     const r = renderMarkdown('### Use `pnpm` **now** [here](https://x.y)\n');
     expect(r.headings[0]).toEqual({ level: 3, text: 'Use pnpm now here', id: 'h-use-pnpm-now-here', line: 1 });
+  });
+
+  it('joins the lines of a two-line heading with a space', () => {
+    expect(renderMarkdown('A\nB\n===\n').headings[0]).toMatchObject({ text: 'A B', id: 'h-a-b' });
+  });
+
+  it('uses the alt text of an image in a heading', () => {
+    expect(renderMarkdown('# ![Logo](x.png) Name\n').headings[0]).toMatchObject({ text: 'Logo Name', id: 'h-logo-name' });
   });
 
   it('counts heading lines from the start of the file when there is front matter', () => {
@@ -234,7 +301,7 @@ describe('highlightCode', () => {
 });
 
 describe('renderBody: speed (Ruling 66)', () => {
-  it('renders a 1 MB document with markdown-it in under 1 s', () => {
+  it('renders a 1 MB document with markdown-it in under 1 s (3 s on CI)', () => {
     // Mostly prose, like a real document; about 160 ms locally, leaving headroom for CI runners.
     const prose = 'Some *prose* with a [link](https://example.com) and `code`, then https://example.org. More words.\n\n';
     const block = [
@@ -257,6 +324,8 @@ describe('renderBody: speed (Ruling 66)', () => {
     expect(src.length).toBeGreaterThanOrEqual(1_000_000);
     const start = performance.now();
     renderBody(src, 1);
-    expect(performance.now() - start).toBeLessThan(1000);
+    // Shared CI runners are often 2-3x slower than a laptop (Ruling 86).
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    expect(performance.now() - start).toBeLessThan(env?.CI ? 3000 : 1000);
   });
 });

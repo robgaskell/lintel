@@ -27,6 +27,8 @@ export function renderMarkdown(src: string): RenderResult {
   const { frontMatter, frontMatterError } =
     yaml === null ? { frontMatter: null, frontMatterError: null } : parseFrontMatter(yaml);
   const { html, headings } = renderBody(body, bodyStartLine);
+  // Without DOM support DOMPurify returns its input unchanged.
+  if (!purify.isSupported) throw new Error('DOMPurify cannot run here, so markdown is not rendered.');
   return { html: purify.sanitize(html, SANITIZE), headings, frontMatter, frontMatterError, bodyStartLine };
 }
 
@@ -123,6 +125,23 @@ purify.addHook('uponSanitizeElement', (node, data) => {
   if (type?.toLowerCase() !== 'checkbox') node.parentNode?.removeChild(node);
 });
 
-// DOMPurify's defaults already keep id, class, checked, disabled and type.
+// A document must not restyle the app or draw fake UI over it (Rulings 67, 85).
+// Anchors a document can still forge (h- ids, line numbers) are untrusted in later steps.
+const RENDERER_CLASS = /^(hljs.*|language-.+|task-list-item.*|contains-task-list|mermaid-src)$/;
+purify.addHook('uponSanitizeAttribute', (_node, data) => {
+  if (data.attrName === 'class') {
+    data.attrValue = data.attrValue.split(/\s+/).filter((c) => RENDERER_CLASS.test(c)).join(' ');
+    data.keepAttr = data.attrValue !== '';
+  } else if (data.attrName === 'id') {
+    data.keepAttr = data.attrValue.startsWith('h-');
+  } else if (data.attrName === 'data-source-line') {
+    data.keepAttr = /^\d+$/.test(data.attrValue);
+  }
+});
+
 // SANITIZE_DOM stays on; the h- prefix keeps heading ids clear of it (Ruling 64).
-const SANITIZE = { FORBID_TAGS: ['style', 'form'], ALLOW_DATA_ATTR: true };
+const SANITIZE = {
+  FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'option', 'dialog', 'iframe', 'object', 'embed'],
+  FORBID_ATTR: ['style', 'popover'],
+  ALLOW_DATA_ATTR: true,
+};
