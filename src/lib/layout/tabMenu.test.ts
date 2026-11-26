@@ -100,7 +100,7 @@ afterEach(() => {
 
 describe('tabMenuItems', () => {
   it('lists the ten items in order, ending with Reveal in Finder on macOS', () => {
-    expect(tabMenuItems(fileDoc('a.md'), 'macos').map((item) => item.label)).toEqual([
+    expect(tabMenuItems(fileDoc('a.md'), 'macos', false).map((item) => item.label)).toEqual([
       'Close',
       'Close Others',
       'Close All',
@@ -116,29 +116,35 @@ describe('tabMenuItems', () => {
 
   it('names the reveal item for each platform', () => {
     const doc = fileDoc('a.md');
-    expect(tabMenuItems(doc, 'windows').at(-1)?.label).toBe('Show in Explorer');
-    expect(tabMenuItems(doc, 'linux').at(-1)?.label).toBe('Show in Folder');
+    expect(tabMenuItems(doc, 'windows', false).at(-1)?.label).toBe('Show in Explorer');
+    expect(tabMenuItems(doc, 'linux', false).at(-1)?.label).toBe('Show in Folder');
   });
 
   it('reads Unpin Tab on a pinned tab', () => {
     const doc = fileDoc('a.md');
     doc.pinned = true;
-    expect(tabMenuItems(doc, 'macos').map((item) => item.label)).toContain('Unpin Tab');
-    expect(tabMenuItems(doc, 'macos').map((item) => item.label)).not.toContain('Pin Tab');
+    expect(tabMenuItems(doc, 'macos', false).map((item) => item.label)).toContain('Unpin Tab');
+    expect(tabMenuItems(doc, 'macos', false).map((item) => item.label)).not.toContain('Pin Tab');
   });
 
   it('disables Copy Path and Reveal for an untitled doc', () => {
     const enabled = (doc: DocState) =>
-      Object.fromEntries(tabMenuItems(doc, 'macos').map((item) => [item.label, item.enabled]));
+      Object.fromEntries(tabMenuItems(doc, 'macos', false).map((item) => [item.label, item.enabled]));
 
     expect(enabled(untitled())).toMatchObject({ 'Copy Path': false, 'Reveal in Finder': false });
     expect(enabled(fileDoc('a.md'))).toMatchObject({ 'Copy Path': true, 'Reveal in Finder': true });
   });
 
-  it('disables Split Right, Split Down and Open in New Window until their steps land', () => {
-    const items = tabMenuItems(fileDoc('a.md'), 'macos');
-    const later = ['Split Right', 'Split Down', 'Open in New Window'];
-    for (const item of items) expect(item.enabled).toBe(!later.includes(item.label));
+  it('enables Split Right and Split Down, and leaves Open in New Window off until M4.3 (Ruling 179)', () => {
+    const items = tabMenuItems(fileDoc('a.md'), 'macos', false);
+    for (const item of items) expect(item.enabled).toBe(item.label !== 'Open in New Window');
+  });
+
+  it('disables Split Right and Split Down on a tab alone in its group', () => {
+    const enabled = Object.fromEntries(
+      tabMenuItems(fileDoc('a.md'), 'macos', true).map((item) => [item.label, item.enabled]),
+    );
+    expect(enabled).toMatchObject({ 'Split Right': false, 'Split Down': false, Close: true });
   });
 });
 
@@ -242,7 +248,7 @@ describe('Close Others and Close All', () => {
 });
 
 describe('showTabMenu', () => {
-  it('builds one shared menu with separators and only the bound shortcut hint (Ruling 164)', async () => {
+  it('builds one shared menu with separators and only the bound shortcut hints (Rulings 164, 179)', async () => {
     const a = fileDoc('a.md');
     const b = untitled();
     open(a, b);
@@ -268,8 +274,9 @@ describe('showTabMenu', () => {
       'Reveal in Finder',
     ]);
     const hints = menu.items.filter((item) => item.accelerator).map((item) => item.text);
-    expect(hints).toEqual(['Close']);
+    expect(hints).toEqual(['Close', 'Split Right']);
     expect(menu.items.find((item) => item.text === 'Close')?.accelerator).toBe('CmdOrCtrl+W');
+    expect(menu.items.find((item) => item.text === 'Split Right')?.accelerator).toBe('CmdOrCtrl+\\');
     expect(menu.popup).toHaveBeenLastCalledWith(expect.objectContaining({ x: 30, y: 40 }));
   });
 
@@ -354,6 +361,36 @@ describe('showTabMenu', () => {
     choose(idOf('Close All'));
 
     await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([a1.id]));
+  });
+
+  it('splits the doc right-clicked into a new group on the right or below (Ruling 178)', async () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    open(a, b, c);
+
+    await showTabMenu(a.id, 0, 0);
+    choose(idOf('Split Right'));
+    await vi.waitFor(() => expect(ws.groupCount()).toBe(2));
+    expect(ws.isAloneInGroup(a.id)).toBe(true);
+    expect(ws.docIdsInOrder()).toEqual([b.id, c.id, a.id]);
+
+    await showTabMenu(b.id, 0, 0);
+    choose(idOf('Split Down'));
+    await vi.waitFor(() => expect(ws.groupCount()).toBe(3));
+    expect(ws.isAloneInGroup(b.id)).toBe(true);
+  });
+
+  it('greys out the splits for a tab alone in its group', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    open(a);
+
+    await showTabMenu(a.id, 0, 0);
+    expect(native.items.get(idOf('Split Right'))?.enabled).toBe(false);
+    expect(native.items.get(idOf('Split Down'))?.enabled).toBe(false);
+
+    open(b);
+    await showTabMenu(a.id, 0, 0);
+    expect(native.items.get(idOf('Split Right'))?.enabled).toBe(true);
+    expect(native.items.get(idOf('Split Down'))?.enabled).toBe(true);
   });
 
   it('ignores a second right-click until the first menu has closed (Ruling 175)', async () => {

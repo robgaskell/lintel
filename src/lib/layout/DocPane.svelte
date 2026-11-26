@@ -1,8 +1,12 @@
+<script lang="ts" module>
+  /** Sent to a pane's root after dockview moves its panel, within or between groups. */
+  export const PANE_MOVED = 'lintel-pane-moved';
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { EditorView } from '@codemirror/view';
   import Editor from '../editor/Editor.svelte';
-  import Outline from '../ui/Outline.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
   import { trackCursor } from '../docs/cursor.svelte';
@@ -13,7 +17,7 @@
   import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
   import { createScrollLock, renderDelayMs } from '../render/scrollSync';
   import type { DocState, ViewMode } from '../docs/store.svelte';
-  import { outline } from './outline.svelte';
+  import { outline, outlineSources } from './outline.svelte';
 
   let { doc }: { doc: DocState } = $props();
 
@@ -175,6 +179,17 @@
     });
   }
 
+  // Moving the panel to another group takes the pane out of the page as well, but the
+  // observer below sees no hidden spell then.
+  function restoreScroll() {
+    if (!pane.isConnected) return;
+    if (view && doc.mode !== 'read') {
+      view.requestMeasure();
+      scrollEditorTo(topLine);
+    }
+    if (doc.mode !== 'edit') preview?.scrollToLine(topLine);
+  }
+
   onMount(() => {
     // Dockview takes a hidden tab's pane out of the page, which resets its scroll (Ruling 83).
     const observer = new ResizeObserver(([entry]) => {
@@ -186,7 +201,21 @@
       paneHidden = hidden;
     });
     observer.observe(pane);
-    return () => observer.disconnect();
+    pane.addEventListener(PANE_MOVED, restoreScroll);
+    outlineSources.set(doc.id, {
+      get headings() {
+        return headings;
+      },
+      get activeLine() {
+        return scrolledToEnd ? Number.POSITIVE_INFINITY : topLine;
+      },
+      pick: pickHeading,
+    });
+    return () => {
+      observer.disconnect();
+      pane.removeEventListener(PANE_MOVED, restoreScroll);
+      outlineSources.delete(doc.id);
+    };
   });
 
   onDestroy(() => {
@@ -197,13 +226,6 @@
 <div class="doc-pane" data-doc-pane={doc.id} bind:this={pane}>
   <Toolbar docId={doc.id} mode={doc.mode} onModeChange={(m) => (doc.mode = m)} />
   <div class="panes mode-{doc.mode}">
-    {#if outline.visible}
-      <Outline
-        {headings}
-        activeLine={scrolledToEnd ? Number.POSITIVE_INFINITY : topLine}
-        onPick={pickHeading}
-      />
-    {/if}
     <div class="doc-column">
       {#if largeFileNotices.has(doc.id)}
         <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>

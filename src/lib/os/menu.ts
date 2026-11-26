@@ -37,6 +37,7 @@ export interface MenuHandlers {
   openSettings(section?: SettingsSection): void;
   nextTab(): void;
   previousTab(): void;
+  split(direction: 'right' | 'below'): void;
 }
 
 type MenuEntry =
@@ -282,6 +283,14 @@ export function menuEntries(
         checked: outline.visible,
         action: () => h.toggleOutline(),
       },
+      separator,
+      {
+        id: 'split-right',
+        text: 'Split Right',
+        accelerator: 'CmdOrCtrl+\\',
+        action: () => h.split('right'),
+      },
+      { id: 'split-down', text: 'Split Down', action: () => h.split('below') },
     ],
   };
 

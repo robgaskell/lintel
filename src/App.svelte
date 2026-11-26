@@ -7,6 +7,7 @@
   import { docs } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
+  import WindowOutline from './lib/layout/WindowOutline.svelte';
   import { Workspace } from './lib/layout/workspace';
   import { setOutlineChecked, syncAppMenu, type MenuHandlers } from './lib/os/menu';
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
@@ -124,6 +125,7 @@
 
 <div class="app">
   <div class="work">
+    <WindowOutline docId={activeId} />
     <main class="dock" bind:this={host}></main>
     {#if docs.size === 0 && handlers}
       <EmptyState
@@ -158,11 +160,14 @@
 
   .work {
     position: relative;
+    display: flex;
     flex: 1;
     min-height: 0;
   }
 
   .dock {
+    flex: 1;
+    min-width: 0;
     height: 100%;
   }
 
@@ -183,6 +188,11 @@
     --dv-inactivegroup-hiddenpanel-tab-color: var(--muted-strong);
     --dv-tab-divider-color: transparent;
     --dv-separator-border: var(--border);
+    /* The divider shows the accent while hovered or dragged; drop targets are tinted with it. */
+    --dv-active-sash-color: var(--accent);
+    --dv-drag-over-background-color: color-mix(in srgb, var(--accent) 16%, transparent);
+    --dv-drag-over-border: 1px solid var(--accent);
+    --dv-drag-over-border-color: var(--accent);
   }
 
   :global(.lintel-dock .dv-tabs-and-actions-container) {

@@ -6,8 +6,9 @@ import { fakePreviewLayout } from '../../test/layout';
 import { cursors } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
-import DocPane from './DocPane.svelte';
-import { outline } from './outline.svelte';
+import DocPane, { PANE_MOVED } from './DocPane.svelte';
+import { outline, outlineSources } from './outline.svelte';
+import WindowOutline from './WindowOutline.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
@@ -46,6 +47,8 @@ function fakeResizeObservers() {
 function pane(mode: ViewMode, raw = '# Title\n') {
   const doc = createDoc({ path: '/notes/a.md', raw, hash: 'h', mode });
   const view = render(DocPane, { doc });
+  // The outline is the window's, beside the groups (Ruling 181).
+  render(WindowOutline, { docId: doc.id });
   const q = (selector: string) => view.container.querySelector(selector);
   return { doc, ...view, q };
 }
@@ -127,11 +130,13 @@ describe('DocPane large-file notice', () => {
     const doc = createDoc({ path: '/big.md', raw: '# x', hash: 'h', mode: 'edit' });
     largeFileNotices.add(doc.id);
     const { getByRole, container } = render(DocPane, { doc });
+    render(WindowOutline, { docId: doc.id });
 
     const column = getByRole('status').closest('.doc-column');
     expect(column).not.toBeNull();
-    expect(column!.querySelector('nav')).toBeNull();
-    expect(container.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
+    // The outline is the window's, outside every pane (Ruling 181).
+    expect(container.querySelector('nav')).toBeNull();
+    expect(document.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
   });
 
   it('shows no notice for an ordinary doc', () => {
@@ -164,6 +169,17 @@ describe('DocPane scroll sync', () => {
     // The next editor scroll is the user's own, so the preview follows it.
     userScroll(editorScroller, 0);
     expect(preview.scrollTop).toBe(0);
+  });
+
+  it('brings the preview back to its line after a move to another group', () => {
+    const { q } = pane('read', src);
+    const preview = q('.preview')!;
+    userScroll(preview, 200);
+    preview.scrollTop = 0; // what leaving the page does
+
+    q('[data-doc-pane]')!.dispatchEvent(new Event(PANE_MOVED));
+
+    expect(preview.scrollTop).toBe(200);
   });
 
   it('brings the editor to the line being read when leaving Read', () => {
@@ -269,6 +285,14 @@ describe('DocPane outline', () => {
     vi.advanceTimersByTime(1);
     flushSync();
     expect(links(getByRole).map((a) => a.textContent)).toEqual(['Only']);
+  });
+
+  it('gives the window outline its headings while mounted, and takes them back after', () => {
+    const { doc, unmount } = pane('split', src);
+    expect(outlineSources.get(doc.id)?.headings.map((h) => h.text)).toEqual(['A', 'C', 'E']);
+
+    unmount();
+    expect(outlineSources.has(doc.id)).toBe(false);
   });
 
   it('hides the panel when the outline is turned off for the window', () => {

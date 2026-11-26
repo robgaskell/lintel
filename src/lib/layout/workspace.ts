@@ -10,7 +10,7 @@ import { mount, unmount } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import { closeDocWithPrompt, confirmCloseAll, docs, type DocState } from '../docs/store.svelte';
 import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
-import DocPane from './DocPane.svelte';
+import DocPane, { PANE_MOVED } from './DocPane.svelte';
 import Tab from './Tab.svelte';
 import { attachTabMenu, tabDocId } from './tabMenu';
 import './vendor/dockview.css';
@@ -56,8 +56,12 @@ export class Workspace {
     });
     // Dockview's own overlay colours (drag targets, scrollbars) follow the app theme.
     this.stopTheme = resolvedTheme.subscribe((theme) => this.api.updateOptions({ theme: dockTheme(theme) }));
-    // A drag or a drop into a group can put an unpinned tab left of a pinned one.
-    this.moveListener = this.api.onDidMovePanel((e) => this.sortPinnedFirst(e.panel.group));
+    this.moveListener = this.api.onDidMovePanel((e) => {
+      // A drag or a drop into a group can put an unpinned tab left of a pinned one.
+      this.sortPinnedFirst(e.panel.group);
+      // The pane left the page during the move, which reset its scroll.
+      this.panes.get(e.panel.id)?.querySelector('[data-doc-pane]')?.dispatchEvent(new Event(PANE_MOVED));
+    });
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
     el.addEventListener('click', this.onClick);
@@ -116,6 +120,25 @@ export class Workspace {
   /** Closes the unpinned tabs in the group of `id`, or of the active tab (Rulings 166, 172). */
   closeAll(id?: string): Promise<void> {
     return this.closeUnpinned(this.groupDocIds(id));
+  }
+
+  /**
+   * Moves the tab into a new group on that side of its own. Moving, not copying, keeps a
+   * doc in one place (Ruling 178). A tab alone in its group stays put.
+   */
+  split(id: string, direction: 'right' | 'below'): void {
+    const panel = this.api.getPanel(id);
+    if (!panel || panel.group.panels.length < 2) return;
+    // moveTo takes a Position, which says 'bottom' where addPanel's Direction says 'below'.
+    panel.api.moveTo({ group: panel.group, position: direction === 'right' ? 'right' : 'bottom' });
+  }
+
+  groupCount(): number {
+    return this.api.groups.length;
+  }
+
+  isAloneInGroup(id: string): boolean {
+    return this.api.getPanel(id)?.group.panels.length === 1;
   }
 
   /** Activates the next tab of the active group in visible order, wrapping at the end. */

@@ -3,7 +3,7 @@ import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { createDoc, docs } from './lib/docs/store.svelte';
-import { outline } from './lib/layout/outline.svelte';
+import { outline, outlineSources } from './lib/layout/outline.svelte';
 import { setOutlineChecked } from './lib/os/menu';
 import { openPaths } from './lib/os/open';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
@@ -83,6 +83,7 @@ beforeEach(() => {
   fake.activeListeners.clear();
   fake.focusHandler = null;
   outline.visible = true;
+  outlineSources.clear();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
   document.documentElement.removeAttribute('style');
@@ -170,6 +171,48 @@ describe('App outline tick (Ruling 120)', () => {
 
     fake.focusHandler!({ payload: true });
     expect(setOutlineChecked).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('App outline (Ruling 181)', () => {
+  function source(...texts: string[]) {
+    const headings = texts.map((text, i) => ({ level: 1 as const, text, id: `h-${text}`, line: i + 1 }));
+    return { headings, activeLine: 1, pick: vi.fn() };
+  }
+  const outlineTexts = (container: HTMLElement) =>
+    [...container.querySelectorAll('nav[aria-label="Outline"] a')].map((a) => a.textContent);
+
+  it('shows one outline, at the left of the window, for the active doc in any group', () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    const b = createDoc({ path: '/b.md', raw: '', hash: 'h', mode: 'edit' });
+    outlineSources.set(a.id, source('Alpha'));
+    outlineSources.set(b.id, source('Beta', 'Gamma'));
+    fake.active = a.id;
+    const { container } = render(App);
+
+    const navs = container.querySelectorAll('nav[aria-label="Outline"]');
+    expect(navs).toHaveLength(1);
+    expect(navs[0].parentElement?.firstElementChild).toBe(navs[0]);
+    expect(navs[0].nextElementSibling?.classList.contains('dock')).toBe(true);
+    expect(outlineTexts(container)).toEqual(['Alpha']);
+
+    setActive(b.id);
+    expect(outlineTexts(container)).toEqual(['Beta', 'Gamma']);
+  });
+
+  it('sends a pick to the active doc, and hides with Show Outline', async () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    const src = source('Alpha');
+    outlineSources.set(a.id, src);
+    fake.active = a.id;
+    const { container } = render(App);
+
+    await fireEvent.click(container.querySelector('nav[aria-label="Outline"] a')!);
+    expect(src.pick).toHaveBeenCalledWith(src.headings[0]);
+
+    outline.visible = false;
+    flushSync();
+    expect(container.querySelector('nav[aria-label="Outline"]')).toBeNull();
   });
 });
 

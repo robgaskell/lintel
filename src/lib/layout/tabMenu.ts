@@ -13,7 +13,10 @@ export interface TabMenuItem {
   enabled: boolean;
 }
 
-type TabActions = Pick<Workspace, 'closeDoc' | 'closeOthers' | 'closeAll' | 'setPinned'>;
+type TabActions = Pick<
+  Workspace,
+  'closeDoc' | 'closeOthers' | 'closeAll' | 'setPinned' | 'split' | 'isAloneInGroup'
+>;
 
 const REVEAL_LABEL: Record<Platform, string> = {
   macos: 'Reveal in Finder',
@@ -22,7 +25,7 @@ const REVEAL_LABEL: Record<Platform, string> = {
 };
 
 /** The tab menu's items for `doc`, in order. Separators exist only in the native menu. */
-export function tabMenuItems(doc: DocState, platform: Platform): TabMenuItem[] {
+export function tabMenuItems(doc: DocState, platform: Platform, aloneInGroup: boolean): TabMenuItem[] {
   const onDisk = doc.path !== null;
   return [
     { id: 'tab-close', label: 'Close', enabled: true },
@@ -30,9 +33,10 @@ export function tabMenuItems(doc: DocState, platform: Platform): TabMenuItem[] {
     { id: 'tab-close-all', label: 'Close All', enabled: true },
     { id: 'tab-copy-contents', label: 'Copy Contents', enabled: true },
     { id: 'tab-copy-path', label: 'Copy Path', enabled: onDisk },
-    // Splits arrive in M4.2 and new windows in M4.3.
-    { id: 'tab-split-right', label: 'Split Right', enabled: false },
-    { id: 'tab-split-down', label: 'Split Down', enabled: false },
+    // Off for a lone tab, as a doc is never shown in two places (spec: Split on a lone tab).
+    { id: 'tab-split-right', label: 'Split Right', enabled: !aloneInGroup },
+    { id: 'tab-split-down', label: 'Split Down', enabled: !aloneInGroup },
+    // New windows arrive in M4.3.
     { id: 'tab-new-window', label: 'Open in New Window', enabled: false },
     { id: 'tab-pin', label: doc.pinned ? 'Unpin Tab' : 'Pin Tab', enabled: true },
     { id: 'tab-reveal', label: REVEAL_LABEL[platform], enabled: onDisk },
@@ -46,6 +50,8 @@ const ACTIONS: Record<string, (tabs: TabActions, doc: DocState) => unknown> = {
   // The live buffer, so unsaved edits are copied too.
   'tab-copy-contents': (_, doc) => writeText(doc.text),
   'tab-copy-path': (_, doc) => doc.path !== null && writeText(doc.path),
+  'tab-split-right': (tabs, doc) => tabs.split(doc.id, 'right'),
+  'tab-split-down': (tabs, doc) => tabs.split(doc.id, 'below'),
   'tab-pin': (tabs, doc) => tabs.setPinned(doc.id, !doc.pinned),
   'tab-reveal': (_, doc) => doc.path !== null && revealItemInDir(doc.path),
 };
@@ -53,7 +59,10 @@ const ACTIONS: Record<string, (tabs: TabActions, doc: DocState) => unknown> = {
 // As in the TabMenu artboard.
 const SEPARATOR_AFTER = new Set(['tab-close-all', 'tab-copy-path', 'tab-new-window']);
 // Hints only for shortcuts that are really bound (Ruling 164).
-const ACCELERATOR: Record<string, string> = { 'tab-close': 'CmdOrCtrl+W' };
+const ACCELERATOR: Record<string, string> = {
+  'tab-close': 'CmdOrCtrl+W',
+  'tab-split-right': 'CmdOrCtrl+\\',
+};
 
 interface SharedMenu {
   menu: Menu;
@@ -96,7 +105,7 @@ export async function showTabMenu(docId: string, x: number, y: number): Promise<
   showing = true;
   try {
     targetId = docId;
-    const wanted = tabMenuItems(doc, currentPlatform());
+    const wanted = tabMenuItems(doc, currentPlatform(), tabs?.isAloneInGroup(docId) ?? true);
     const { menu, items } = await sharedMenu(wanted);
     await Promise.all(
       wanted.map(async ({ id, label, enabled }) => {

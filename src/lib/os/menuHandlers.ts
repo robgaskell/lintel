@@ -12,7 +12,14 @@ import { closeTabOrWindow } from './window';
 export interface MenuHandlerDeps {
   workspace: Pick<
     Workspace,
-    'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate' | 'nextTab' | 'previousTab'
+    | 'activeDocId'
+    | 'closeDoc'
+    | 'refreshTab'
+    | 'docIdsInOrder'
+    | 'activate'
+    | 'nextTab'
+    | 'previousTab'
+    | 'split'
   >;
   currentWindow(): {
     destroy(): Promise<void>;
@@ -97,6 +104,11 @@ export function makeMenuHandlers({
     openSettings: (section) => guarded(() => openSettingsWindow(section))(),
     nextTab: forDoc(() => workspace.nextTab()),
     previousTab: forDoc(() => workspace.previousTab()),
+    split: (direction) =>
+      forDoc(() => {
+        const id = workspace.activeDocId();
+        if (id) workspace.split(id, direction);
+      })(),
   };
 }
 

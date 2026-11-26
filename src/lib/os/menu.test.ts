@@ -128,6 +128,7 @@ function handlers(): MenuHandlers {
     openSettings: vi.fn(),
     nextTab: vi.fn(),
     previousTab: vi.fn(),
+    split: vi.fn(),
   };
 }
 
@@ -206,7 +207,10 @@ describe('menuEntries', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
     const later = ['print', 'export-pdf', 'export-html', 'export-docx'];
     for (const id of later) expect(byId(entries, id).enabled).toBe(false);
-    const ready = ['settings', 'new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'];
+    const ready = [
+      ...['settings', 'new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'],
+      ...['split-right', 'split-down'],
+    ];
     for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);
     }
@@ -227,6 +231,23 @@ describe('menuEntries', () => {
       expect(h.setMode).toHaveBeenLastCalledWith(mode);
     }
   });
+
+  it.each(['macos', 'windows', 'linux'] as const)(
+    'puts Split Right on CmdOrCtrl+\\ and Split Down in View on %s (Ruling 180)',
+    (platform) => {
+      const h = handlers();
+      const view = (menuEntries(h, [], platform) as Entry[]).find((e) => e.text === 'View')!;
+
+      const right = byId(view.items!, 'split-right');
+      const down = byId(view.items!, 'split-down');
+      expect([right.text, right.accelerator]).toEqual(['Split Right', 'CmdOrCtrl+\\']);
+      expect([down.text, down.accelerator]).toEqual(['Split Down', undefined]);
+      right.action!();
+      expect(h.split).toHaveBeenLastCalledWith('right');
+      down.action!();
+      expect(h.split).toHaveBeenLastCalledWith('below');
+    },
+  );
 
   it('makes View > Show Outline a check item that follows the outline and toggles it (Ruling 110)', () => {
     const h = handlers();

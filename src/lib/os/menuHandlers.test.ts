@@ -38,6 +38,7 @@ function deps(): MenuHandlerDeps {
       activate: vi.fn(),
       nextTab: vi.fn(),
       previousTab: vi.fn(),
+      split: vi.fn(),
     },
     currentWindow: vi.fn(() => mainWindow),
     outline: { visible: true },
@@ -240,6 +241,18 @@ describe('makeMenuHandlers', () => {
       expect(d.workspace.previousTab).not.toHaveBeenCalled();
     });
 
+    it('leaves the tabs alone for Split Right and Split Down', async () => {
+      const d = deps();
+      const h = makeMenuHandlers(d);
+
+      h.split('right');
+      h.split('below');
+
+      await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(d.workspace.split).not.toHaveBeenCalled();
+    });
+
     it('closes Settings on Close Tab, not a tab', async () => {
       makeMenuHandlers(deps()).closeTab();
 
@@ -278,6 +291,27 @@ describe('makeMenuHandlers', () => {
     await vi.waitFor(() => expect(d.workspace.nextTab).toHaveBeenCalledOnce());
     h.previousTab();
     await vi.waitFor(() => expect(d.workspace.previousTab).toHaveBeenCalledOnce());
+  });
+
+  it('splits the active tab right or below (Ruling 180)', async () => {
+    const d = deps();
+    const h = makeMenuHandlers(d);
+
+    h.split('right');
+    await vi.waitFor(() => expect(d.workspace.split).toHaveBeenLastCalledWith('doc-1', 'right'));
+    h.split('below');
+    await vi.waitFor(() => expect(d.workspace.split).toHaveBeenLastCalledWith('doc-1', 'below'));
+  });
+
+  it('splits nothing when no tab is open', async () => {
+    const d = deps();
+    vi.mocked(d.workspace.activeDocId).mockReturnValue(null);
+
+    makeMenuHandlers(d).split('right');
+
+    await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(d.workspace.split).not.toHaveBeenCalled();
   });
 
   it('shows an error from a handler in a dialog', async () => {

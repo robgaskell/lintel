@@ -606,3 +606,122 @@ describe('Workspace tab switching (Ruling 167)', () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe('Workspace split (Ruling 178)', () => {
+  type Node = { type: 'leaf'; data: { views: string[] } } | { type: 'branch'; data: Node[] };
+  type Shape = string[] | Shape[];
+  // Branches alternate direction under a HORIZONTAL root: a row of columns of rows.
+  const shapeOf = (node: Node): Shape =>
+    node.type === 'leaf' ? node.data.views : (node.data.map(shapeOf) as Shape);
+  const grid = () => (ws.toJSON() as { grid: { root: Node; orientation: string } }).grid;
+  const editorOf = (id: string) => host.querySelector(`[data-doc-pane="${id}"] .cm-editor`);
+
+  it("moves a tab into a new group on the right, leaving the rest in the first", () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+
+    ws.split(a.id, 'right');
+
+    expect(ws.groupCount()).toBe(2);
+    expect(grid().orientation).toBe('HORIZONTAL');
+    expect(shapeOf(grid().root)).toEqual([[b.id], [a.id]]);
+    expect(ws.isAloneInGroup(a.id)).toBe(true);
+    expect(ws.isAloneInGroup(b.id)).toBe(true);
+    expect(ws.activeDocId()).toBe(a.id);
+  });
+
+  it('moves a tab into a new group below', () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+
+    ws.split(b.id, 'below');
+
+    expect(ws.groupCount()).toBe(2);
+    expect(grid().orientation).toBe('HORIZONTAL');
+    expect(shapeOf(grid().root)).toEqual([[[a.id], [b.id]]]);
+  });
+
+  it('never makes a second panel for the same doc, and keeps its editor', () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(b);
+    ws.openDoc(a);
+    flushSync();
+    const editor = editorOf(a.id);
+    EditorView.findFromDOM(editor as HTMLElement)!.dispatch({ changes: { from: 0, insert: 'kept ' } });
+
+    ws.split(a.id, 'right');
+    flushSync();
+
+    expect(host.querySelectorAll(`.lintel-tab[data-doc-id="${a.id}"]`)).toHaveLength(1);
+    expect(host.querySelectorAll(`[data-doc-pane="${a.id}"]`)).toHaveLength(1);
+    expect(editorOf(a.id)).toBe(editor);
+    expect(a.text).toBe('kept # a.md\n');
+  });
+
+  it('leaves a tab that is alone in its group where it is', () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.split(a.id, 'right');
+    expect(ws.groupCount()).toBe(1);
+
+    ws.openDoc(b);
+    ws.split(b.id, 'below');
+    ws.split(b.id, 'right');
+    ws.split(a.id, 'below');
+    expect(ws.groupCount()).toBe(2);
+  });
+
+  it('removes a group when its last tab closes', async () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    for (const doc of [a, b, c]) ws.openDoc(doc);
+    ws.split(c.id, 'right');
+    expect(ws.groupCount()).toBe(2);
+
+    await ws.closeDoc(c.id);
+
+    expect(ws.groupCount()).toBe(1);
+    expect(ws.docIdsInOrder()).toEqual([a.id, b.id]);
+  });
+
+  it('says whether a tab is alone in its group, and false for an unknown id', () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    expect(ws.isAloneInGroup(a.id)).toBe(true);
+    ws.openDoc(b);
+    expect(ws.isAloneInGroup(a.id)).toBe(false);
+    expect(ws.isAloneInGroup('nope')).toBe(false);
+  });
+
+  it('gives the moved tab the keyboard focus, even when it was already active', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(a);
+    ws.openDoc(b);
+    flushSync();
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
+    ws.split(b.id, 'right');
+
+    const focusedPane = () => document.activeElement?.closest('[data-doc-pane]')?.getAttribute('data-doc-pane');
+    await vi.waitFor(() => expect(focusedPane()).toBe(b.id));
+    elsewhere.remove();
+  });
+
+  it('brings the moved editor back to its line, as a move out of the page resets scroll', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    ws.openDoc(b);
+    ws.openDoc(a);
+    flushSync();
+    const view = EditorView.findFromDOM(editorOf(a.id) as HTMLElement)!;
+    const dispatch = vi.spyOn(view, 'dispatch');
+
+    ws.split(a.id, 'right');
+
+    await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() })),
+    );
+  });
+});
