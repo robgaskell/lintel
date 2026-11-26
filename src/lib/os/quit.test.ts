@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
 import { exit } from '@tauri-apps/plugin-process';
-import { createDoc, docs, untitledCounter } from '../docs/store.svelte';
+import { createDoc, docs, isDirty, saveDoc, untitledCounter } from '../docs/store.svelte';
+import { writeTextFile } from '../ipc';
 import { quitApp } from './quit';
 
 vi.mock('../ipc', () => ({
@@ -19,6 +20,7 @@ vi.mock('@tauri-apps/plugin-process', () => ({
 
 const messageDialog = vi.mocked(message);
 const exitApp = vi.mocked(exit);
+const writeFile = vi.mocked(writeTextFile);
 
 function dirtyDoc(path: string) {
   const doc = createDoc({ path, raw: '', hash: '', mode: 'split' });
@@ -31,6 +33,7 @@ beforeEach(() => {
   untitledCounter.n = 0;
   messageDialog.mockReset();
   exitApp.mockClear();
+  writeFile.mockReset();
 });
 
 describe('quitApp', () => {
@@ -95,5 +98,45 @@ describe('quitApp', () => {
 
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(exitApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves, then exits, when the user picks Save', async () => {
+    const a = dirtyDoc('/a.md');
+    messageDialog.mockResolvedValue('Save');
+    writeFile.mockResolvedValue('hash-1');
+
+    await quitApp();
+
+    expect(writeFile).toHaveBeenCalledWith('/a.md', 'changed');
+    expect(isDirty(a)).toBe(false);
+    expect(exitApp).toHaveBeenCalledWith(0);
+  });
+
+  it('stays open when the save chosen at the prompt fails', async () => {
+    dirtyDoc('/a.md');
+    messageDialog.mockResolvedValueOnce('Save').mockResolvedValue('Ok');
+    writeFile.mockRejectedValue(new Error('disk full'));
+
+    await quitApp();
+
+    expect(exitApp).not.toHaveBeenCalled();
+    expect(String(messageDialog.mock.calls.at(-1)?.[0])).toContain('disk full');
+  });
+
+  it('waits for a save already running before asking', async () => {
+    const a = dirtyDoc('/a.md');
+    let finishWrite!: (hash: string) => void;
+    writeFile.mockReturnValueOnce(new Promise((resolve) => (finishWrite = resolve)));
+    const saving = saveDoc(a.id);
+
+    const quitting = quitApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(messageDialog).not.toHaveBeenCalled();
+
+    finishWrite('hash-1');
+    await saving;
+    await quitting;
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(exitApp).toHaveBeenCalledWith(0);
   });
 });

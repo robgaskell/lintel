@@ -70,29 +70,48 @@ export function insertTable(view: EditorView): boolean {
   });
 }
 
-/** Fences the selected lines, or opens an empty fenced block below the cursor line. */
+/**
+ * Fences the selected lines, or opens an empty fenced block below the cursor line.
+ * Ranges that share lines get one block between them.
+ */
 export function insertCodeBlock(view: EditorView): boolean {
-  return replaceRanges(view, (range, state) => {
-    if (range.empty) {
-      const line = state.doc.lineAt(range.head);
-      const blank = isBlank(line.text);
-      const at = blank ? line.from : line.to;
-      const insert = (blank ? '' : '\n') + FENCE + '\n\n' + FENCE;
-      return {
-        changes: { from: at, to: blank ? line.to : at, insert },
-        range: EditorSelection.cursor(at + insert.length - FENCE.length - 1),
-      };
+  const { state } = view;
+  const blocks = codeBlockSpans(state);
+  const specs: ChangeSpec[] = blocks.map((block) => {
+    if (!block.empty) {
+      return [
+        { from: block.first.from, insert: FENCE + '\n' },
+        { from: block.last.to, insert: '\n' + FENCE },
+      ];
     }
-    const first = state.doc.lineAt(range.from);
-    const last = state.doc.lineAt(range.to);
-    return {
-      changes: [
-        { from: first.from, insert: FENCE + '\n' },
-        { from: last.to, insert: '\n' + FENCE },
-      ],
-      range: EditorSelection.range(range.from + 4, range.to + 4),
-    };
+    const line = block.first;
+    return isBlank(line.text)
+      ? { from: line.from, to: line.to, insert: EMPTY_BLOCK }
+      : { from: line.to, insert: '\n' + EMPTY_BLOCK };
   });
+  const changes = state.changes(specs);
+  const ranges = blocks.flatMap((block) => {
+    if (block.empty) {
+      const line = block.first;
+      const blockStart = isBlank(line.text)
+        ? changes.mapPos(line.from, -1)
+        : changes.mapPos(line.to, -1) + 1;
+      return [EditorSelection.cursor(blockStart + FENCE.length + 1)];
+    }
+    // Ends map backwards so a selection never grows over the closing fence.
+    return block.ranges.map((r) => {
+      const from = changes.mapPos(r.from, 1);
+      const to = r.empty ? from : changes.mapPos(r.to, -1);
+      return r.anchor <= r.head ? EditorSelection.range(from, to) : EditorSelection.range(to, from);
+    });
+  });
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges),
+    scrollIntoView: true,
+    userEvent: 'input',
+  });
+  return true;
 }
 
 /** Opens the search panel with the replace field focused. */
@@ -118,6 +137,7 @@ export const formattingKeymap: KeyBinding[] = [
 ];
 
 const FENCE = '```';
+const EMPTY_BLOCK = FENCE + '\n\n' + FENCE;
 const TABLE = [
   '| Column 1 | Column 2 |',
   '| -------- | -------- |',
@@ -145,15 +165,18 @@ function replaceRanges(
 /**
  * Wraps or unwraps each range in `marker`. A run of three stars counts as both bold and
  * italic, so toggling italic on bold text adds italic rather than stripping a star.
+ * Unwrapping needs exactly one marked span, so "**a** and **b**" is never half-stripped.
  */
 function toggleMarker(view: EditorView, marker: '**' | '*'): boolean {
   const size = marker.length;
   const isMarked = (stars: number) => stars === size || stars === 3;
   return replaceRanges(view, (range, state) => {
-    const { from, to } = range;
+    // CommonMark does not treat "**word **" as bold, so spaces stay outside the markers.
+    const { from, to } = withoutOuterSpace(state, range);
     const text = state.sliceDoc(from, to);
-    const inside = Math.min(starRun(text), starRun([...text].reverse().join('')));
-    if (text.length > 2 * inside && isMarked(inside)) {
+    const inside = Math.min(starRun(text), starRun(reversed(text)));
+    const content = text.slice(inside, text.length - inside);
+    if (isMarked(inside) && content.length > 0 && !content.includes('*')) {
       return {
         changes: [
           { from, to: from + size },
@@ -162,9 +185,9 @@ function toggleMarker(view: EditorView, marker: '**' | '*'): boolean {
         range: EditorSelection.range(from, to - 2 * size),
       };
     }
-    const before = starRun([...state.sliceDoc(Math.max(0, from - 3), from)].reverse().join(''));
+    const before = starRun(reversed(state.sliceDoc(Math.max(0, from - 3), from)));
     const after = starRun(state.sliceDoc(to, to + 3));
-    if (isMarked(Math.min(before, after))) {
+    if (!text.includes('*') && isMarked(Math.min(before, after))) {
       return {
         changes: [
           { from: from - size, to: from },
@@ -183,9 +206,16 @@ function toggleMarker(view: EditorView, marker: '**' | '*'): boolean {
   });
 }
 
+function withoutOuterSpace(state: EditorState, range: SelectionRange): { from: number; to: number } {
+  const text = state.sliceDoc(range.from, range.to);
+  const trimmed = text.trim();
+  if (!trimmed) return range;
+  const from = range.from + text.indexOf(trimmed);
+  return { from, to: from + trimmed.length };
+}
+
 function toggleListMarker(view: EditorView, marked: RegExp, prefix: string): boolean {
-  const { state } = view;
-  const removing = selectedLines(state).every((line) => marked.test(line.text));
+  const removing = selectedLines(view.state).every((line) => marked.test(line.text));
   return editLines(view, (line) => {
     const list = ANY_LIST.exec(line.text);
     const indent = list ? list[1].length : (/^\s*/.exec(line.text)?.[0].length ?? 0);
@@ -197,25 +227,66 @@ function toggleListMarker(view: EditorView, marked: RegExp, prefix: string): boo
   });
 }
 
+/** Applies `edit` once to each selected line, however many ranges touch it. */
 function editLines(view: EditorView, edit: (line: Line) => ChangeSpec): boolean {
-  return replaceRanges(view, (range, state) => {
-    const changes = state.changes(linesOf(state, range).map(edit));
-    return { changes, range: range.map(changes, 1) };
+  const { state } = view;
+  const changes = state.changes(selectedLines(state).map(edit));
+  view.dispatch({
+    changes,
+    selection: state.selection.map(changes, 1),
+    scrollIntoView: true,
+    userEvent: 'input',
   });
+  return true;
 }
 
 function selectedLines(state: EditorState): Line[] {
-  return state.selection.ranges.flatMap((range) => linesOf(state, range));
+  const byNumber = new Map<number, Line>();
+  for (const range of state.selection.ranges) {
+    for (const line of linesOf(state, range)) byNumber.set(line.number, line);
+  }
+  return [...byNumber.values()].sort((a, b) => a.number - b.number);
 }
 
 // Blank lines inside a multi-line selection are left alone.
 function linesOf(state: EditorState, range: SelectionRange): Line[] {
   const first = state.doc.lineAt(range.from).number;
-  const last = state.doc.lineAt(range.to).number;
+  const last = lastLine(state, range).number;
   const lines: Line[] = [];
   for (let n = first; n <= last; n++) lines.push(state.doc.line(n));
   const filled = lines.filter((line) => !isBlank(line.text));
   return lines.length > 1 && filled.length > 0 ? filled : lines;
+}
+
+// A selection ending at column 0 (after a triple-click, say) does not include that line.
+function lastLine(state: EditorState, range: SelectionRange): Line {
+  const line = state.doc.lineAt(range.to);
+  return range.to === line.from && range.to > range.from ? state.doc.line(line.number - 1) : line;
+}
+
+type CodeBlockSpan = { first: Line; last: Line; empty: boolean; ranges: SelectionRange[] };
+
+/** One span per block to insert: ranges whose lines overlap are merged. */
+function codeBlockSpans(state: EditorState): CodeBlockSpan[] {
+  const spans: CodeBlockSpan[] = [];
+  const ranges = [...state.selection.ranges].sort((a, b) => a.from - b.from);
+  for (const range of ranges) {
+    const first = state.doc.lineAt(range.from);
+    const last = lastLine(state, range);
+    const open = spans.at(-1);
+    if (open && first.number <= open.last.number) {
+      if (last.number > open.last.number) open.last = last;
+      open.empty &&= range.empty;
+      open.ranges.push(range);
+    } else {
+      spans.push({ first, last, empty: range.empty, ranges: [range] });
+    }
+  }
+  return spans;
+}
+
+function reversed(text: string): string {
+  return [...text].reverse().join('');
 }
 
 function starRun(text: string): number {

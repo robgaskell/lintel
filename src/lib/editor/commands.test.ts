@@ -33,6 +33,25 @@ function run(command: Command, doc: string, from = 0, to = doc.length) {
   return { handled, text: state.doc.toString(), selected: state.sliceDoc(selFrom, selTo), state };
 }
 
+/** As `run`, with several selection ranges. */
+function runRanges(command: Command, doc: string, ranges: [number, number][]) {
+  let state = EditorState.create({
+    doc,
+    selection: EditorSelection.create(ranges.map(([from, to]) => EditorSelection.range(from, to))),
+    extensions: EditorState.allowMultipleSelections.of(true),
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch: (...specs: Parameters<EditorView['dispatch']>) => {
+      state = state.update(...(specs as [never])).state;
+    },
+  } as unknown as EditorView;
+  command(view);
+  return state.doc.toString();
+}
+
 describe('toggleBold', () => {
   it('wraps the selection and unwraps it again', () => {
     expect(run(toggleBold, 'word').text).toBe('**word**');
@@ -47,6 +66,18 @@ describe('toggleBold', () => {
     const { text, state } = run(toggleBold, 'ab', 1, 1);
     expect(text).toBe('a****b');
     expect(state.selection.main.head).toBe(3);
+  });
+});
+
+describe('bold and italic edge cases', () => {
+  it('leaves inner markup alone when the selection spans two marked words', () => {
+    expect(run(toggleBold, '**Note** this is **key**').text).toContain('**Note** this is **key**');
+    expect(run(toggleItalic, '*a* and *b*').text).toContain('*a* and *b*');
+  });
+
+  it('keeps surrounding spaces outside the markers', () => {
+    expect(run(toggleBold, 'word next', 0, 5).text).toBe('**word** next');
+    expect(run(toggleBold, '**word** next', 0, 9).text).toBe('word next');
   });
 });
 
@@ -118,10 +149,23 @@ describe('insertCodeBlock', () => {
     expect(run(insertCodeBlock, 'let a\nlet b').text).toBe('```\nlet a\nlet b\n```');
   });
 
+  it('does not fence the next line when the selection ends at its start', () => {
+    expect(run(insertCodeBlock, 'a\nb\nc', 0, 2).text).toBe('```\na\n```\nb\nc');
+  });
+
   it('opens an empty block with the cursor inside', () => {
     const { text, state } = run(insertCodeBlock, '', 0, 0);
     expect(text).toBe('```\n\n```');
     expect(state.selection.main.head).toBe(4);
+  });
+});
+
+describe('line commands with several ranges on one line', () => {
+  it('change the line once', () => {
+    expect(runRanges(cycleHeading, 'x', [[0, 0], [1, 1]])).toBe('# x');
+    expect(runRanges(toggleBulletList, 'x', [[0, 0], [1, 1]])).toBe('- x');
+    expect(runRanges(toggleTaskList, 'x', [[0, 0], [1, 1]])).toBe('- [ ] x');
+    expect(runRanges(insertCodeBlock, 'ab', [[0, 1], [1, 2]])).toBe('```\nab\n```');
   });
 });
 
@@ -167,6 +211,15 @@ describe('in a full editor', () => {
     runScopeHandlers(editor, key, 'editor');
 
     expect(editor.state.doc.toString()).toBe('say *word* now');
+  });
+
+  it('opens search on Mod-f', () => {
+    const editor = mountEditor('a b a');
+    const key = new KeyboardEvent('keydown', { key: 'f', keyCode: 70, ctrlKey: true });
+
+    runScopeHandlers(editor, key, 'editor');
+
+    expect(editor.dom.querySelector('.cm-search')).not.toBeNull();
   });
 
   it('opens find and replace with the replace field focused', () => {

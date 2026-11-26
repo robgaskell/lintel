@@ -10,7 +10,7 @@ import type { EditorView } from '@codemirror/view';
 import type { ViewMode } from '../docs/store.svelte';
 import { openFindReplace } from '../editor/commands';
 import { activeView } from '../editor/views';
-import { isMac } from './platform';
+import { currentPlatform, type Platform } from './platform';
 
 export interface MenuHandlers {
   quit(): void;
@@ -33,6 +33,7 @@ export interface MenuHandlers {
 type MenuEntry = MenuItemOptions | PredefinedMenuItemOptions | SubmenuOptions;
 
 let installing: Promise<void> = Promise.resolve();
+let generation = 0;
 
 /** Builds the native menu bar and replaces the current one; call again to rebuild. */
 export function buildAppMenu(h: MenuHandlers, recent: string[]): Promise<void> {
@@ -43,7 +44,9 @@ export function buildAppMenu(h: MenuHandlers, recent: string[]): Promise<void> {
 }
 
 async function install(h: MenuHandlers, recent: string[]): Promise<void> {
-  const menu = await Menu.new({ items: menuEntries(h, recent, isMac()) });
+  const entries = menuEntries(h, recent, currentPlatform());
+  stampBuildIds(entries, ++generation);
+  const menu = await Menu.new({ items: entries });
   const previous = await menu.setAsAppMenu();
   // Each menu holds native resources and action channels until closed (Ruling 37).
   await previous?.close();
@@ -53,7 +56,8 @@ async function install(h: MenuHandlers, recent: string[]): Promise<void> {
  * The menu bar's contents. Items for features that land in later steps are disabled.
  * There is no predefined Close Window: its Cmd+W would bypass Close Tab (Ruling 37).
  */
-export function menuEntries(h: MenuHandlers, recent: string[], mac: boolean): MenuEntry[] {
+export function menuEntries(h: MenuHandlers, recent: string[], platform: Platform): MenuEntry[] {
+  const mac = platform === 'macos';
   const separator: PredefinedMenuItemOptions = { item: 'Separator' };
   const settings: MenuItemOptions = {
     id: 'settings',
@@ -178,7 +182,31 @@ export function menuEntries(h: MenuHandlers, recent: string[], mac: boolean): Me
     items: mac ? [] : [{ item: { About: null } }],
   };
 
-  return [...(mac ? [app] : []), file, edit, view, window, help];
+  return [
+    ...(mac ? [app] : []),
+    file,
+    edit,
+    view,
+    // GTK supports neither predefined item, so Linux gets no Window menu.
+    ...(platform === 'linux' ? [] : [window]),
+    help,
+  ];
+}
+
+/** The item id without the per-build suffix that `buildAppMenu` adds. */
+function baseId(id: string): string {
+  return id.split('#')[0];
+}
+
+/**
+ * Tauri keys click handlers by item id across the whole app, and closing a menu removes
+ * its ids. Unique ids per build stop closing the old menu from unhooking the new one.
+ */
+function stampBuildIds(entries: MenuEntry[], build: number): void {
+  for (const entry of entries) {
+    if ('action' in entry && entry.id) entry.id = `${baseId(entry.id)}#${build}`;
+    if ('items' in entry && entry.items) stampBuildIds(entry.items as MenuEntry[], build);
+  }
 }
 
 function openRecentMenu(

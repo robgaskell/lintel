@@ -95,6 +95,11 @@ export async function confirmCloseAll(
   return true;
 }
 
+/** Resolves once every save running now has finished, whatever its outcome. */
+export async function savesSettled(): Promise<void> {
+  await Promise.allSettled([...inFlight.values()]);
+}
+
 export function findByPath(path: string): DocState | undefined {
   for (const doc of docs.values()) {
     if (doc.path === path) return doc;
