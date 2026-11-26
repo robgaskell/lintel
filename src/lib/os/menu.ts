@@ -9,7 +9,8 @@ import { openSearchPanel } from '@codemirror/search';
 import type { EditorView } from '@codemirror/view';
 import type { ViewMode } from '../docs/store.svelte';
 import { openFindReplace } from '../editor/commands';
-import { activeView } from '../editor/views';
+import { docs } from '../docs/store.svelte';
+import { activeDocId, activeView } from '../editor/views';
 import { onSettingsChanged, settings } from '../settings/settings.svelte';
 import { currentPlatform, type Platform } from './platform';
 import { getRecent, knownRecent, onRecentChanged } from './recent';
@@ -304,6 +305,9 @@ function openRecentMenu(
 }
 
 function onActive(command: (view: EditorView) => boolean): void {
+  const id = activeDocId();
+  // Read hides the editor, so an undo or a find panel there would be unseen (Ruling 97).
+  if (id && docs.get(id)?.mode === 'read') return;
   const view = activeView();
   if (view) command(view);
 }

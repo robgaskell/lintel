@@ -20,8 +20,12 @@ export function setActiveDocSource(source: { activeDocId(): string | null } | nu
   activeSource = source;
 }
 
+export function activeDocId(): string | null {
+  return activeSource?.activeDocId() ?? null;
+}
+
 /** The editor of the active tab, for menu items that act on "the current document". */
 export function activeView(): EditorView | null {
-  const id = activeSource?.activeDocId();
+  const id = activeDocId();
   return id ? viewFor(id) : null;
 }

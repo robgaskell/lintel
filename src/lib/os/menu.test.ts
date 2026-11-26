@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Menu } from '@tauri-apps/api/menu';
+import { history } from '@codemirror/commands';
+import { search } from '@codemirror/search';
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+import { createDoc } from '../docs/store.svelte';
+import { registerView, setActiveDocSource } from '../editor/views';
 import { events, resetFakes } from '../../test/fakes';
 import { loadSettings, updateSettings } from '../settings/settings.svelte';
 import { buildAppMenu, menuEntries, syncAppMenu, type MenuHandlers } from './menu';
@@ -170,6 +176,37 @@ describe('menuEntries', () => {
       item.action!();
       expect(h.setMode).toHaveBeenLastCalledWith(mode);
     }
+  });
+
+  it('leaves the hidden editor alone in Read: Undo, Redo and Find do nothing (Ruling 97)', () => {
+    const doc = createDoc({ path: '/r.md', raw: 'a', hash: 'h', mode: 'read' });
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: 'a', extensions: [history(), search()] }),
+    });
+    const forget = registerView(doc.id, view);
+    setActiveDocSource({ activeDocId: () => doc.id });
+    view.dispatch({ changes: { from: 1, insert: 'b' } });
+    const entries = menuEntries(handlers(), [], 'macos') as Entry[];
+
+    byId(entries, 'undo').action!();
+    byId(entries, 'find').action!();
+    expect(view.state.doc.toString()).toBe('ab');
+    expect(view.dom.querySelector('.cm-search')).toBeNull();
+
+    doc.mode = 'split';
+    byId(entries, 'undo').action!();
+    expect(view.state.doc.toString()).toBe('a');
+    byId(entries, 'redo').action!();
+    expect(view.state.doc.toString()).toBe('ab');
+
+    doc.mode = 'read';
+    byId(entries, 'undo').action!();
+    expect(view.state.doc.toString()).toBe('ab');
+
+    forget();
+    setActiveDocSource(null);
+    view.destroy();
   });
 
   it('lists recent paths, and disables Open Recent when there are none', () => {

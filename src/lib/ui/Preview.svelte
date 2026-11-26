@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { message } from '@tauri-apps/plugin-dialog';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { readImageAsDataUri } from '../ipc';
+  import { ImageLoader } from '../render/imageLoader';
   import { openPaths } from '../os/open';
   import {
     classifyHref,
@@ -38,9 +39,9 @@
   let anchors: Anchor[] = [];
   let anchorsStale = true;
 
-  // Data URIs by resolved path, so a re-render shows known images at once (Ruling 83).
-  const imageCache = new Map<string, string>();
-  const imageLoads = new Map<string, Promise<string>>();
+  // One per doc, so closing the tab drops its images (Ruling 97).
+  const images = new ImageLoader((path) => readImageAsDataUri(path));
+  onDestroy(() => images.clear());
 
   /** Scrolls so `line` (maybe fractional) is at the top. Not reported through onLineVisible. */
   export function scrollToLine(line: number): void {
@@ -119,36 +120,18 @@
         img.replaceWith(altBox(img, why));
         continue;
       }
-      const known = imageCache.get(file);
+      // A known image is set in this pass, so a re-render never blinks it out.
+      const known = images.cached(file);
       if (known) {
         img.src = known;
         continue;
       }
       img.removeAttribute('src');
-      loadImage(file).then(
+      images.load(file).then(
         (uri) => (img.src = uri),
         (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
       );
     }
-  }
-
-  function loadImage(file: string): Promise<string> {
-    let load = imageLoads.get(file);
-    if (!load) {
-      load = readImageAsDataUri(file).then(
-        (uri) => {
-          imageCache.set(file, uri);
-          return uri;
-        },
-        (err) => {
-          // Not cached, so a later render tries again, e.g. once the file exists.
-          imageLoads.delete(file);
-          throw err;
-        },
-      );
-      imageLoads.set(file, load);
-    }
-    return load;
   }
 
   function altBox(img: HTMLImageElement, why: string): HTMLElement {

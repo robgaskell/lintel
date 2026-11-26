@@ -22,8 +22,8 @@
 
   // First visible source line, from whichever side the user scrolled last.
   let topLine = 1;
-  // Set while the editor follows the preview, so its scroll events are not sent back.
-  const editorLock = createScrollLock(150);
+  // Marks the editor scroll that following the preview causes, so it is not sent back.
+  const editorLock = createScrollLock(300);
   let paneHidden = false;
   const cleanups: (() => void)[] = [];
 
@@ -38,7 +38,7 @@
   }
 
   function onEditorScroll() {
-    if (!view || paneHidden || editorLock.held()) return;
+    if (!view || paneHidden || editorLock.skip()) return;
     topLine = editorTopLine(view);
     if (doc.mode === 'split') preview?.scrollToLine(topLine);
   }

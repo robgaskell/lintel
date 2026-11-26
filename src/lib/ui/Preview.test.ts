@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from '@testing-library/svelte';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { readImageAsDataUri } from '../ipc';
 import { openPaths } from '../os/open';
 import { renderMarkdown } from '../render/markdown';
+import { fakePreviewLayout } from '../../test/layout';
 import Preview from './Preview.svelte';
 
 vi.mock('../ipc', () => ({ readImageAsDataUri: vi.fn() }));
@@ -24,8 +25,8 @@ function show(src: string, docPath: string | null = '/notes/doc.md', onLineVisib
   return { ...view, onLineVisible };
 }
 
-function click(el: Element | null): MouseEvent {
-  const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+function click(el: Element | null, type = 'click'): MouseEvent {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: type === 'auxclick' ? 1 : 0 });
   el!.dispatchEvent(event);
   return event;
 }
@@ -68,6 +69,12 @@ describe('Preview images', () => {
 
     await vi.waitFor(() => expect(container.querySelector('.image-alt')?.textContent).toBe('notes'));
     expect(container.querySelector('.image-alt')?.getAttribute('title')).toContain('svg images only');
+  });
+
+  it('drops srcset, so no candidate URL is ever fetched', () => {
+    const { container } = show('<img src="a.png" srcset="https://evil.test/x.png 2x">\n');
+
+    expect(container.querySelector('img')?.hasAttribute('srcset')).toBe(false);
   });
 
   it('cannot place a relative image in an unsaved document', () => {
@@ -121,6 +128,12 @@ describe('Preview links', () => {
     expect(openUrl).not.toHaveBeenCalled();
   });
 
+  it('never lets a middle click on a link do its default', () => {
+    const { container } = show('[site](https://example.com/a)\n');
+
+    expect(click(container.querySelector('a'), 'auxclick').defaultPrevented).toBe(true);
+  });
+
   it('handles a click on an element inside a link', () => {
     const { container } = show('[**bold**](mailto:a@b.test)\n');
 
@@ -140,5 +153,47 @@ describe('Preview layout', () => {
     expect(container.querySelectorAll('h1')).toHaveLength(1);
     expect(container.querySelector('h1')?.textContent).toBe('Two');
     expect(container.querySelector('.preview')?.classList.contains('reading')).toBe(true);
+  });
+});
+
+describe('Preview scroll sync', () => {
+  let restoreLayout: () => void;
+  beforeEach(() => (restoreLayout = fakePreviewLayout()));
+  afterEach(() => restoreLayout());
+
+  function scrollBy(scroller: Element, top: number) {
+    scroller.scrollTop = top;
+    scroller.dispatchEvent(new Event('scroll'));
+  }
+
+  it('reports a user scroll, but not the scroll scrollToLine made', () => {
+    const { component, container, onLineVisible } = show('# A\n\nb\n\nc\n');
+    const scroller = container.querySelector('.preview')!;
+
+    component.scrollToLine(3);
+    expect(scroller.scrollTop).toBe(100);
+    scroller.dispatchEvent(new Event('scroll'));
+    expect(onLineVisible).not.toHaveBeenCalled();
+
+    scrollBy(scroller, 200);
+    expect(onLineVisible).toHaveBeenCalledWith(5);
+  });
+
+  it('syncs lines after the last block toward the end of the content', () => {
+    const view = render(Preview, { result: renderMarkdown('# A\n\nb\n'), lineCount: 6 });
+
+    view.component.scrollToLine(5);
+
+    // Between line 3 at 100 px and the end (line 7) at 200 px.
+    expect(view.container.querySelector('.preview')!.scrollTop).toBe(150);
+  });
+
+  it('ignores a forged source line in raw HTML (Ruling 85)', () => {
+    const src = '# A\n\n<div data-source-line="50">x</div>\n\nc\n\nd\n\ne\n';
+    const { container, onLineVisible } = show(src);
+
+    scrollBy(container.querySelector('.preview')!, 150);
+
+    expect(onLineVisible).toHaveBeenCalledWith(4);
   });
 });

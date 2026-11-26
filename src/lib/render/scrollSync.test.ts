@@ -129,25 +129,26 @@ describe('createScrollLock', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('is held for a short time after hold, then released', () => {
-    const lock = createScrollLock(100);
-    expect(lock.held()).toBe(false);
+  it('skips exactly the next scroll event after hold, then lets events through', () => {
+    const lock = createScrollLock(300);
+    expect(lock.skip()).toBe(false);
 
     lock.hold();
-    expect(lock.held()).toBe(true);
-
-    vi.advanceTimersByTime(99);
-    expect(lock.held()).toBe(true);
-    vi.advanceTimersByTime(1);
-    expect(lock.held()).toBe(false);
+    expect(lock.skip()).toBe(true);
+    expect(lock.skip()).toBe(false);
   });
 
-  it('restarts the hold when hold is called again', () => {
-    const lock = createScrollLock(100);
+  it('still skips a late echo inside the fallback', () => {
+    const lock = createScrollLock(300);
     lock.hold();
-    vi.advanceTimersByTime(80);
+    vi.advanceTimersByTime(299);
+    expect(lock.skip()).toBe(true);
+  });
+
+  it('gives up after the fallback when the programmatic scroll caused no event', () => {
+    const lock = createScrollLock(300);
     lock.hold();
-    vi.advanceTimersByTime(80);
-    expect(lock.held()).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(lock.skip()).toBe(false);
   });
 });

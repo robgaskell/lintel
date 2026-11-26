@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
+import { EditorView } from '@codemirror/view';
+import { fakePreviewLayout } from '../../test/layout';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane from './DocPane.svelte';
@@ -100,5 +102,46 @@ describe('DocPane large-file notice', () => {
   it('shows no notice for an ordinary doc', () => {
     const { queryByText } = pane('edit');
     expect(queryByText(NOTICE)).toBeNull();
+  });
+});
+
+describe('DocPane scroll sync', () => {
+  let restoreLayout: () => void;
+  beforeEach(() => (restoreLayout = fakePreviewLayout()));
+  afterEach(() => restoreLayout());
+
+  const src = '# A\n\nb\n\nc\n\nd\n';
+
+  function userScroll(el: Element, top?: number) {
+    if (top !== undefined) el.scrollTop = top;
+    el.dispatchEvent(new Event('scroll'));
+  }
+
+  it('does not send the editor scroll that following the preview caused back to it', () => {
+    const { q } = pane('split', src);
+    const preview = q('.preview')!;
+    const editorScroller = q('.cm-scroller')!;
+
+    userScroll(preview, 200);
+    userScroll(editorScroller); // the echo of the editor following line 5
+    expect(preview.scrollTop).toBe(200);
+
+    // The next editor scroll is the user's own, so the preview follows it.
+    userScroll(editorScroller, 0);
+    expect(preview.scrollTop).toBe(0);
+  });
+
+  it('brings the editor to the line being read when leaving Read', () => {
+    const { doc, q } = pane('read', src);
+    userScroll(q('.preview')!, 200);
+    const view = EditorView.findFromDOM(q('.cm-editor') as HTMLElement)!;
+    const measure = vi.spyOn(view, 'requestMeasure');
+    const dispatch = vi.spyOn(view, 'dispatch');
+
+    doc.mode = 'split';
+    flushSync();
+
+    expect(measure).toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() }));
   });
 });

@@ -121,6 +121,12 @@ describe('renderMarkdown: sanitising', () => {
     expect(div?.getAttributeNames()).toEqual(['data-source-line']);
   });
 
+  it('removes image maps, whose areas are links the preview does not handle (Ruling 97)', () => {
+    const html = renderMarkdown('<map name="m"><area href="https://evil.test" shape="rect" coords="0,0,9,9"></map>\n').html;
+    expect(html).not.toContain('<map');
+    expect(html).not.toContain('<area');
+  });
+
   it('drops download on links (Ruling 88)', () => {
     const html = renderMarkdown('<a href="a.md" download="x.md">a</a>\n').html;
     expect(dom(html).querySelector('a')?.hasAttribute('download')).toBe(false);

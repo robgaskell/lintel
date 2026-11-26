@@ -37,10 +37,35 @@ describe('resolveTarget', () => {
     expect(resolveTarget('/n/doc.md', 'C:/pics/a.png')).toBeNull();
   });
 
+  it('never resolves to a network path, whatever mix of separators (Ruling 94)', () => {
+    const targets = [
+      '//evil.example/share/a.png',
+      '\\\\evil.example\\share\\a.png',
+      '/\\evil.example\\share\\a.png',
+      '\\/evil.example/share/a.png',
+      '/%5Cevil.example%5Cshare%5Ca.png',
+      '\\\\?\\UNC\\evil.example\\share\\a.png',
+      '\\\\.\\pipe\\name.png',
+      '/\\.\\pipe\\name.png',
+    ];
+    for (const docPath of ['/notes/doc.md', 'C:\\Users\\a\\doc.md', null]) {
+      for (const target of targets) expect(resolveTarget(docPath, target), `${docPath} ${target}`).toBeNull();
+    }
+  });
+
+  it('gives nothing for any target in a doc that lives on a network share', () => {
+    expect(resolveTarget('\\\\server\\share\\doc.md', 'a.png')).toBeNull();
+    expect(resolveTarget('//server/share/doc.md', 'a.png')).toBeNull();
+  });
+
+  it('reads a backslash in a target as a separator', () => {
+    expect(resolveTarget('/notes/doc.md', 'img\\a.png')).toBe('/notes/img/a.png');
+    expect(resolveTarget('/notes/doc.md', '/pics\\a.png')).toBe('/pics/a.png');
+  });
+
   it('joins with backslashes under a Windows doc path', () => {
     expect(resolveTarget('C:\\Users\\a\\notes\\doc.md', 'img/a.png')).toBe('C:\\Users\\a\\notes\\img\\a.png');
     expect(resolveTarget('C:\\Users\\a\\doc.md', '../../../../b.md')).toBe('C:\\b.md');
-    expect(resolveTarget('\\\\server\\share\\doc.md', '../a.png')).toBe('\\\\server\\share\\a.png');
   });
 });
 
@@ -50,6 +75,18 @@ describe('classifyHref', () => {
     expect(classifyHref('HTTP://Example.com')).toEqual({ kind: 'external', url: 'http://example.com/' });
     expect(classifyHref('mailto:a@b.test')).toEqual({ kind: 'external', url: 'mailto:a@b.test' });
     expect(classifyHref('tel:+441234')).toEqual({ kind: 'external', url: 'tel:+441234' });
+  });
+
+  it('passes a mailto link on with only its address, subject and body (Ruling 97)', () => {
+    expect(classifyHref('mailto:x@y.test?attach=/home/u/.ssh/id_rsa&Subject=Hi%20there&body=Yes&cc=z@y.test')).toEqual({
+      kind: 'external',
+      url: 'mailto:x@y.test?subject=Hi%20there&body=Yes',
+    });
+    expect(classifyHref('mailto:x@y.test?attach=/etc/passwd')).toEqual({ kind: 'external', url: 'mailto:x@y.test' });
+  });
+
+  it('ignores a mailto address that hides header fields in escapes', () => {
+    expect(classifyHref('mailto:x@y.test%3Fattach=/etc/passwd')).toEqual({ kind: 'ignore' });
   });
 
   it('reads a bare #fragment as an in-page anchor, decoded', () => {

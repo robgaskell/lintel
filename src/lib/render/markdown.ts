@@ -142,7 +142,11 @@ purify.addHook('uponSanitizeAttribute', (_node, data) => {
 
 // SANITIZE_DOM stays on; the h- prefix keeps heading ids clear of it (Ruling 64).
 const SANITIZE = {
-  FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'option', 'dialog', 'iframe', 'object', 'embed'],
+  FORBID_TAGS: [
+    'style', 'form', 'button', 'textarea', 'select', 'option', 'dialog', 'iframe', 'object', 'embed',
+    // An image map's areas are links that would bypass the preview's click handler (Ruling 97).
+    'map', 'area',
+  ],
   // `download` would save a file instead of opening the link (Ruling 88).
   FORBID_ATTR: ['style', 'popover', 'download'],
   // Documents may not set data-tauri-drag-region or other data-* (Ruling 87).

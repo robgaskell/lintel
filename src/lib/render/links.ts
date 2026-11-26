@@ -18,6 +18,7 @@ export function classifyHref(href: string): HrefAction {
   try {
     const url = new URL(href);
     // The opener's scope match is case-sensitive, so the scheme goes in lower-case.
+    if (url.protocol === 'mailto:') return safeMailto(url);
     if (EXTERNAL_SCHEMES.has(url.protocol)) return { kind: 'external', url: url.href };
   } catch {
     // Not a URL the system could open either.
@@ -39,17 +40,15 @@ export function isMarkdownPath(path: string): boolean {
 /**
  * The file a link or image target names, resolved against the doc's folder with string
  * logic only. Null when it cannot be resolved: an empty target, a relative target in an
- * unsaved doc, or a Windows drive-letter target, which v1 does not support (Ruling 81).
+ * unsaved doc, a Windows drive-letter target, which v1 does not support (Ruling 81), or
+ * a network path.
  */
 export function resolveTarget(docPath: string | null, target: string): string | null {
   const path = decode(target.replace(/[?#].*$/s, ''));
-  if (path === '' || /^[a-z]:/i.test(path)) return null;
-  if (path.startsWith('/')) return joinUnder('/', path.split('/'), '/');
-  if (docPath === null) return null;
-  const { root, rest } = splitRoot(docPath);
-  const sep = root.includes('\\') ? '\\' : '/';
-  const folder = rest.split(/[\\/]/).slice(0, -1);
-  return joinUnder(root, [...folder, ...path.split(/[\\/]/)], sep);
+  if (path === '' || /^[a-z]:/i.test(path) || isNetworkPath(path)) return null;
+  const resolved = resolveLocal(docPath, path);
+  // Checked again after joining, as a doc on a share would put its own root in front.
+  return resolved === null || isNetworkPath(resolved) ? null : resolved;
 }
 
 /**
@@ -64,6 +63,34 @@ export function headingIdFor(fragment: string, ids: ReadonlySet<string>): string
     `h-${slugify(fragment, new Map())}`,
   ];
   return candidates.find((id) => id.startsWith('h-') && ids.has(id)) ?? null;
+}
+
+// Some mail clients honour ?attach=<path>, so only the address, subject and body pass (Ruling 97).
+function safeMailto(url: URL): HrefAction {
+  const address = decode(url.pathname);
+  if (/[?&]/.test(address)) return { kind: 'ignore' };
+  const kept: string[] = [];
+  for (const field of ['subject', 'body']) {
+    const value = [...url.searchParams].find(([key]) => key.toLowerCase() === field)?.[1];
+    if (value !== undefined) kept.push(`${field}=${encodeURIComponent(value)}`);
+  }
+  const query = kept.length > 0 ? `?${kept.join('&')}` : '';
+  return { kind: 'external', url: `mailto:${url.pathname}${query}` };
+}
+
+function resolveLocal(docPath: string | null, path: string): string | null {
+  if (/^[\\/]/.test(path)) return joinUnder('/', path.split(/[\\/]/), '/');
+  if (docPath === null) return null;
+  const { root, rest } = splitRoot(docPath);
+  const sep = root.includes('\\') ? '\\' : '/';
+  const folder = rest.split(/[\\/]/).slice(0, -1);
+  return joinUnder(root, [...folder, ...path.split(/[\\/]/)], sep);
+}
+
+// Two leading separators in any mix mean UNC, \\?\ or \\.\ on Windows: opening one
+// connects to another host and can leak the user's password hash (Ruling 94).
+function isNetworkPath(path: string): boolean {
+  return /^[\\/]{2}/.test(path);
 }
 
 function decode(text: string): string {

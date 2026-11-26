@@ -46,16 +46,21 @@ export function renderDelayMs(byteLength: number): number {
 }
 
 /**
- * Marks one side's scrolling as programmatic for `holdMs`, so the scroll events it
- * causes are not synced back to the side that started it.
+ * Marks the next scroll event on one side as the echo of a programmatic scroll, so it
+ * is not synced back. If no event comes (the side was already there), the mark lapses
+ * after `fallbackMs`, so a later user scroll is not swallowed (Ruling 97).
  */
-export function createScrollLock(holdMs: number): { hold(): void; held(): boolean } {
+export function createScrollLock(fallbackMs: number): { hold(): void; skip(): boolean } {
   let until = 0;
   return {
     hold: () => {
-      until = Date.now() + holdMs;
+      until = Date.now() + fallbackMs;
     },
-    held: () => Date.now() < until,
+    skip: () => {
+      const echo = Date.now() < until;
+      until = 0;
+      return echo;
+    },
   };
 }
 
