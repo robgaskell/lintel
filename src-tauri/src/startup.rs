@@ -1,5 +1,6 @@
 //! The main window starts hidden and is themed before it shows, so a forced Light or Dark
-//! never shows a frame in the macOS appearance (Ruling 154).
+//! never shows a frame in the macOS appearance (Ruling 154), nor a custom background a
+//! frame of the default one (Ruling 170).
 
 use std::time::Duration;
 use tauri::window::Color;
@@ -26,6 +27,48 @@ pub fn background_for(theme: Theme) -> Color {
     }
 }
 
+/// The resolved theme's palette background from settings.json, read as loadSettings
+/// would: version 1 with both palettes whole and every colour #RRGGBB, else the default
+/// (Ruling 170). The window then starts in the colour the page will paint.
+pub fn stored_background(theme: Theme, json: Option<&str>) -> Color {
+    stored_palette_background(theme, json).unwrap_or_else(|| background_for(theme))
+}
+
+fn stored_palette_background(theme: Theme, json: Option<&str>) -> Option<Color> {
+    let value: serde_json::Value = serde_json::from_str(json?).ok()?;
+    if value.get("version")?.as_i64()? != 1 {
+        return None;
+    }
+    let palettes = value.get("palettes")?;
+    let whole = |name: &str| {
+        let palette = palettes.get(name)?;
+        PALETTE_KEYS
+            .iter()
+            .all(|key| {
+                palette
+                    .get(key)
+                    .and_then(|c| c.as_str())
+                    .and_then(parse_hex)
+                    .is_some()
+            })
+            .then_some(palette)
+    };
+    let (light, dark) = (whole("light")?, whole("dark")?);
+    let palette = if theme == Theme::Dark { dark } else { light };
+    parse_hex(palette.get("background")?.as_str()?)
+}
+
+const PALETTE_KEYS: [&str; 5] = ["background", "text", "accent", "link", "codeBackground"];
+
+fn parse_hex(colour: &str) -> Option<Color> {
+    let digits = colour.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |i: usize| u8::from_str_radix(&digits[i..i + 2], 16).ok();
+    Some(Color(channel(0)?, channel(2)?, channel(4)?, 0xFF))
+}
+
 pub fn prepare_main_window<R: Runtime>(window: &WebviewWindow<R>) {
     let json = window
         .path()
@@ -39,7 +82,8 @@ pub fn prepare_main_window<R: Runtime>(window: &WebviewWindow<R>) {
     let resolved = forced
         .or_else(|| window.theme().ok())
         .unwrap_or(Theme::Light);
-    if let Err(err) = window.set_background_color(Some(background_for(resolved))) {
+    let background = stored_background(resolved, json.as_deref());
+    if let Err(err) = window.set_background_color(Some(background)) {
         eprintln!("Could not set the window background: {err}");
     }
     let window = window.clone();
@@ -90,6 +134,84 @@ mod tests {
         assert_eq!(stored_theme(Some(r#"{"theme":"blue"}"#)), None);
         assert_eq!(stored_theme(Some(r#"{"theme":1}"#)), None);
         assert_eq!(stored_theme(Some(r#"{"version":1}"#)), None);
+    }
+
+    fn hex(color: Color) -> String {
+        let Color(r, g, b, a) = color;
+        assert_eq!(a, 0xFF);
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
+    const PALETTE: &str = r##"{"background":"#7E8080","text":"#FFFFF8","accent":"#0F766E","link":"#0F766E","codeBackground":"#333333"}"##;
+
+    fn with_palettes(light: &str, dark: &str) -> String {
+        format!(r#"{{"version":1,"palettes":{{"light":{light},"dark":{dark}}}}}"#)
+    }
+
+    #[test]
+    fn uses_the_stored_background_of_each_theme() {
+        let dark = PALETTE.replace("#7E8080", "#0b1b33");
+        let json = with_palettes(PALETTE, &dark);
+        assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#7E8080");
+        assert_eq!(hex(stored_background(Theme::Dark, Some(&json))), "#0B1B33");
+    }
+
+    #[test]
+    fn an_invalid_background_gets_the_default() {
+        for bad in [
+            "\"red\"",
+            "\"#7E808\"",
+            "\"#7E8080FF\"",
+            "\"#GGGGGG\"",
+            "7",
+            "null",
+        ] {
+            let broken = PALETTE.replace("\"#7E8080\"", bad);
+            let json = with_palettes(&broken, &broken);
+            assert_eq!(
+                hex(stored_background(Theme::Light, Some(&json))),
+                "#FFFFFF",
+                "{bad}"
+            );
+            assert_eq!(
+                hex(stored_background(Theme::Dark, Some(&json))),
+                "#181817",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_palette_the_settings_loader_would_reject_gets_the_default() {
+        // loadSettings keeps the palettes only when both are whole and valid.
+        let bad_link = PALETTE.replace("\"link\":\"#0F766E\"", "\"link\":\"blue\"");
+        let json = with_palettes(PALETTE, &bad_link);
+        assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
+        let json = format!(r#"{{"version":1,"palettes":{{"light":{PALETTE}}}}}"#);
+        assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
+        let json = format!(r#"{{"version":2,"palettes":{{"light":{PALETTE},"dark":{PALETTE}}}}}"#);
+        assert_eq!(hex(stored_background(Theme::Light, Some(&json))), "#FFFFFF");
+    }
+
+    #[test]
+    fn a_missing_file_or_palette_gets_the_default() {
+        for json in [
+            None,
+            Some("{ not json"),
+            Some(r#"{"version":1}"#),
+            Some(r#"{"version":1,"palettes":[]}"#),
+        ] {
+            assert_eq!(
+                hex(stored_background(Theme::Light, json)),
+                "#FFFFFF",
+                "{json:?}"
+            );
+            assert_eq!(
+                hex(stored_background(Theme::Dark, json)),
+                "#181817",
+                "{json:?}"
+            );
+        }
     }
 
     #[test]
