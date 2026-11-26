@@ -1,6 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { activeView, registerView, setActiveDocSource, viewFor } from './views';
+import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
+import { activeView, registerView, remeasureOnFontChange, setActiveDocSource, viewFor } from './views';
+
+const changed = vi.hoisted(() => ({ cb: null as ((s: Settings) => void) | null }));
+vi.mock('../settings/settings.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
+  onSettingsChanged: (cb: (s: Settings) => void) => {
+    changed.cb = cb;
+    return () => (changed.cb = null);
+  },
+}));
 
 const fakeView = (name: string) => ({ name }) as unknown as EditorView;
 
@@ -34,9 +44,44 @@ describe('editor view registry', () => {
   });
 
   it('has no active view when no tab is active', () => {
-    registerView('doc', fakeView('x'));
+    const forget = registerView('doc', fakeView('x'));
     setActiveDocSource({ activeDocId: () => null });
 
     expect(activeView()).toBeNull();
+    forget();
+  });
+});
+
+describe('remeasureOnFontChange (Ruling 161)', () => {
+  type Measured = EditorView & { requestMeasure: ReturnType<typeof vi.fn> };
+  const measured = () => ({ requestMeasure: vi.fn() }) as unknown as Measured;
+  const withSettings = (patch: Partial<Settings>) =>
+    ({ ...structuredClone(DEFAULT_SETTINGS), ...patch }) as Settings;
+
+  it('re-measures every editor after a font or size change, and not for other changes', () => {
+    const a = measured();
+    const b = measured();
+    const forget = [registerView('a', a), registerView('b', b)];
+    const stop = remeasureOnFontChange();
+
+    changed.cb!(withSettings({ theme: 'dark' }));
+    expect(a.requestMeasure).not.toHaveBeenCalled();
+
+    const fontChanges = [
+      { fontSize: 20 },
+      { readingFont: 'Georgia, serif' },
+      { editorFont: 'Menlo, Consolas, monospace' },
+    ];
+    for (const patch of fontChanges) {
+      a.requestMeasure.mockClear();
+      b.requestMeasure.mockClear();
+      changed.cb!(withSettings(patch));
+      expect(a.requestMeasure).toHaveBeenCalledOnce();
+      expect(b.requestMeasure).toHaveBeenCalledOnce();
+    }
+
+    stop();
+    expect(changed.cb).toBeNull();
+    forget.forEach((f) => f());
   });
 });

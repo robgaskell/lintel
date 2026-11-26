@@ -1,4 +1,5 @@
 import type { EditorView } from '@codemirror/view';
+import { onSettingsChanged, settings, type Settings } from '../settings/settings.svelte';
 
 const views = new Map<string, EditorView>();
 let activeSource: { activeDocId(): string | null } | null = null;
@@ -28,4 +29,23 @@ export function activeDocId(): string | null {
 export function activeView(): EditorView | null {
   const id = activeDocId();
   return id ? viewFor(id) : null;
+}
+
+/**
+ * Re-measures every editor after a font or size change in any window. CodeMirror keeps
+ * line heights it measured, so wrapped rows and the gutter drift apart until it does
+ * (Ruling 161). Returns a stop function.
+ */
+export function remeasureOnFontChange(): () => void {
+  let last = fontKey(settings);
+  return onSettingsChanged((next) => {
+    const key = fontKey(next);
+    if (key === last) return;
+    last = key;
+    for (const view of views.values()) view.requestMeasure();
+  });
+}
+
+function fontKey(s: Settings): string {
+  return JSON.stringify([s.readingFont, s.editorFont, s.fontSize]);
 }
