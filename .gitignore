@@ -1,0 +1,5 @@
+# Planning documents stay local
+docs/specs/
+docs/plans/
+docs/research/
+.plan-execution/
