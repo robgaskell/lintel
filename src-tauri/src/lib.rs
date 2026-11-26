@@ -1,5 +1,6 @@
 mod files;
 mod remote;
+mod startup;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,12 @@ pub fn run() {
         )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                startup::prepare_main_window(&window);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             files::normalize_path,
             files::paths_exist,

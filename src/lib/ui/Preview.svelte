@@ -311,6 +311,7 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+    color-scheme: var(--scheme);
     contain: paint;
     overflow-anchor: none;
     box-sizing: border-box;

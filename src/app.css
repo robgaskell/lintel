@@ -83,6 +83,7 @@
   --selection-unfocused: #e9e9e9;
   --search-match: #fddc87;
   --search-match-current: #fbc53a;
+  --scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -108,6 +109,7 @@
     --selection-unfocused: #2d2d2c;
     --search-match: #5c4a1b;
     --search-match-current: #7e631d;
+    --scheme: dark;
     color-scheme: dark;
   }
 }

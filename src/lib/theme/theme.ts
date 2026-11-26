@@ -37,7 +37,8 @@ export function contrastRatio(a: string, b: string): number {
 
 /**
  * The theme variables for the palette of `resolved`: the plan's twelve keys plus the
- * surfaces derived from them (Rulings 129, 148, 149). Every colour is #RRGGBB except `--hover`.
+ * surfaces derived from them (Rulings 129, 148, 149). Every colour is #RRGGBB except `--hover`;
+ * `--scheme` is the resolved theme, for scroll containers' color-scheme.
  */
 export function cssVariables(s: Settings, resolved: ResolvedTheme): Record<string, string> {
   const p = s.palettes[resolved];
@@ -67,6 +68,7 @@ export function cssVariables(s: Settings, resolved: ResolvedTheme): Record<strin
     '--selection-unfocused': mix(p.background, p.text, 0.1),
     '--search-match': mix(p.background, SEARCH_AMBER, dark ? 0.3 : 0.55),
     '--search-match-current': mix(p.background, SEARCH_AMBER, dark ? 0.45 : 0.9),
+    '--scheme': resolved,
   };
 }
 
@@ -138,12 +140,50 @@ function systemQuery(): MediaQueryList {
   return window.matchMedia('(prefers-color-scheme: dark)');
 }
 
-const SAVED_VALUE = /^[^;{}<>]*$/;
-
 interface SavedTheme {
   theme: ResolvedTheme;
   choice: ThemeChoice;
   vars: Record<string, string>;
+}
+
+// The saved record is checked value by value against the kind each variable holds, so a
+// tampered record can never put anything else on <html> (Ruling 155).
+const HOVER = /^rgba\((\d{1,3}), (\d{1,3}), (\d{1,3}), (0|1|0?\.\d+)\)$/;
+const PX = /^(\d{1,2})px$/;
+
+function isSavedValue(name: string, value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  switch (name) {
+    case '--font-read':
+    case '--font-edit':
+      return isFontFamily(value);
+    case '--size-read':
+      return pxIn(value, 12, 24);
+    case '--size-edit':
+      return pxIn(value, 10, 22);
+    case '--scheme':
+      return value === 'light' || value === 'dark';
+    case '--hover': {
+      const m = HOVER.exec(value);
+      return m !== null && m.slice(1, 4).every((c) => Number(c) <= 255);
+    }
+    default:
+      return isColour(value);
+  }
+}
+
+function pxIn(value: string, min: number, max: number): boolean {
+  const m = PX.exec(value);
+  return m !== null && Number(m[1]) >= min && Number(m[1]) <= max;
+}
+
+function isColour(value: string): boolean {
+  try {
+    channels(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isSavedTheme(value: unknown): value is SavedTheme {
@@ -153,8 +193,10 @@ function isSavedTheme(value: unknown): value is SavedTheme {
   if (choice !== 'light' && choice !== 'dark' && choice !== 'system') return false;
   if (typeof vars !== 'object' || vars === null) return false;
   const known = Object.keys(cssVariables(DEFAULT_SETTINGS as Settings, theme));
-  return Object.entries(vars).every(
-    ([name, v]) => known.includes(name) && typeof v === 'string' && SAVED_VALUE.test(v),
+  const saved = vars as Record<string, unknown>;
+  return (
+    Object.keys(saved).length === known.length &&
+    known.every((name) => isSavedValue(name, saved[name]))
   );
 }
 

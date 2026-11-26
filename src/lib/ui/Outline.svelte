@@ -144,6 +144,7 @@
     box-sizing: border-box;
     min-height: 0;
     overflow-y: auto;
+    color-scheme: var(--scheme);
     padding: 14px 10px;
     background: var(--outline-bg);
     border-right: 1px solid var(--toolbar-border);

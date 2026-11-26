@@ -13,6 +13,7 @@ const view = EditorView.theme({
     fontFamily: 'var(--font-edit)',
     fontSize: 'var(--size-edit)',
     lineHeight: '1.7',
+    colorScheme: 'var(--scheme)',
   },
   '.cm-content': { padding: '18px 0', caretColor: 'var(--accent)' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },

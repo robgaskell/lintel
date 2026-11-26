@@ -103,6 +103,7 @@
     padding: 14px 10px;
     border-right: 1px solid var(--border);
     overflow-y: auto;
+    color-scheme: var(--scheme);
   }
 
   nav button {
@@ -129,6 +130,7 @@
     flex: 1;
     min-width: 0;
     overflow-y: auto;
+    color-scheme: var(--scheme);
   }
 
   fieldset {

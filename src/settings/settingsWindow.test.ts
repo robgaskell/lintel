@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emitTo } from '@tauri-apps/api/event';
+import { settings } from '../lib/settings/settings.svelte';
 import { focusedSettingsWindow, openSettingsWindow } from './settingsWindow';
 
 const tauri = vi.hoisted(() => {
@@ -13,6 +14,8 @@ const tauri = vi.hoisted(() => {
     show = vi.fn(async () => {});
     setFocus = vi.fn(async () => {});
     isFocused = vi.fn(async () => this.focused);
+    visible = false;
+    isVisible = vi.fn(async () => this.visible);
 
     constructor(
       readonly label: string,
@@ -51,6 +54,10 @@ const tauri = vi.hoisted(() => {
 
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: tauri.FakeWindow }));
 vi.mock('@tauri-apps/api/event', () => ({ emitTo: vi.fn(async () => {}) }));
+vi.mock('../lib/theme/theme', async () => {
+  const { readable } = await import('svelte/store');
+  return { resolvedTheme: readable('dark') };
+});
 
 beforeEach(() => {
   tauri.windows.clear();
@@ -60,6 +67,43 @@ beforeEach(() => {
 });
 
 describe('openSettingsWindow', () => {
+  it('opens hidden, in the app theme, and is shown after 2 s if its page has not shown it (Ruling 154)', async () => {
+    settings.theme = 'dark';
+    try {
+      vi.useFakeTimers();
+      const opened = openSettingsWindow();
+      await vi.advanceTimersByTimeAsync(0);
+      await opened;
+      const [win] = tauri.constructed;
+      expect(win.options).toMatchObject({ visible: false, theme: 'dark', backgroundColor: '#181817' });
+
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(win.show).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(win.show).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      settings.theme = 'system';
+    }
+  });
+
+  it('leaves the window alone after 2 s when its page already showed it', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened = openSettingsWindow();
+      await vi.advanceTimersByTimeAsync(0);
+      await opened;
+      const [win] = tauri.constructed;
+      expect(win.options.theme).toBeUndefined();
+      win.visible = true;
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(win.show).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('opens one 900×640 resizable window labelled settings on the settings view', async () => {
     await openSettingsWindow();
 

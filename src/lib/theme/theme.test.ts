@@ -40,6 +40,7 @@ const { readFileSync } = (await import(/* @vite-ignore */ 'node:fs' as string)) 
 };
 const appCss = readFileSync('src/app.css', 'utf8');
 const toolbarSource = readFileSync('src/lib/ui/Toolbar.svelte', 'utf8');
+const source = (path: string) => readFileSync(path, 'utf8');
 const SEPIA: Palette = { background: '#F4ECD8', text: '#3B3024', accent: '#0F766E', link: '#0F766E', codeBackground: '#EDE4D1' };
 const NAVY: Palette = { background: '#0B1B33', text: '#D8E1F0', accent: '#8AB4FF', link: '#8AB4FF', codeBackground: '#132744' };
 const BLACK: Palette = { background: '#000000', text: '#E0E0E0', accent: '#8AB4FF', link: '#8AB4FF', codeBackground: '#111111' };
@@ -142,6 +143,21 @@ describe('cssVariables', () => {
     }
   });
 
+  // Palettes where one surface alone decides muted, so dropping it from the check shows.
+  it('checks muted against the background itself (Ruling 155)', () => {
+    const bgBound: Palette = { background: '#151515', text: '#8A8A8A', accent: '#000000', link: '#8A8A8A', codeBackground: '#151515' };
+    const vars = cssVariables(withPalette('dark', bgBound), 'dark');
+    expect(vars['--muted']).toBe('#7F7F7F');
+    expect(contrastRatio(vars['--muted'], vars['--bg'])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('checks muted against the chrome itself (Ruling 155)', () => {
+    const chromeBound: Palette = { background: '#000000', text: '#787878', accent: '#FF0000', link: '#787878', codeBackground: '#000000' };
+    const vars = cssVariables(withPalette('light', chromeBound), 'light');
+    expect(vars['--muted']).toBe('#777777');
+    expect(contrastRatio(vars['--muted'], vars['--chrome'])).toBeGreaterThanOrEqual(4.5);
+  });
+
   it('uses the text colour itself, the most it can do, when no mix reaches 4.5:1', () => {
     // Text on this background is only 3.45:1, so nothing lighter can reach 4.5:1 either.
     const faint: Palette = { ...SEPIA, background: '#FFFFFF', text: '#8A8A8A' };
@@ -209,6 +225,22 @@ function blocks(css: string): { selector: string; media: string | null; decls: R
   }
   return out;
 }
+
+describe('scroll containers (Ruling 154)', () => {
+  it('carry the resolved color-scheme, so their scrollbars match the theme', () => {
+    expect(cssVariables(settingsWith({}), 'dark')['--scheme']).toBe('dark');
+    expect(cssVariables(settingsWith({}), 'light')['--scheme']).toBe('light');
+    const rules: [string, RegExp][] = [
+      ['src/lib/ui/Preview.svelte', /\.preview \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/lib/ui/Outline.svelte', /\.outline \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/settings/SettingsApp.svelte', /\n  nav \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/settings/SettingsApp.svelte', /\n  main \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/App.svelte', /\.dv-tabs-container\) \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/lib/theme/editorTheme.ts', /'\.cm-scroller': \{[^}]*colorScheme: 'var\(--scheme\)'/],
+    ];
+    for (const [file, rule] of rules) expect(source(file), `${file} ${rule}`).toMatch(rule);
+  });
+});
 
 describe('app.css', () => {
   const all = blocks(appCss);
@@ -347,11 +379,54 @@ describe('restoreTheme (Ruling 150)', () => {
     restoreTheme();
     expect(root.dataset.theme).toBeUndefined();
 
-    for (const junk of ['not json', '{"theme":"blue","choice":"dark","vars":{}}', '{"theme":"dark","choice":"dark","vars":{"--bg":"red; x"}}', '{"theme":"dark","choice":"dark","vars":{"color":"red"}}', '{"theme":"dark","choice":"blue","vars":{}}']) {
+    for (const junk of ['not json', 'null', '{"theme":"dark","choice":"dark"}']) {
       localStorage.setItem('lintel:theme', junk);
       restoreTheme();
       expect(root.dataset.theme, junk).toBeUndefined();
       expect(root.getAttribute('style'), junk).toBeNull();
+    }
+  });
+
+  // A good record with one field changed; every value is checked by its kind (Ruling 155).
+  function saved(change: { theme?: unknown; choice?: unknown; vars?: Record<string, unknown> }): string {
+    const vars = { ...cssVariables(settingsWith({ theme: 'dark' }), 'dark'), ...change.vars };
+    return JSON.stringify({ theme: change.theme ?? 'dark', choice: change.choice ?? 'dark', vars });
+  }
+
+  it('restores a record that passes every check', () => {
+    localStorage.setItem('lintel:theme', saved({}));
+    restoreTheme();
+    expect(root.dataset.theme).toBe('dark');
+  });
+
+  it('refuses a record with any value of the wrong kind', () => {
+    const bad: [string, Parameters<typeof saved>[0]][] = [
+      ['theme', { theme: 'blue' }],
+      ['choice', { choice: 'blue' }],
+      ['unknown key', { vars: { color: '#FFFFFF' } }],
+      ['missing key', { vars: { '--bg': undefined } }],
+      ['colour name', { vars: { '--bg': 'red' } }],
+      ['url in a colour', { vars: { '--bg': 'url(https://example.com/x)' } }],
+      ['brace {', { vars: { '--chrome': '#FFF{' } }],
+      ['brace }', { vars: { '--chrome': '}#FFF' } }],
+      ['angle <', { vars: { '--accent': '<#FFF' } }],
+      ['angle >', { vars: { '--accent': '#FFF>' } }],
+      ['semicolon', { vars: { '--text': '#FFF; color: red' } }],
+      ['not a number', { vars: { '--muted': 42 } }],
+      ['hover', { vars: { '--hover': 'rgba(0, 0, 0, 0.1); x' } }],
+      ['hover image', { vars: { '--hover': 'url(x)' } }],
+      ['font', { vars: { '--font-read': 'Georgia; x' } }],
+      ['font url', { vars: { '--font-edit': 'url(x)' } }],
+      ['size unit', { vars: { '--size-read': '16em' } }],
+      ['size too big', { vars: { '--size-read': '99px' } }],
+      ['size fraction', { vars: { '--size-edit': '14.5px' } }],
+      ['editor size too small', { vars: { '--size-edit': '9px' } }],
+    ];
+    for (const [why, change] of bad) {
+      localStorage.setItem('lintel:theme', saved(change));
+      restoreTheme();
+      expect(root.dataset.theme, why).toBeUndefined();
+      expect(root.getAttribute('style'), why).toBeNull();
     }
   });
 });

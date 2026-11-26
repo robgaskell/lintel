@@ -184,6 +184,7 @@
   }
 
   :global(.lintel-dock .dv-tabs-container) {
+    color-scheme: var(--scheme);
     align-items: flex-end;
     gap: 2px;
     padding-left: 8px;
