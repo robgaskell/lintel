@@ -1,4 +1,5 @@
 import { message, open } from '@tauri-apps/plugin-dialog';
+import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import type { MenuHandlers } from './menu';
@@ -13,7 +14,7 @@ export interface MenuHandlerDeps {
     Workspace,
     'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate'
   >;
-  currentWindow(): { destroy(): Promise<void> };
+  currentWindow(): { destroy(): Promise<void>; setFocus(): Promise<void> };
   outline: { visible: boolean };
   setOutlineChecked(checked: boolean): Promise<void>;
 }
@@ -38,33 +39,55 @@ export function makeMenuHandlers({
     if (doc) doc.mode = mode;
   }
 
+  // The menu bar is shared with the Settings window (Ruling 142). Document commands do
+  // nothing there, since they would act on a hidden tab.
+  function forDoc(action: () => void | Promise<void>): () => void {
+    return guarded(async () => {
+      if (!(await focusedSettingsWindow())) await action();
+    });
+  }
+
+  // Opening files from Settings acts in the main window, brought forward first.
+  function inMain(action: () => void | Promise<void>): () => void {
+    return guarded(async () => {
+      if (await focusedSettingsWindow()) await currentWindow().setFocus();
+      await action();
+    });
+  }
+
+  async function closeTab() {
+    const settingsWindow = await focusedSettingsWindow();
+    if (settingsWindow) return settingsWindow.destroy();
+    return closeTabOrWindow(workspace, currentWindow());
+  }
+
   return {
     quit: guarded(() => quitApp(workspace)),
-    newDoc: guarded(newUntitled),
-    open: guarded(chooseFiles),
-    openRecent: (path) => guarded(() => openRecent(path))(),
+    newDoc: inMain(newUntitled),
+    open: inMain(chooseFiles),
+    openRecent: (path) => inMain(() => openRecent(path))(),
     clearRecent: guarded(clearRecent),
-    save: guarded(() => saveActive(false)),
-    saveAs: guarded(() => saveActive(true)),
-    closeTab: guarded(() => closeTabOrWindow(workspace, currentWindow())),
-    setMode: (mode) => guarded(() => setMode(mode))(),
-    toggleOutline: guarded(() => {
+    save: forDoc(() => saveActive(false)),
+    saveAs: forDoc(() => saveActive(true)),
+    closeTab: guarded(closeTab),
+    setMode: (mode) => forDoc(() => setMode(mode))(),
+    toggleOutline: forDoc(() => {
       outline.visible = !outline.visible;
       // The native item flips its own tick on click; setting it keeps the two in step.
       return setOutlineChecked(outline.visible);
     }),
-    print: notYet,
-    exportPdf: notYet,
-    exportHtml: notYet,
-    exportDocx: notYet,
-    openSettings: notYet,
+    print: forDoc(notYet),
+    exportPdf: forDoc(notYet),
+    exportHtml: forDoc(notYet),
+    exportDocx: forDoc(notYet),
+    openSettings: (section) => guarded(() => openSettingsWindow(section))(),
   };
 }
 
 // The step that enables an item replaces this; until then a stray click says so.
-const notYet = guarded(() => {
+function notYet(): never {
   throw new Error('Not implemented yet');
-});
+}
 
 // openPaths reports its own errors; reading the list again drops the entry if the file is gone.
 async function openRecent(path: string) {

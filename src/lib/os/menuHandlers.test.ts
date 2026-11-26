@@ -7,6 +7,7 @@ import { isMac } from './platform';
 import { quitApp } from './quit';
 import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
+import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -15,6 +16,12 @@ vi.mock('./platform', () => ({ isMac: vi.fn(() => true) }));
 vi.mock('./quit', () => ({ quitApp: vi.fn() }));
 vi.mock('./recent', () => ({ clearRecent: vi.fn(), recentMayHaveChanged: vi.fn() }));
 vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
+vi.mock('../../settings/settingsWindow', () => ({
+  focusedSettingsWindow: vi.fn(async () => null),
+  openSettingsWindow: vi.fn(async () => {}),
+}));
+
+const mainWindow = { destroy: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) };
 
 function deps(): MenuHandlerDeps {
   return {
@@ -25,7 +32,7 @@ function deps(): MenuHandlerDeps {
       docIdsInOrder: vi.fn(() => []),
       activate: vi.fn(),
     },
-    currentWindow: vi.fn(() => ({ destroy: vi.fn(async () => {}) })),
+    currentWindow: vi.fn(() => mainWindow),
     outline: { visible: true },
     setOutlineChecked: vi.fn(async () => {}),
   };
@@ -33,6 +40,7 @@ function deps(): MenuHandlerDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   docs.clear();
 });
 
@@ -161,6 +169,68 @@ describe('makeMenuHandlers', () => {
     await vi.waitFor(() =>
       expect(String(vi.mocked(message).mock.calls[0]?.[0])).toContain('Not implemented yet'),
     );
+  });
+
+  it('opens Settings, at a section when one is given (Rulings 141, 144)', async () => {
+    const h = makeMenuHandlers(deps());
+
+    h.openSettings();
+    h.openSettings('files');
+
+    await vi.waitFor(() => expect(openSettingsWindow).toHaveBeenCalledTimes(2));
+    expect(openSettingsWindow).toHaveBeenNthCalledWith(1, undefined);
+    expect(openSettingsWindow).toHaveBeenNthCalledWith(2, 'files');
+  });
+
+  describe('with Settings focused (Ruling 142)', () => {
+    const settingsWindow = { destroy: vi.fn(async () => {}) };
+    beforeEach(() => {
+      vi.mocked(focusedSettingsWindow).mockResolvedValue(settingsWindow as never);
+    });
+
+    it('leaves the main window alone for document commands', async () => {
+      const doc = { id: 'doc-1', mode: 'split' } as DocState;
+      docs.set(doc.id, doc);
+      const d = deps();
+      const h = makeMenuHandlers(d);
+
+      for (const command of [h.save, h.saveAs, h.toggleOutline, h.print, h.exportPdf]) command();
+      h.setMode('read');
+
+      await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(6));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(saveDoc).not.toHaveBeenCalled();
+      expect(saveDocAs).not.toHaveBeenCalled();
+      expect(doc.mode).toBe('split');
+      expect(d.outline.visible).toBe(true);
+      expect(d.setOutlineChecked).not.toHaveBeenCalled();
+      expect(message).not.toHaveBeenCalled();
+    });
+
+    it('closes Settings on Close Tab, not a tab', async () => {
+      makeMenuHandlers(deps()).closeTab();
+
+      await vi.waitFor(() => expect(settingsWindow.destroy).toHaveBeenCalledOnce());
+      expect(closeTabOrWindow).not.toHaveBeenCalled();
+      expect(mainWindow.destroy).not.toHaveBeenCalled();
+    });
+
+    it('brings the main window forward for New, Open and Open Recent, then acts there', async () => {
+      const order: string[] = [];
+      mainWindow.setFocus.mockImplementation(async () => void order.push('focus'));
+      vi.mocked(newUntitled).mockImplementation(() => void order.push('new') as never);
+      vi.mocked(open).mockResolvedValue(null);
+      const h = makeMenuHandlers(deps());
+
+      h.newDoc();
+      await vi.waitFor(() => expect(order).toEqual(['focus', 'new']));
+      h.open();
+      await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+      h.openRecent('/notes/a.md');
+      await vi.waitFor(() => expect(openPaths).toHaveBeenCalledWith(['/notes/a.md']));
+
+      expect(mainWindow.setFocus).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('shows an error from a handler in a dialog', async () => {

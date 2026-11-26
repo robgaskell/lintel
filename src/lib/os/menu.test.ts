@@ -17,6 +17,7 @@ import {
   type MenuHandlers,
 } from './menu';
 import { getRecent, knownRecent } from './recent';
+import { focusedSettingsWindow } from '../../settings/settingsWindow';
 
 // Models Tauri: one app-wide id -> handler map; a later item with the same id replaces
 // the handler, and closing a menu removes its ids whoever owns them now.
@@ -68,6 +69,7 @@ vi.mock('@tauri-apps/api/menu', () => ({
   },
 }));
 
+vi.mock('../../settings/settingsWindow', () => ({ focusedSettingsWindow: vi.fn(async () => null) }));
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
@@ -90,8 +92,12 @@ beforeEach(async () => {
   await loadSettings();
   vi.mocked(Menu.new).mockClear();
   vi.mocked(CheckMenuItem.new).mockClear();
+  vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   outline.visible = true;
 });
+
+// Edit commands first ask which window is focused (Ruling 142).
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 type Entry = {
   id?: string;
@@ -176,9 +182,9 @@ describe('menuEntries', () => {
 
   it('disables the items whose features come later', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
-    const later = ['settings', 'print', 'export-pdf', 'export-html', 'export-docx'];
+    const later = ['print', 'export-pdf', 'export-html', 'export-docx'];
     for (const id of later) expect(byId(entries, id).enabled).toBe(false);
-    const ready = ['new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'];
+    const ready = ['settings', 'new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'];
     for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);
     }
@@ -216,7 +222,49 @@ describe('menuEntries', () => {
     expect(hidden.checked).toBe(false);
   });
 
-  it('leaves the hidden editor alone in Read: Undo, Redo and Find do nothing (Ruling 97)', () => {
+  it('opens Settings from Settings… on Cmd+, in the app menu on macOS and in File elsewhere (Ruling 141)', () => {
+    for (const platform of ['macos', 'windows', 'linux'] as const) {
+      const h = handlers();
+      const entries = menuEntries(h, [], platform) as Entry[];
+      const item = byId(entries, 'settings');
+      expect(item.text).toBe('Settings…');
+      expect(item.accelerator).toBe('CmdOrCtrl+,');
+      item.action!();
+      expect(h.openSettings).toHaveBeenCalledOnce();
+      const home = platform === 'macos' ? entries[0] : entries.find((e) => e.text === 'File')!;
+      expect(home.items!.some((e) => e.id === 'settings')).toBe(true);
+    }
+  });
+
+  it('leaves the editor alone while Settings is focused: Undo, Redo and Find do nothing (Ruling 142)', async () => {
+    const doc = createDoc({ path: '/s.md', raw: 'a', hash: 'h', mode: 'split' });
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: 'a', extensions: [history(), search()] }),
+    });
+    const forget = registerView(doc.id, view);
+    setActiveDocSource({ activeDocId: () => doc.id });
+    view.dispatch({ changes: { from: 1, insert: 'b' } });
+    const entries = menuEntries(handlers(), [], 'macos') as Entry[];
+    vi.mocked(focusedSettingsWindow).mockResolvedValue({} as never);
+
+    byId(entries, 'undo').action!();
+    byId(entries, 'find').action!();
+    await settle();
+    expect(view.state.doc.toString()).toBe('ab');
+    expect(view.dom.querySelector('.cm-search')).toBeNull();
+
+    vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
+    byId(entries, 'undo').action!();
+    await settle();
+    expect(view.state.doc.toString()).toBe('a');
+
+    forget();
+    setActiveDocSource(null);
+    view.destroy();
+  });
+
+  it('leaves the hidden editor alone in Read: Undo, Redo and Find do nothing (Ruling 97)', async () => {
     const doc = createDoc({ path: '/r.md', raw: 'a', hash: 'h', mode: 'read' });
     const view = new EditorView({
       parent: document.body,
@@ -229,17 +277,21 @@ describe('menuEntries', () => {
 
     byId(entries, 'undo').action!();
     byId(entries, 'find').action!();
+    await settle();
     expect(view.state.doc.toString()).toBe('ab');
     expect(view.dom.querySelector('.cm-search')).toBeNull();
 
     doc.mode = 'split';
     byId(entries, 'undo').action!();
+    await settle();
     expect(view.state.doc.toString()).toBe('a');
     byId(entries, 'redo').action!();
+    await settle();
     expect(view.state.doc.toString()).toBe('ab');
 
     doc.mode = 'read';
     byId(entries, 'undo').action!();
+    await settle();
     expect(view.state.doc.toString()).toBe('ab');
 
     forget();

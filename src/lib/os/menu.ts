@@ -15,6 +15,7 @@ import { docs } from '../docs/store.svelte';
 import { activeDocId, activeView } from '../editor/views';
 import { outline } from '../layout/outline.svelte';
 import { onSettingsChanged, settings } from '../settings/settings.svelte';
+import { focusedSettingsWindow, type SettingsSection } from '../../settings/settingsWindow';
 import { currentPlatform, type Platform } from './platform';
 import { getRecent, knownRecent, onRecentChanged } from './recent';
 
@@ -33,7 +34,7 @@ export interface MenuHandlers {
   exportPdf(): void;
   exportHtml(): void;
   exportDocx(): void;
-  openSettings(): void;
+  openSettings(section?: SettingsSection): void;
 }
 
 type MenuEntry =
@@ -177,7 +178,6 @@ export function menuEntries(
     id: 'settings',
     text: 'Settings…',
     accelerator: 'CmdOrCtrl+,',
-    enabled: false,
     action: () => h.openSettings(),
   };
   // A custom item, not the predefined Quit, so unsaved docs are asked about (Ruling 32).
@@ -238,12 +238,12 @@ export function menuEntries(
     text: 'Edit',
     items: [
       // Custom, because the predefined pair drives WKWebView's undo stack, not the editor's (Ruling 39).
-      { id: 'undo', text: 'Undo', accelerator: 'CmdOrCtrl+Z', action: () => editHistory('undo') },
+      { id: 'undo', text: 'Undo', accelerator: 'CmdOrCtrl+Z', action: () => void editHistory('undo') },
       {
         id: 'redo',
         text: 'Redo',
         accelerator: 'Shift+CmdOrCtrl+Z',
-        action: () => editHistory('redo'),
+        action: () => void editHistory('redo'),
       },
       separator,
       { item: 'Cut' },
@@ -251,12 +251,12 @@ export function menuEntries(
       { item: 'Paste' },
       { item: 'SelectAll' },
       separator,
-      { id: 'find', text: 'Find…', accelerator: 'CmdOrCtrl+F', action: () => onActive(openSearchPanel) },
+      { id: 'find', text: 'Find…', accelerator: 'CmdOrCtrl+F', action: () => void onActive(openSearchPanel) },
       {
         id: 'find-replace',
         text: 'Find and Replace…',
         accelerator: 'CmdOrCtrl+Alt+F',
-        action: () => onActive(openFindReplace),
+        action: () => void onActive(openFindReplace),
       },
     ],
   };
@@ -348,7 +348,13 @@ function openRecentMenu(
   };
 }
 
-function onActive(command: (view: EditorView) => boolean): void {
+async function onActive(command: (view: EditorView) => boolean): Promise<void> {
+  // The menu bar is shared with Settings; its window has no editor to act on (Ruling 142).
+  if (await focusedSettingsWindow()) return;
+  onActiveNow(command);
+}
+
+function onActiveNow(command: (view: EditorView) => boolean): void {
   const id = activeDocId();
   // Read hides the editor, so an undo or a find panel there would be unseen (Ruling 97).
   if (id && docs.get(id)?.mode === 'read') return;
@@ -356,12 +362,13 @@ function onActive(command: (view: EditorView) => boolean): void {
   if (view) command(view);
 }
 
-function editHistory(kind: 'undo' | 'redo'): void {
+async function editHistory(kind: 'undo' | 'redo'): Promise<void> {
+  if (await focusedSettingsWindow()) return;
   const focused = document.activeElement;
   // A text field outside the editor, such as the find field, keeps its own undo stack.
   if (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) {
     document.execCommand(kind);
     return;
   }
-  onActive(kind === 'undo' ? undo : redo);
+  onActiveNow(kind === 'undo' ? undo : redo);
 }

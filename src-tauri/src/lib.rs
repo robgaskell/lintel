@@ -3,7 +3,11 @@ mod remote;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, RunEvent, Runtime, Url, WindowEvent};
+use tauri::menu::Menu;
+use tauri::{Manager, RunEvent, Runtime, Url, Window, WindowEvent};
+
+/// Label of the Settings window that the frontend opens (settingsWindow.ts).
+const SETTINGS: &str = "settings";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,6 +15,7 @@ pub fn run() {
         // The default menu's Quit skips the unsaved-changes prompt; the frontend builds the menu.
         .enable_macos_default_menu(false)
         .plugin(navigation_guard())
+        .plugin(settings_window())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         // The preview's own click handler is the one path that opens links.
@@ -55,6 +60,46 @@ fn navigation_guard<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             }
         })
         .build()
+}
+
+/// The Settings window has no menu bar of its own, and closes with the main window,
+/// whose webview runs every menu command (Ruling 142).
+fn settings_window<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("settings-window")
+        .on_window_ready(|window| {
+            // macOS has one app-wide menu bar; elsewhere each window shows its own.
+            if cfg!(not(target_os = "macos")) && window.label() == SETTINGS {
+                if let Err(err) = hide_menu_bar(&window) {
+                    eprintln!("Could not hide the Settings menu bar: {err}");
+                }
+            }
+        })
+        .on_event(|app, event| {
+            if let RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } = event
+            {
+                if closes_settings(label) {
+                    if let Some(settings) = app.get_webview_window(SETTINGS) {
+                        let _ = settings.destroy();
+                    }
+                }
+            }
+        })
+        .build()
+}
+
+fn closes_settings(destroyed: &str) -> bool {
+    destroyed == "main"
+}
+
+// An empty menu of its own, not none: a window with no menu is given the app menu
+// again on every rebuild of the menu bar.
+fn hide_menu_bar<R: Runtime>(window: &Window<R>) -> tauri::Result<()> {
+    window.set_menu(Menu::new(window)?)?;
+    window.hide_menu()
 }
 
 /// Only `tauri dev` loads from the dev server; built apps serve their own assets.
@@ -103,6 +148,13 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_closes_with_the_main_window_only() {
+        assert!(closes_settings("main"));
+        assert!(!closes_settings(SETTINGS));
+        assert!(!closes_settings("doc-2"));
+    }
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
