@@ -17,6 +17,7 @@ pub fn run() {
         .enable_macos_default_menu(false)
         .plugin(navigation_guard())
         .plugin(settings_window())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         // The preview's own click handler is the one path that opens links.

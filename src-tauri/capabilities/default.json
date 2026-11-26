@@ -17,6 +17,7 @@
     "allow-read-text-file",
     "allow-write-text-file",
     "allow-fetch-remote-image",
+    "clipboard-manager:allow-write-text",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
     "opener:default",
