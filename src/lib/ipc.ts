@@ -23,3 +23,8 @@ export function normalizePath(path: string): Promise<string> {
 export function pathsExist(paths: string[]): Promise<boolean[]> {
   return invoke<boolean[]>('paths_exist', { paths });
 }
+
+/** A local png, jpg, gif, webp or svg (10 MB at most) as a `data:` URI. Rejects with a message otherwise. */
+export function readImageAsDataUri(path: string): Promise<string> {
+  return invoke<string>('read_image_as_data_uri', { path });
+}

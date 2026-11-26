@@ -12,11 +12,18 @@ pub fn run() {
         .plugin(navigation_guard())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // The preview's own click handler is the one path that opens links.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             files::normalize_path,
             files::paths_exist,
+            files::read_image_as_data_uri,
             files::read_text_file,
             files::write_text_file
         ])

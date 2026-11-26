@@ -8,6 +8,7 @@
     "core:window:allow-destroy",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
+    "opener:default",
     "process:allow-exit",
     "process:allow-restart",
     "store:default"

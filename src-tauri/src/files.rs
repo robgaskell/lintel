@@ -1,10 +1,11 @@
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::RandomState;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -12,6 +13,9 @@ use std::time::{Duration, Instant};
 
 const NOT_UTF8: &str = "Lintel opens UTF-8 text files only.";
 const READ_ONLY: &str = "This file is read-only.";
+const NOT_AN_IMAGE: &str = "Lintel shows png, jpg, jpeg, gif, webp and svg images only.";
+// 1 MB = 1,000,000 bytes, as for the large-file guard.
+const MAX_IMAGE_BYTES: usize = 10_000_000;
 
 #[derive(Debug, Serialize)]
 pub struct ReadResult {
@@ -107,6 +111,37 @@ fn strip_verbatim_prefix(path: &str) -> String {
     } else {
         path.to_owned()
     }
+}
+
+/// A local image as a `data:` URI, so the preview never needs a file scope on the webview.
+#[tauri::command]
+pub async fn read_image_as_data_uri(path: String) -> Result<String, String> {
+    let mime = image_mime(Path::new(&path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
+    let fail = |e: io::Error| format!("Could not read {path}: {e}");
+    let mut bytes = Vec::new();
+    // Reading one byte past the limit catches a file that grows after a size check would.
+    File::open(&path)
+        .map_err(fail)?
+        .take(MAX_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(fail)?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!("{path} is larger than 10 MB, so it is not shown."));
+    }
+    Ok(format!("data:{mime};base64,{}", BASE64_STANDARD.encode(&bytes)))
+}
+
+// By extension only: the preview shows what the file name claims, as a browser would.
+fn image_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    })
 }
 
 /// Returns the sha-256 hex of the bytes written.
@@ -560,5 +595,83 @@ mod tests {
 
         assert_eq!(found, vec![false, true, true]);
         assert!(started.elapsed() < std::time::Duration::from_millis(400));
+    }
+    #[test]
+    fn image_becomes_a_data_uri_with_its_type() {
+        let dir = temp_dir();
+        let file = dir.join("pic.png");
+        fs::write(&file, [0x89, b'P', b'N', b'G']).unwrap();
+
+        let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
+
+        assert_eq!(uri, "data:image/png;base64,iVBORw==");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn image_type_comes_from_the_extension_in_any_case() {
+        let dir = temp_dir();
+        let cases = [
+            ("a.JPG", "image/jpeg"),
+            ("b.jpeg", "image/jpeg"),
+            ("c.gif", "image/gif"),
+            ("d.webp", "image/webp"),
+            ("e.svg", "image/svg+xml"),
+        ];
+        for (name, mime) in cases {
+            let file = dir.join(name);
+            fs::write(&file, b"x").unwrap();
+            let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
+            assert_eq!(uri, format!("data:{mime};base64,eA=="), "{name}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn image_refuses_other_extensions() {
+        let dir = temp_dir();
+        for name in ["a.bmp", "notes.md", "README", "pic.png.exe"] {
+            let file = dir.join(name);
+            fs::write(&file, b"x").unwrap();
+            let err = block_on(read_image_as_data_uri(path_str(&file))).unwrap_err();
+            assert_eq!(err, NOT_AN_IMAGE, "{name}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn image_refuses_a_file_over_10_mb() {
+        let dir = temp_dir();
+        let file = dir.join("big.png");
+        fs::write(&file, vec![0u8; MAX_IMAGE_BYTES + 1]).unwrap();
+
+        let err = block_on(read_image_as_data_uri(path_str(&file))).unwrap_err();
+
+        assert!(err.contains("larger than 10 MB"), "{err}");
+        assert!(err.contains("big.png"), "{err}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn image_of_exactly_10_mb_is_read() {
+        let dir = temp_dir();
+        let file = dir.join("edge.gif");
+        fs::write(&file, vec![0u8; MAX_IMAGE_BYTES]).unwrap();
+
+        let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
+
+        assert!(uri.starts_with("data:image/gif;base64,AAAA"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn image_names_a_missing_file() {
+        let dir = temp_dir();
+        let file = path_str(&dir.join("gone.png"));
+
+        let err = block_on(read_image_as_data_uri(file.clone())).unwrap_err();
+
+        assert!(err.starts_with(&format!("Could not read {file}")), "{err}");
+        fs::remove_dir_all(dir).unwrap();
     }
 }
