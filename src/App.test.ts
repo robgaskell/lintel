@@ -4,7 +4,8 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { createDoc, docs } from './lib/docs/store.svelte';
 import { outline } from './lib/layout/outline.svelte';
-import { setOutlineChecked, setSplitEnabled } from './lib/os/menu';
+import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
+import { listenForAdoption, listenForReveal } from './lib/os/windows';
 import { openPaths } from './lib/os/open';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
@@ -49,6 +50,11 @@ vi.mock('./lib/os/menu', () => ({
   syncAppMenu: vi.fn(() => () => {}),
   setOutlineChecked: vi.fn(async () => {}),
   setSplitEnabled: vi.fn(async () => {}),
+  takeAppMenu: vi.fn(),
+}));
+vi.mock('./lib/os/windows', () => ({
+  listenForAdoption: vi.fn(() => () => {}),
+  listenForReveal: vi.fn(() => () => {}),
 }));
 vi.mock('./lib/os/open', () => ({
   setWorkspace: vi.fn(),
@@ -180,6 +186,26 @@ describe('App outline tick (Ruling 120)', () => {
 
     fake.focusHandler!({ payload: true });
     expect(setOutlineChecked).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('App with several windows (M4.3)', () => {
+  it('listens for moved docs and for reveals once the workspace is mounted', () => {
+    render(App);
+
+    expect(listenForAdoption).toHaveBeenCalledOnce();
+    expect(listenForReveal).toHaveBeenCalledOnce();
+    expect(vi.mocked(listenForReveal).mock.calls[0][0]).toHaveProperty('activeDocId');
+  });
+
+  it('takes the app menu when the window gains focus, not when it loses it (Ruling 188)', async () => {
+    render(App);
+    await vi.waitFor(() => expect(fake.focusHandler).not.toBeNull());
+
+    fake.focusHandler!({ payload: false });
+    expect(takeAppMenu).not.toHaveBeenCalled();
+    fake.focusHandler!({ payload: true });
+    expect(takeAppMenu).toHaveBeenCalledOnce();
   });
 });
 

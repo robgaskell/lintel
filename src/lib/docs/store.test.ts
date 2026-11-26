@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizePath, writeTextFile } from '../ipc';
+import { claimPath, normalizePath, releasePath, writeTextFile } from '../ipc';
 import { message, save } from '@tauri-apps/plugin-dialog';
 import { recordRecent } from '../os/recent';
 import {
+  adoptDoc,
   closeDocWithPrompt,
   confirmCloseAll,
   createDoc,
   docs,
   findByPath,
   isDirty,
+  removeDoc,
   saveDoc,
   saveDocAs,
   untitledCounter,
@@ -18,6 +20,8 @@ vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
+  claimPath: vi.fn(async () => null),
+  releasePath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -39,6 +43,10 @@ beforeEach(() => {
   saveDialog.mockReset();
   messageDialog.mockReset();
   vi.mocked(recordRecent).mockReset();
+  vi.mocked(claimPath).mockReset();
+  vi.mocked(claimPath).mockResolvedValue(null);
+  vi.mocked(releasePath).mockReset();
+  vi.mocked(releasePath).mockResolvedValue();
 });
 
 describe('createDoc', () => {
@@ -452,5 +460,144 @@ describe('Save As and Open Recent', () => {
     await expect(saveDocAs(doc.id)).rejects.toBe('This file is read-only.');
 
     expect(recordRecent).not.toHaveBeenCalled();
+  });
+});
+
+describe('the path registry (Ruling 185)', () => {
+  it('removeDoc drops the doc and releases its path', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    removeDoc(doc.id);
+    expect(docs.has(doc.id)).toBe(false);
+    expect(releasePath).toHaveBeenCalledWith('/notes/a.md');
+  });
+
+  it('removeDoc releases nothing for an untitled doc', () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+    removeDoc(doc.id);
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('removeDoc keeps the claim while another tab of this window has the path', () => {
+    const a = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    removeDoc(a.id);
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('closing a doc with the prompt releases its path', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    expect(await closeDocWithPrompt(doc.id)).toBe(true);
+    expect(releasePath).toHaveBeenCalledWith('/notes/a.md');
+  });
+
+  it('a cancelled close releases nothing', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    doc.text = 'edited';
+    messageDialog.mockResolvedValueOnce('Cancel');
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('Save As claims the new path and releases the old one', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/b.md');
+    write.mockResolvedValueOnce('h2');
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(claimPath).toHaveBeenCalledWith('/notes/b.md');
+    expect(releasePath).toHaveBeenCalledWith('/notes/a.md');
+    expect(vi.mocked(claimPath).mock.invocationCallOrder[0]).toBeLessThan(write.mock.invocationCallOrder[0]);
+  });
+
+  it('Save As onto a file another window has open is refused before writing', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/b.md');
+    vi.mocked(claimPath).mockResolvedValueOnce('w-1');
+
+    expect(await saveDocAs(doc.id)).toBe(false);
+
+    expect(write).not.toHaveBeenCalled();
+    expect(doc.path).toBe('/notes/a.md');
+    expect(releasePath).not.toHaveBeenCalled();
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.stringContaining('b.md is open in another window'),
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+
+  it('Save As releases the new claim when the write fails', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/b.md');
+    write.mockRejectedValueOnce(new Error('disk full'));
+
+    await expect(saveDocAs(doc.id)).rejects.toThrow('disk full');
+
+    expect(releasePath).toHaveBeenCalledWith('/notes/b.md');
+    expect(releasePath).not.toHaveBeenCalledWith('/notes/a.md');
+  });
+
+  it('Save As onto its own path claims and releases nothing new', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/a.md');
+    write.mockResolvedValueOnce('h2');
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('an untitled doc claims its path on its first save', async () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+    doc.text = 'new';
+    saveDialog.mockResolvedValueOnce('/notes/new.md');
+    write.mockResolvedValueOnce('h1');
+
+    expect(await saveDoc(doc.id)).toBe(true);
+
+    expect(claimPath).toHaveBeenCalledWith('/notes/new.md');
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('claims the normalised spelling when it differs from the one chosen', async () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/tmp/new.md');
+    write.mockResolvedValueOnce('h1');
+    // The file does not exist until written, so only the second normalise succeeds.
+    normalize.mockRejectedValueOnce(new Error('missing'));
+    normalize.mockResolvedValueOnce('/private/tmp/new.md');
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(doc.path).toBe('/private/tmp/new.md');
+    expect(claimPath).toHaveBeenCalledWith('/tmp/new.md');
+    expect(claimPath).toHaveBeenCalledWith('/private/tmp/new.md');
+    expect(releasePath).toHaveBeenCalledWith('/tmp/new.md');
+  });
+});
+
+describe('adoptDoc (Ruling 186)', () => {
+  it('inserts a handed-over doc as it is, unsaved edits and all', () => {
+    const state = {
+      id: 'moved-1',
+      path: '/notes/a.md',
+      title: 'a.md',
+      text: 'edited',
+      savedText: 'saved',
+      lineEnding: '\r\n' as const,
+      diskHash: 'h1',
+      pinned: true,
+      mode: 'read' as const,
+      external: 'none' as const,
+      diskText: null,
+      lintConfigPath: null,
+    };
+
+    const doc = adoptDoc(state);
+
+    expect(docs.get('moved-1')).toBe(doc);
+    expect(doc).toEqual(state);
+    expect(isDirty(doc)).toBe(true);
+    expect(claimPath).not.toHaveBeenCalled();
   });
 });

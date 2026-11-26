@@ -42,3 +42,18 @@ export function trackCursor(docId: string, view: EditorView): () => void {
     if (cursors.get(docId) === last) map.delete(docId);
   };
 }
+
+// Lines to put the cursor on when a doc's editor first mounts, for docs moved from another window.
+const startLines = new Map<string, number>();
+
+/** Puts the cursor of the next editor for `docId` on `line` (Ruling 186). */
+export function setStartLine(docId: string, line: number): void {
+  startLines.set(docId, line);
+}
+
+/** The line set for `docId`, once; later editors for it start at the top as usual. */
+export function takeStartLine(docId: string): number | undefined {
+  const line = startLines.get(docId);
+  startLines.delete(docId);
+  return line;
+}

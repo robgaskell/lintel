@@ -9,8 +9,10 @@ vi.mock('svelte', async (importOriginal) => ({
 vi.mock('./App.svelte', () => ({ default: 'App' }));
 vi.mock('./settings/SettingsApp.svelte', () => ({ default: 'SettingsApp' }));
 vi.mock('./lib/theme/theme', () => ({ restoreTheme: vi.fn() }));
-const win = vi.hoisted(() => ({ show: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) }));
+const win = vi.hoisted(() => ({ label: 'main', show: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }));
+const adoption = vi.hoisted(() => ({ resolve: () => {}, promise: Promise.resolve() }));
+vi.mock('./lib/os/windows', () => ({ whenAdopted: () => adoption.promise }));
 
 // Frames run only when the test says so.
 let frames: FrameRequestCallback[] = [];
@@ -20,7 +22,9 @@ function nextFrame() {
   for (const cb of due) cb(performance.now());
 }
 
-async function start(search: string) {
+async function start(search: string, label = 'main') {
+  win.label = label;
+  adoption.promise = new Promise<void>((resolve) => (adoption.resolve = resolve));
   history.replaceState(null, '', `/${search}`);
   document.body.innerHTML = '<div id="app"></div>';
   vi.resetModules();
@@ -91,6 +95,51 @@ describe('main', () => {
 
     nextFrame();
     nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+});
+
+describe('main in a new document window (Ruling 184)', () => {
+  const flush = () => vi.advanceTimersByTimeAsync(0);
+
+  it('stays hidden until its doc arrives, then shows two frames later', async () => {
+    await start('', 'w-1');
+    nextFrame();
+    nextFrame();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(win.show).not.toHaveBeenCalled();
+
+    adoption.resolve();
+    await flush();
+    nextFrame();
+    expect(win.show).not.toHaveBeenCalled();
+    nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+
+  it('shows anyway 2 s on when no doc arrives', async () => {
+    await start('', 'w-1');
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(win.show).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    nextFrame();
+    nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+
+    adoption.resolve();
+    await flush();
+    nextFrame();
+    nextFrame();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the 100 ms timer once the doc has arrived', async () => {
+    await start('', 'w-1');
+    adoption.resolve();
+    await flush();
+    await vi.advanceTimersByTimeAsync(100);
     expect(win.show).toHaveBeenCalledOnce();
   });
 });

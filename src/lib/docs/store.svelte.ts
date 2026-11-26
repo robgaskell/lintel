@@ -1,6 +1,6 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { normalizePath, writeTextFile } from '../ipc';
+import { claimPath, normalizePath, releasePath, writeTextFile } from '../ipc';
 import { recordRecent } from '../os/recent';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
@@ -52,6 +52,23 @@ export function createDoc(init: {
   return doc;
 }
 
+/** Inserts a doc handed over from another window as it is, unsaved edits included (Ruling 186). */
+export function adoptDoc(state: DocState): DocState {
+  const doc = $state<DocState>({ ...state });
+  docs.set(doc.id, doc);
+  return doc;
+}
+
+/**
+ * Every way a doc leaves this window ends here, so its path is released for other windows
+ * (Ruling 185). It does not prompt.
+ */
+export function removeDoc(id: string): void {
+  const path = docs.get(id)?.path ?? null;
+  docs.delete(id);
+  if (path !== null) void release(path);
+}
+
 export function isDirty(doc: DocState): boolean {
   return doc.text !== doc.savedText;
 }
@@ -75,7 +92,7 @@ export function saveDocAs(id: string): Promise<boolean> {
  */
 export async function closeDocWithPrompt(id: string): Promise<boolean> {
   if (!(await mayClose(getDoc(id)))) return false;
-  docs.delete(id);
+  removeDoc(id);
   return true;
 }
 
@@ -140,9 +157,30 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
     filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
   });
   if (path === null) return false;
-  await writeTo(doc, path);
+  const oldPath = doc.path;
+  // A file that does not exist yet keeps the spelling chosen until it is written.
+  const chosen = await normalizedOrAsGiven(path);
+  if (chosen !== oldPath && (await claimPath(chosen)) !== null) {
+    // A file is never open in two places (spec), so Save As must not write over it.
+    const text =
+      `${baseName(chosen)} is open in another window. ` +
+      'Close it there first, or choose another name.';
+    await message(text, { title: 'Lintel', kind: 'error' });
+    return false;
+  }
+  try {
+    await writeTo(doc, path);
+  } catch (err) {
+    if (chosen !== oldPath) void release(chosen);
+    throw err;
+  }
   doc.path = await normalizedOrAsGiven(path);
   doc.title = baseName(doc.path);
+  if (doc.path !== chosen) {
+    void claimPath(doc.path).catch((err) => console.error('Could not claim the saved file:', err));
+    void release(chosen);
+  }
+  if (oldPath !== null && oldPath !== doc.path) void release(oldPath);
   // Every Save As route passes here (Ruling 49). Not awaited: a slow store must not delay a save.
   void recordRecent(doc.path);
   return true;
@@ -189,6 +227,17 @@ async function normalizedOrAsGiven(path: string): Promise<string> {
     return await normalizePath(path);
   } catch {
     return path;
+  }
+}
+
+// A failed release only leaves the file claimed by this window until it closes.
+async function release(path: string): Promise<void> {
+  // Another tab of this window may still show the file.
+  if (findByPath(path)) return;
+  try {
+    await releasePath(path);
+  } catch (err) {
+    console.error(`Could not release ${path}:`, err);
   }
 }
 

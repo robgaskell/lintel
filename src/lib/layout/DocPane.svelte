@@ -9,7 +9,7 @@
   import Editor from '../editor/Editor.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
-  import { trackCursor } from '../docs/cursor.svelte';
+  import { takeStartLine, trackCursor } from '../docs/cursor.svelte';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { largeFileNotices } from '../os/open';
@@ -40,6 +40,14 @@
 
   function onReady(editor: EditorView) {
     view = editor;
+    const startLine = takeStartLine(doc.id);
+    if (startLine !== undefined) {
+      const at = lineStart(editor, startLine);
+      editor.dispatch({
+        selection: { anchor: at },
+        effects: EditorView.scrollIntoView(at, { y: 'center' }),
+      });
+    }
     editor.scrollDOM.addEventListener('scroll', onEditorScroll, { passive: true });
     cleanups.push(
       registerView(doc.id, editor),

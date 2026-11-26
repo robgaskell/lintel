@@ -4,7 +4,9 @@ import { MenuItem } from '@tauri-apps/api/menu';
 import { message } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { releasePath } from '../ipc';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
+import { openDocInNewWindow } from '../os/windows';
 import { showTabMenu, tabMenuItems } from './tabMenu';
 import { Workspace } from './workspace';
 
@@ -53,8 +55,16 @@ vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
+  claimPath: vi.fn(async () => null),
+  releasePath: vi.fn(async () => {}),
 }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: async () => {} }) }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ label: 'main', setTheme: async () => {} }),
+}));
+vi.mock('../os/windows', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../os/windows')>()),
+  openDocInNewWindow: vi.fn(async () => {}),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('../os/platform', () => ({ currentPlatform: () => 'macos', isMac: () => true }));
 
@@ -88,6 +98,8 @@ beforeEach(() => {
   messageDialog.mockReset();
   vi.mocked(writeText).mockClear();
   vi.mocked(revealItemInDir).mockClear();
+  vi.mocked(releasePath).mockClear();
+  vi.mocked(openDocInNewWindow).mockClear();
   host = document.createElement('div');
   document.body.append(host);
   ws = new Workspace(host);
@@ -135,9 +147,27 @@ describe('tabMenuItems', () => {
     expect(enabled(fileDoc('a.md'))).toMatchObject({ 'Copy Path': true, 'Reveal in Finder': true });
   });
 
-  it('enables Split Right and Split Down, and leaves Open in New Window off until M4.3 (Ruling 179)', () => {
+  it('enables every item, Open in New Window included, on a file in a shared group (Ruling 189)', () => {
     const items = tabMenuItems(fileDoc('a.md'), 'macos', false);
-    for (const item of items) expect(item.enabled).toBe(item.label !== 'Open in New Window');
+    for (const item of items) expect(item.enabled).toBe(true);
+    expect(items.every((item) => item.tooltip === undefined)).toBe(true);
+  });
+
+  it('enables Open in New Window for an untitled doc and a lone tab', () => {
+    const item = tabMenuItems(untitled(), 'macos', true).find((i) => i.id === 'tab-new-window');
+    expect(item?.enabled).toBe(true);
+  });
+
+  it('disables Open in New Window above 10,000,000 bytes, with the reason (Ruling 187)', () => {
+    const doc = untitled();
+    const item = () => tabMenuItems(doc, 'macos', false).find((i) => i.id === 'tab-new-window');
+
+    doc.text = 'x'.repeat(10_000_000);
+    expect(item()).toMatchObject({ enabled: true });
+
+    // Two bytes each in UTF-8, so 5,000,001 of them are just over the limit.
+    doc.text = 'é'.repeat(5_000_001);
+    expect(item()).toMatchObject({ enabled: false, tooltip: 'Too large to move to a new window' });
   });
 
   it('disables Split Right and Split Down on a tab alone in its group', () => {
@@ -231,6 +261,17 @@ describe('Close Others and Close All', () => {
     await ws.closeAll();
 
     expect(ws.docIdsInOrder()).toEqual([b1.id]);
+  });
+
+  it('releases the path of every tab Close Others and Close All close (Ruling 185)', async () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    open(a, b, c);
+
+    await ws.closeOthers(a.id);
+    expect(vi.mocked(releasePath).mock.calls.map(([path]) => path).sort()).toEqual(['/notes/b.md', '/notes/c.md']);
+
+    await ws.closeAll();
+    expect(releasePath).toHaveBeenLastCalledWith('/notes/a.md');
   });
 
   it('closeOthers asks about a dirty tab before closing any', async () => {
@@ -377,6 +418,26 @@ describe('showTabMenu', () => {
     choose(idOf('Split Down'));
     await vi.waitFor(() => expect(ws.groupCount()).toBe(3));
     expect(ws.isAloneInGroup(b.id)).toBe(true);
+  });
+
+  it("gives each item an id of this window's own (Ruling 188)", async () => {
+    const a = fileDoc('a.md');
+    open(a);
+
+    await showTabMenu(a.id, 0, 0);
+
+    expect(idOf('Close')).toBe('tab-close@main');
+    expect([...native.items.keys()].every((id) => id.endsWith('@main'))).toBe(true);
+  });
+
+  it('moves the doc right-clicked to a new window', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    open(a, b);
+
+    await showTabMenu(a.id, 0, 0);
+    choose(idOf('Open in New Window'));
+
+    await vi.waitFor(() => expect(openDocInNewWindow).toHaveBeenCalledWith(a.id));
   });
 
   it('greys out the splits for a tab alone in its group', async () => {

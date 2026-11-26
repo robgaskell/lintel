@@ -8,7 +8,13 @@ import {
 } from 'dockview-core';
 import { mount, unmount } from 'svelte';
 import { EditorView } from '@codemirror/view';
-import { closeDocWithPrompt, confirmCloseAll, docs, type DocState } from '../docs/store.svelte';
+import {
+  closeDocWithPrompt,
+  confirmCloseAll,
+  docs,
+  removeDoc,
+  type DocState,
+} from '../docs/store.svelte';
 import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
 import { outlinePlacement } from './outline.svelte';
@@ -218,7 +224,7 @@ export class Workspace {
     if (!(await confirmCloseAll(targets, (id) => this.activate(id)))) return;
     for (const id of targets) {
       // Already asked: a Don't Save answer leaves the doc dirty, so closeDoc would ask again.
-      docs.delete(id);
+      removeDoc(id);
       const panel = this.api.getPanel(id);
       if (panel) this.api.removePanel(panel);
     }

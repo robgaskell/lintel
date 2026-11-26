@@ -8,12 +8,19 @@
   import { followEditorFont, setActiveDocSource } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
   import { Workspace } from './lib/layout/workspace';
-  import { setOutlineChecked, setSplitEnabled, syncAppMenu, type MenuHandlers } from './lib/os/menu';
+  import {
+    setOutlineChecked,
+    setSplitEnabled,
+    syncAppMenu,
+    takeAppMenu,
+    type MenuHandlers,
+  } from './lib/os/menu';
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
   import { currentPlatform } from './lib/os/platform';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
   import { handleCloseRequested } from './lib/os/window';
+  import { listenForAdoption, listenForReveal } from './lib/os/windows';
   import { renderDelayMs } from './lib/render/scrollSync';
   import { loadSettings, settings } from './lib/settings/settings.svelte';
   import { followTheme } from './lib/theme/theme';
@@ -67,6 +74,9 @@
     const workspace = new Workspace(host);
     setWorkspace(workspace);
     setActiveDocSource(workspace);
+    const stopReveal = listenForReveal(workspace);
+    // Last of the two: it tells the window that opened this one that it can hand a doc over.
+    const stopAdoption = listenForAdoption();
     // onActiveChange makes no first call, so read the current value too (Ruling 111).
     activeId = workspace.activeDocId();
     const stopActive = workspace.onActiveChange((id) => (activeId = id));
@@ -108,9 +118,11 @@
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
     );
-    // The menu bar is shared, so its tick shows the focused window's outline (Ruling 110).
+    // The menu bar is shared: the focused window builds it, and its tick shows that
+    // window's outline (Rulings 110, 188).
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused) return;
+      takeAppMenu();
       setOutlineChecked(outline.visible).catch((err) =>
         console.error('Could not tick View > Show Outline:', err),
       );
@@ -125,6 +137,8 @@
       stopActive();
       stopLayout();
       stopRecent();
+      stopReveal();
+      stopAdoption();
       unlistenClose.then((stop) => stop());
       unlistenFocus.then((stop) => stop());
       setActiveDocSource(null);

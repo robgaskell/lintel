@@ -7,7 +7,7 @@ import { EditorView } from '@codemirror/view';
 import { createDoc } from '../docs/store.svelte';
 import { outline } from '../layout/outline.svelte';
 import { registerView, setActiveDocSource } from '../editor/views';
-import { events, resetFakes } from '../../test/fakes';
+import { eventModule, events, resetFakes } from '../../test/fakes';
 import { loadSettings, updateSettings } from '../settings/settings.svelte';
 import {
   buildAppMenu,
@@ -15,6 +15,7 @@ import {
   setOutlineChecked,
   setSplitEnabled,
   syncAppMenu,
+  takeAppMenu,
   type MenuHandlers,
 } from './menu';
 import { getRecent, knownRecent } from './recent';
@@ -84,6 +85,7 @@ vi.mock('@tauri-apps/api/menu', () => ({
 }));
 
 vi.mock('../../settings/settingsWindow', () => ({ focusedSettingsWindow: vi.fn(async () => null) }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: 'main' }) }));
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
@@ -110,6 +112,8 @@ beforeEach(async () => {
   vi.mocked(MenuItem.new).mockClear();
   vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   outline.visible = true;
+  // A test may leave the menu with another window.
+  takeAppMenu();
 });
 
 // Edit commands first ask which window is focused (Ruling 142).
@@ -400,6 +404,14 @@ describe('buildAppMenu', () => {
     action(id);
   }
 
+  it("stamps every id with this window's label, so windows never share an id (Ruling 188)", async () => {
+    await buildAppMenu(handlers(), []);
+
+    const ids = [...tauri.channels.keys()];
+    expect(ids.length).toBeGreaterThan(10);
+    for (const id of ids) expect(id).toMatch(/^[a-z-]+#main#\d+$/);
+  });
+
   it('keeps every item working after a rebuild closes the old menu', async () => {
     const h = handlers();
 
@@ -637,6 +649,62 @@ describe('syncAppMenu', () => {
     expect(onError).not.toHaveBeenCalled();
     stop();
     error.mockRestore();
+  });
+
+  describe('with several document windows (Ruling 188)', () => {
+    const otherWindowTakesTheMenu = async () => {
+      await eventModule.emit('lintel://menu-owner', 'w-2');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+
+    it('tells the other windows when this one installs the menu', async () => {
+      const listener = vi.fn();
+      await eventModule.listen('lintel://menu-owner', listener);
+
+      await buildAppMenu(handlers(), []);
+
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(expect.objectContaining({ payload: 'main' })));
+    });
+
+    it('leaves the menu alone on a recent-list change once another window has it', async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+      await settle();
+      await otherWindowTakesTheMenu();
+
+      for (const cb of recentList.changed) cb();
+      await updateSettings({ recentLimit: 3 });
+      await settle();
+
+      expect(Menu.new).toHaveBeenCalledOnce();
+      stop();
+    });
+
+    it('rebuilds the menu when this window gains focus after another had it', async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+      await settle();
+      await otherWindowTakesTheMenu();
+
+      takeAppMenu();
+
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
+      for (const cb of recentList.changed) cb();
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(3));
+      stop();
+    });
+
+    it('does not rebuild on focus while its own menu is still the one shown', async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+      await settle();
+
+      takeAppMenu();
+      await settle();
+
+      expect(Menu.new).toHaveBeenCalledOnce();
+      stop();
+    });
   });
 
   it('reports a settings listener that could not be registered', async () => {

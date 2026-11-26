@@ -7,6 +7,8 @@ import {
   type PredefinedMenuItemOptions,
   type SubmenuOptions,
 } from '@tauri-apps/api/menu';
+import { emit, listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { redo, undo } from '@codemirror/commands';
 import { openSearchPanel } from '@codemirror/search';
 import type { EditorView } from '@codemirror/view';
@@ -74,6 +76,21 @@ export async function setSplitEnabled(enabled: boolean): Promise<void> {
 const COALESCE_MS = 100;
 
 /**
+ * Sent with its label by the window that has just installed the app menu. The menu bar is
+ * shared, so the last document window focused owns it, and only that one rebuilds it (Ruling 188).
+ */
+const MENU_OWNER = 'lintel://menu-owner';
+let holdsMenu = true;
+let rebuildOwned: (() => void) | null = null;
+
+/** Makes this window's menu the app menu, if another window's is shown. Call on focus. */
+export function takeAppMenu(): void {
+  if (holdsMenu) return;
+  holdsMenu = true;
+  rebuildOwned?.();
+}
+
+/**
  * Builds the menu bar now, and again whenever the recent list or `recentLimit` changes.
  * Each build shows the stored list at once, then the checked list if it differs, so a slow
  * disk never holds up the menu (Ruling 71). Returns a function that stops the rebuilds.
@@ -84,8 +101,9 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const rebuildNow = () => {
+    if (!holdsMenu) return;
     const request = ++latest;
-    void rebuild(h, () => request === latest).catch(onError);
+    void rebuild(h, () => request === latest && holdsMenu).catch(onError);
   };
   const rebuildSoon = () => {
     timer ??= setTimeout(() => {
@@ -100,11 +118,23 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
     limit = next.recentLimit;
     rebuildSoon();
   }, onError);
+  const label = getCurrentWindow().label;
+  let stopOwner = () => {};
+  let stopped = false;
+  listen<string>(MENU_OWNER, ({ payload }) => {
+    if (payload !== label) holdsMenu = false;
+  })
+    .then((unlisten) => (stopped ? unlisten() : (stopOwner = unlisten)))
+    .catch(onError);
+  rebuildOwned = rebuildNow;
   rebuildNow();
   return () => {
+    stopped = true;
     if (timer) clearTimeout(timer);
     stopRecent();
     stopSettings();
+    stopOwner();
+    if (rebuildOwned === rebuildNow) rebuildOwned = null;
   };
 }
 
@@ -149,8 +179,9 @@ export function buildAppMenu(h: MenuHandlers, recent: string[] | null): Promise<
 async function install(h: MenuHandlers, recent: string[] | null): Promise<void> {
   const checked = outline.visible;
   const splittable = splitEnabled;
+  const label = getCurrentWindow().label;
   const entries = menuEntries(h, recent, currentPlatform());
-  stampBuildIds(entries, ++generation);
+  stampBuildIds(entries, `${label}#${++generation}`);
   const check = await liveCheckItem(entries, 'toggle-outline');
   const splits: MenuItem[] = [];
   for (const base of SPLIT_IDS) {
@@ -159,6 +190,8 @@ async function install(h: MenuHandlers, recent: string[] | null): Promise<void> 
   }
   const menu = await Menu.new({ items: entries });
   const previous = await menu.setAsAppMenu();
+  holdsMenu = true;
+  emit(MENU_OWNER, label).catch((err) => console.error('Could not announce the menu owner:', err));
   const previousCheck = outlineItem;
   const previousSplits = splitItems;
   outlineItem = check;
@@ -382,16 +415,16 @@ export function menuEntries(
   ];
 }
 
-/** The item id without the per-build suffix that `buildAppMenu` adds. */
+/** The item id without the window and build suffix that `buildAppMenu` adds. */
 function baseId(id: string): string {
   return id.split('#')[0];
 }
 
 /**
  * Tauri keys click handlers by item id across the whole app, and closing a menu removes
- * its ids. Unique ids per build stop closing the old menu from unhooking the new one.
+ * its ids. Ids unique to each window and build stop one menu from unhooking another.
  */
-function stampBuildIds(entries: MenuEntry[], build: number): void {
+function stampBuildIds(entries: MenuEntry[], build: string): void {
   for (const entry of entries) {
     if ('action' in entry && entry.id) entry.id = `${baseId(entry.id)}#${build}`;
     if ('items' in entry && entry.items) stampBuildIds(entry.items as MenuEntry[], build);

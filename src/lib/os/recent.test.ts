@@ -11,7 +11,11 @@ import {
 } from './recent';
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
-vi.mock('../ipc', () => ({ pathsExist: vi.fn() }));
+vi.mock('../ipc', () => ({
+  pathsExist: vi.fn(),
+  claimPath: vi.fn(async () => null),
+  releasePath: vi.fn(async () => {}),
+}));
 
 const exists = vi.mocked(pathsExist);
 const store = () => fakeStore('recent.json');

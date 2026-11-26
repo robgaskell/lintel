@@ -1,12 +1,12 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { message } from '@tauri-apps/plugin-dialog';
-import { normalizePath, readTextFile, type ReadResult } from '../ipc';
+import { claimPath, normalizePath, readTextFile, releasePath, type ReadResult } from '../ipc';
 import { createDoc, findByPath } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { settings } from '../settings/settings.svelte';
 import { recordRecent } from './recent';
 
-type DocOpener = Pick<Workspace, 'openDoc' | 'activate'>;
+type DocOpener = Pick<Workspace, 'openDoc' | 'activate' | 'closeDoc'>;
 
 let workspace: DocOpener | null = null;
 
@@ -22,12 +22,14 @@ export function setWorkspace(target: DocOpener): void {
 
 /**
  * Every route that opens files ends here. Paths are normalised first, so an already-open
- * file is activated, not reopened, whichever spelling reaches it (Ruling 44).
+ * file is activated, not reopened, whichever spelling reaches it (Ruling 44). A file open
+ * in another window is shown there instead (Ruling 185).
  */
 export async function openPaths(paths: string[]): Promise<void> {
   const target = requireWorkspace();
   for (const given of paths) {
     let path = given;
+    let claimed = false;
     let result: ReadResult;
     try {
       path = await normalizePath(given);
@@ -37,8 +39,15 @@ export async function openPaths(paths: string[]): Promise<void> {
         void recordRecent(path);
         continue;
       }
+      // Rust has already shown the file in the window that owns it.
+      if ((await claimPath(path)) !== null) {
+        void recordRecent(path);
+        continue;
+      }
+      claimed = true;
       result = await readTextFile(path);
     } catch (err) {
+      if (claimed) void releaseQuietly(path);
       await message(openErrorText(given, path, err), { title: 'Lintel', kind: 'error' });
       continue;
     }
@@ -64,9 +73,19 @@ export function newUntitled(): void {
   requireWorkspace().openDoc(doc);
 }
 
-function requireWorkspace(): DocOpener {
+/** This window's Workspace. Throws before App has mounted it. */
+export function requireWorkspace(): DocOpener {
   if (!workspace) throw new Error('openPaths called before setWorkspace');
   return workspace;
+}
+
+// A failed release only leaves the file claimed by this window until it closes.
+async function releaseQuietly(path: string): Promise<void> {
+  try {
+    await releasePath(path);
+  } catch (err) {
+    console.error(`Could not release ${path}:`, err);
+  }
 }
 
 // Most Rust errors already name the path; add it only when they do not.

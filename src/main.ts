@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App.svelte';
 import SettingsApp from './settings/SettingsApp.svelte';
 import { restoreTheme } from './lib/theme/theme';
+import { whenAdopted } from './lib/os/windows';
 import './app.css';
 
 // The Settings window loads the same page with ?view=settings (settingsWindow.ts).
@@ -24,7 +25,18 @@ function show() {
     .show()
     .catch((err) => console.error('Could not show the window:', err));
 }
-requestAnimationFrame(() => requestAnimationFrame(show));
-setTimeout(show, 100);
+function showOncePainted() {
+  requestAnimationFrame(() => requestAnimationFrame(show));
+  setTimeout(show, 100);
+}
+
+// A window opened for a moved doc waits for the doc, so it never shows empty first (Ruling 184).
+const ADOPTION_DEADLINE_MS = 2000;
+if (getCurrentWindow().label.startsWith('w-')) {
+  const deadline = new Promise<void>((resolve) => setTimeout(resolve, ADOPTION_DEADLINE_MS));
+  void Promise.race([whenAdopted(), deadline]).then(showOncePainted);
+} else {
+  showOncePainted();
+}
 
 export default app;

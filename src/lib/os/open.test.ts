@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
-import { normalizePath, readTextFile } from '../ipc';
+import { claimPath, normalizePath, readTextFile, releasePath } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
 import { settings } from '../settings/settings.svelte';
 import { largeFileNotices, newUntitled, openPaths, setWorkspace } from './open';
@@ -10,6 +10,8 @@ vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
+  claimPath: vi.fn(async () => null),
+  releasePath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -20,7 +22,7 @@ vi.mock('./recent', () => ({ recordRecent: vi.fn() }));
 const read = vi.mocked(readTextFile);
 const normalize = vi.mocked(normalizePath);
 const messageDialog = vi.mocked(message);
-const workspace = { openDoc: vi.fn(), activate: vi.fn() };
+const workspace = { openDoc: vi.fn(), activate: vi.fn(), closeDoc: vi.fn(async () => true) };
 
 beforeEach(() => {
   docs.clear();
@@ -35,7 +37,61 @@ beforeEach(() => {
   vi.mocked(recordRecent).mockReset();
   settings.defaultMode = 'split';
   largeFileNotices.clear();
+  vi.mocked(claimPath).mockReset();
+  vi.mocked(claimPath).mockResolvedValue(null);
+  vi.mocked(releasePath).mockReset();
+  vi.mocked(releasePath).mockResolvedValue();
   setWorkspace(workspace);
+});
+
+describe('openPaths and the path registry', () => {
+  it('claims the normalised path before reading the file', async () => {
+    normalize.mockImplementation(async (path) => `/real${path}`);
+
+    await openPaths(['/a.md']);
+
+    expect(claimPath).toHaveBeenCalledWith('/real/a.md');
+    expect(vi.mocked(claimPath).mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]);
+  });
+
+  it('does not read a file another window owns, and opens nothing here', async () => {
+    vi.mocked(claimPath).mockResolvedValueOnce('w-1');
+
+    await openPaths(['/a.md', '/b.md']);
+
+    expect(read).not.toHaveBeenCalledWith('/a.md');
+    expect(read).toHaveBeenCalledWith('/b.md');
+    expect(docs.size).toBe(1);
+    expect(workspace.openDoc).toHaveBeenCalledTimes(1);
+    expect(messageDialog).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing of the registry for a doc already open in this window', async () => {
+    await openPaths(['/a.md']);
+    vi.mocked(claimPath).mockClear();
+
+    await openPaths(['/a.md']);
+
+    expect(claimPath).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim when the read fails', async () => {
+    read.mockRejectedValueOnce('Lintel opens UTF-8 text files only.');
+
+    await openPaths(['/a.md']);
+
+    expect(releasePath).toHaveBeenCalledWith('/a.md');
+    expect(messageDialog).toHaveBeenCalledOnce();
+  });
+
+  it('releases nothing when the path cannot be normalised, as nothing was claimed', async () => {
+    normalize.mockRejectedValueOnce('No such file: /a.md');
+
+    await openPaths(['/a.md']);
+
+    expect(claimPath).not.toHaveBeenCalled();
+    expect(releasePath).not.toHaveBeenCalled();
+  });
 });
 
 describe('openPaths', () => {

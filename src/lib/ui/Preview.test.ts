@@ -11,7 +11,12 @@ import { applyTheme } from '../theme/theme';
 import { fakePreviewLayout } from '../../test/layout';
 import Preview from './Preview.svelte';
 
-vi.mock('../ipc', () => ({ readImageAsDataUri: vi.fn(), fetchRemoteImage: vi.fn() }));
+vi.mock('../ipc', () => ({
+  readImageAsDataUri: vi.fn(),
+  fetchRemoteImage: vi.fn(),
+  claimPath: vi.fn(async () => null),
+  releasePath: vi.fn(async () => {}),
+}));
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
   updateSettings: vi.fn(async () => {}),

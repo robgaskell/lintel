@@ -1,16 +1,20 @@
 import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { message } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { docs, type DocState } from '../docs/store.svelte';
 import { currentPlatform, type Platform } from '../os/platform';
+import { openDocInNewWindow, TOO_LARGE_TO_MOVE, tooLargeToMove } from '../os/windows';
 import type { Workspace } from './workspace';
 
 export interface TabMenuItem {
   id: string;
   label: string;
   enabled: boolean;
+  /** Why the item is off. Native menus cannot show it yet (Tauri 2.12 has no item tooltips). */
+  tooltip?: string;
 }
 
 type TabActions = Pick<
@@ -27,6 +31,7 @@ const REVEAL_LABEL: Record<Platform, string> = {
 /** The tab menu's items for `doc`, in order. Separators exist only in the native menu. */
 export function tabMenuItems(doc: DocState, platform: Platform, aloneInGroup: boolean): TabMenuItem[] {
   const onDisk = doc.path !== null;
+  const tooLarge = tooLargeToMove(doc);
   return [
     { id: 'tab-close', label: 'Close', enabled: true },
     { id: 'tab-close-others', label: 'Close Others', enabled: true },
@@ -36,8 +41,12 @@ export function tabMenuItems(doc: DocState, platform: Platform, aloneInGroup: bo
     // Off for a lone tab, as a doc is never shown in two places (spec: Split on a lone tab).
     { id: 'tab-split-right', label: 'Split Right', enabled: !aloneInGroup },
     { id: 'tab-split-down', label: 'Split Down', enabled: !aloneInGroup },
-    // New windows arrive in M4.3.
-    { id: 'tab-new-window', label: 'Open in New Window', enabled: false },
+    {
+      id: 'tab-new-window',
+      label: 'Open in New Window',
+      enabled: !tooLarge,
+      ...(tooLarge ? { tooltip: TOO_LARGE_TO_MOVE } : {}),
+    },
     { id: 'tab-pin', label: doc.pinned ? 'Unpin Tab' : 'Pin Tab', enabled: true },
     { id: 'tab-reveal', label: REVEAL_LABEL[platform], enabled: onDisk },
   ];
@@ -52,6 +61,7 @@ const ACTIONS: Record<string, (tabs: TabActions, doc: DocState) => unknown> = {
   'tab-copy-path': (_, doc) => doc.path !== null && writeText(doc.path),
   'tab-split-right': (tabs, doc) => tabs.split(doc.id, 'right'),
   'tab-split-down': (tabs, doc) => tabs.split(doc.id, 'below'),
+  'tab-new-window': (_, doc) => openDocInNewWindow(doc.id),
   'tab-pin': (tabs, doc) => tabs.setPinned(doc.id, !doc.pinned),
   'tab-reveal': (_, doc) => doc.path !== null && revealItemInDir(doc.path),
 };
@@ -69,7 +79,8 @@ interface SharedMenu {
   items: Map<string, MenuItem>;
 }
 
-// One menu for every tab, with stable ids: Tauri keys clicks by id app-wide (Rulings 56, 57, 164).
+// One menu for every tab of this window. Tauri keys clicks by id across the app, so ids are
+// stable within a window and carry its label (Rulings 56, 57, 164, 188).
 let shared: Promise<SharedMenu> | null = null;
 let tabs: TabActions | null = null;
 let targetId: string | null = null;
@@ -138,9 +149,10 @@ function sharedMenu(first: TabMenuItem[]): Promise<SharedMenu> {
 async function buildMenu(first: TabMenuItem[]): Promise<SharedMenu> {
   const items = new Map<string, MenuItem>();
   const entries: (MenuItem | PredefinedMenuItem)[] = [];
+  const window = getCurrentWindow().label;
   for (const { id, label, enabled } of first) {
     const item = await MenuItem.new({
-      id,
+      id: `${id}@${window}`,
       text: label,
       enabled,
       accelerator: ACCELERATOR[id],

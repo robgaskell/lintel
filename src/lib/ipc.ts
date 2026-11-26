@@ -36,3 +36,16 @@ export function readImageAsDataUri(path: string): Promise<string> {
 export function fetchRemoteImage(url: string): Promise<string> {
   return invoke<string>('fetch_remote_image', { url });
 }
+
+/**
+ * Claims `path` for this window. Resolves to the label of another window that already has
+ * it open (Rust then shows it there), or null once this window owns it.
+ */
+export function claimPath(path: string): Promise<string | null> {
+  return invoke<string | null>('claim_path', { path });
+}
+
+/** Drops this window's claim on `path`. */
+export function releasePath(path: string): Promise<void> {
+  return invoke<void>('release_path', { path });
+}

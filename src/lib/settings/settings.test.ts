@@ -24,6 +24,8 @@ vi.mock('../ipc', async () => {
       calls.push(`write ${path}`);
       return 'hash';
     }),
+    claimPath: vi.fn(async () => null),
+    releasePath: vi.fn(async () => {}),
   };
 });
 

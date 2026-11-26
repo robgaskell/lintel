@@ -3,7 +3,7 @@ import { flushSync } from 'svelte';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { EditorView } from '@codemirror/view';
 import { fakePreviewLayout } from '../../test/layout';
-import { cursors } from '../docs/cursor.svelte';
+import { cursors, setStartLine } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
@@ -58,6 +58,27 @@ function pane(mode: ViewMode, raw = '# Title\n') {
   const q = (selector: string) => view.container.querySelector(selector);
   return { doc, ...view, q };
 }
+
+describe('a doc moved from another window', () => {
+  it('starts with the cursor on the line it had there (Ruling 186)', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'one\ntwo\nthree\nfour\n', hash: 'h', mode: 'edit' });
+    setStartLine(doc.id, 3);
+
+    render(DocPane, { doc });
+
+    expect(cursors.get(doc.id)).toEqual({ line: 3, col: 1 });
+  });
+
+  it('uses the line once; the next editor for the doc starts at the top', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'one\ntwo\nthree\n', hash: 'h', mode: 'edit' });
+    setStartLine(doc.id, 2);
+    render(DocPane, { doc }).unmount();
+
+    render(DocPane, { doc });
+
+    expect(cursors.get(doc.id)).toEqual({ line: 1, col: 1 });
+  });
+});
 
 describe('DocPane modes', () => {
   it('switches mode from the toolbar and marks the pressed button', async () => {
