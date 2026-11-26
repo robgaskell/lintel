@@ -3,6 +3,7 @@ import { flushSync } from 'svelte';
 import { render } from '@testing-library/svelte';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { readImageAsDataUri } from '../ipc';
+import { ImageLoader } from '../render/imageLoader';
 import { openPaths } from '../os/open';
 import { renderMarkdown } from '../render/markdown';
 import { fakePreviewLayout } from '../../test/layout';
@@ -12,12 +13,20 @@ vi.mock('../ipc', () => ({ readImageAsDataUri: vi.fn() }));
 vi.mock('../os/open', () => ({ openPaths: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
+// Real mermaid cannot lay out under jsdom.
+const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
+vi.mock('mermaid', () => ({ default: mermaid }));
+let mermaidTheme: string | undefined;
 
 const readImage = vi.mocked(readImageAsDataUri);
 
 beforeEach(() => {
   vi.clearAllMocks();
   readImage.mockImplementation(async (path) => `data:image/png;base64,${btoa(path)}`);
+  mermaid.initialize.mockImplementation((config: { theme?: string }) => (mermaidTheme = config.theme));
+  mermaid.render.mockImplementation(async (id: string, src: string) => ({
+    svg: `<svg id="${id}" xmlns="http://www.w3.org/2000/svg"><text>${mermaidTheme}:${src.trim()}</text></svg>`,
+  }));
 });
 
 function show(src: string, docPath: string | null = '/notes/doc.md', onLineVisible = vi.fn()) {
@@ -75,6 +84,17 @@ describe('Preview images', () => {
     const { container } = show('<img src="a.png" srcset="https://evil.test/x.png 2x">\n');
 
     expect(container.querySelector('img')?.hasAttribute('srcset')).toBe(false);
+  });
+
+  it('forgets its images when it closes (Ruling 105)', () => {
+    const clear = vi.spyOn(ImageLoader.prototype, 'clear');
+    const { unmount } = show('![pic](a.png)\n');
+    expect(clear).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(clear).toHaveBeenCalledTimes(1);
+    clear.mockRestore();
   });
 
   it('cannot place a relative image in an unsaved document', () => {
@@ -188,6 +208,18 @@ describe('Preview scroll sync', () => {
     expect(view.container.querySelector('.preview')!.scrollTop).toBe(150);
   });
 
+  it('still syncs to the block after a diagram draws (Ruling 100)', async () => {
+    const src = '# A\n\n```mermaid\ngraph TD; Sync\n```\n\nc\n';
+    const { container, rerender, onLineVisible } = show(src);
+    await vi.waitFor(() => expect(container.querySelector('.mermaid-diagram')).not.toBeNull());
+    // The next patch measures with the drawn diagram in place.
+    await rerender({ result: renderMarkdown(src + '\nd\n') });
+
+    scrollBy(container.querySelector('.preview')!, 100);
+
+    expect(onLineVisible).toHaveBeenCalledWith(3);
+  });
+
   it('ignores a forged source line in raw HTML (Ruling 85)', () => {
     const src = '# A\n\n<div data-source-line="50">x</div>\n\nc\n\nd\n\ne\n';
     const { container, onLineVisible } = show(src);
@@ -195,5 +227,78 @@ describe('Preview scroll sync', () => {
     scrollBy(container.querySelector('.preview')!, 150);
 
     expect(onLineVisible).toHaveBeenCalledWith(4);
+  });
+});
+
+describe('Preview diagrams', () => {
+  const diagram = (name: string) => '# A\n\n```mermaid\ngraph TD; ' + name + '\n```\n\nc\n';
+
+  it('draws a mermaid block as a diagram that keeps its source line', async () => {
+    const { container } = show(diagram('Draw'));
+
+    await vi.waitFor(() => expect(container.querySelector('.mermaid-diagram svg')).not.toBeNull());
+    const box = container.querySelector<HTMLElement>('.content > .mermaid-diagram')!;
+    expect(box.dataset.sourceLine).toBe('3');
+    expect(box.textContent).toBe('default:graph TD; Draw');
+  });
+
+  it('keeps a drawn diagram through an edit elsewhere, without drawing it again', async () => {
+    const { container, rerender } = show(diagram('Keep'));
+    await vi.waitFor(() => expect(container.querySelector('.mermaid-diagram')).not.toBeNull());
+
+    void rerender({ result: renderMarkdown(diagram('Keep') + '\nMore.\n') });
+    flushSync();
+
+    expect(container.querySelector('.mermaid-diagram svg')).not.toBeNull();
+    expect(container.querySelector('pre.mermaid-src')).toBeNull();
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a broken diagram as an error box and still renders the rest', async () => {
+    mermaid.render.mockRejectedValue(new Error('Parse error on line 1:\nfoo'));
+    const { container } = show(diagram('Broken'));
+
+    await vi.waitFor(() => expect(container.querySelector('.mermaid-error strong')?.textContent).toBe('Parse error on line 1:'));
+    expect(container.querySelector('h1')?.textContent).toBe('A');
+    expect(container.querySelector('.content p')?.textContent).toBe('c');
+  });
+
+  it('draws diagrams again in the dark theme when the OS switches (Ruling 101)', async () => {
+    const listeners: ((event: { matches: boolean }) => void)[] = [];
+    window.matchMedia = vi.fn(() => ({
+      matches: false,
+      addEventListener: (_: string, fn: (event: { matches: boolean }) => void) => listeners.push(fn),
+      removeEventListener: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { container } = show(diagram('Theme'));
+      await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('default:graph TD; Theme'));
+
+      for (const listener of listeners) listener({ matches: true });
+
+      await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('dark:graph TD; Theme'));
+    } finally {
+      delete (window as { matchMedia?: unknown }).matchMedia;
+    }
+  });
+});
+
+describe('Preview front matter', () => {
+  it('shows the card above the document and keeps it through a re-render', async () => {
+    const { container, rerender } = show('---\nname: plan-reviewer\ntools: [Bash, Read]\n---\n# Title\n');
+
+    expect(container.querySelector('.page > .front-matter + .content')).not.toBeNull();
+    expect(container.querySelectorAll('.fm-pill')).toHaveLength(2);
+    expect(container.querySelector('.content')?.textContent).not.toContain('---');
+
+    await rerender({ result: renderMarkdown('---\nname: other\n---\n# Title\n') });
+
+    expect(container.querySelector('.front-matter')?.textContent).toContain('other');
+  });
+
+  it('shows invalid YAML as the card with its error line', () => {
+    const { container } = show('---\nname: [unclosed\n---\n# Title\n');
+
+    expect(container.querySelector('.fm-error')?.textContent).toMatch(/at line \d+, column \d+/);
   });
 });

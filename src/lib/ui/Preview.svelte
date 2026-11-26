@@ -4,6 +4,8 @@
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { readImageAsDataUri } from '../ipc';
   import { ImageLoader } from '../render/imageLoader';
+  import { renderMermaidIn, type DiagramTheme } from '../render/mermaid';
+  import FrontMatterCard from './FrontMatterCard.svelte';
   import { openPaths } from '../os/open';
   import {
     classifyHref,
@@ -30,7 +32,12 @@
   } = $props();
 
   let scroller: HTMLDivElement;
+  let page: HTMLDivElement;
   let content: HTMLDivElement;
+
+  // Follows the OS until M3.1's theme setting replaces it (Ruling 101).
+  const darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+  let theme: DiagramTheme = darkQuery?.matches ? 'dark' : 'light';
 
   // The line this preview means to show at its top; kept across re-renders (Ruling 83).
   let topLine = 1;
@@ -61,13 +68,21 @@
   });
 
   onMount(() => {
-    // Images loading, a window resize or the reading width change block positions.
+    // Images, diagrams, the front matter card, a resize or the reading width move blocks.
     const observer = new ResizeObserver(() => {
       anchorsStale = true;
       scrollToLine(topLine);
     });
-    observer.observe(content);
-    return () => observer.disconnect();
+    observer.observe(page);
+    const onTheme = (event: MediaQueryListEvent) => {
+      theme = event.matches ? 'dark' : 'light';
+      void renderMermaidIn(content, theme);
+    };
+    darkQuery?.addEventListener('change', onTheme);
+    return () => {
+      observer.disconnect();
+      darkQuery?.removeEventListener('change', onTheme);
+    };
   });
 
   // Parsed into an inert template first, so no relative src ever requests the app origin.
@@ -77,6 +92,8 @@
     template.innerHTML = next.html;
     prepareImages(template.content, path);
     content.replaceChildren(template.content);
+    // Known diagrams go in now; new ones arrive later and the ResizeObserver re-syncs.
+    void renderMermaidIn(content, theme);
     anchorsStale = true;
     scrollToLine(topLine);
     timing('lintel:patch', started);
@@ -196,7 +213,11 @@
   onclick={onClick}
   onauxclick={onAuxClick}
 >
-  <div class="content" bind:this={content}></div>
+  <!-- The card sits outside .content, which every patch replaces (Ruling 102). -->
+  <div class="page" bind:this={page}>
+    <FrontMatterCard data={result.frontMatter} error={result.frontMatterError} />
+    <div class="content" bind:this={content}></div>
+  </div>
 </div>
 
 <style>
@@ -215,17 +236,20 @@
     outline: none;
   }
 
-  .content {
+  .page {
     padding: 22px 32px 48px;
-    overflow-wrap: break-word;
   }
 
-  .reading .content {
+  .reading .page {
     max-width: 720px;
     margin: 0 auto;
     padding: 32px 24px 48px;
     font-size: 16px;
     line-height: 1.65;
+  }
+
+  .content {
+    overflow-wrap: break-word;
   }
 
   .content > :global(:first-child) {
@@ -354,6 +378,38 @@
     border-radius: 4px;
     color: var(--muted-strong);
     font-size: 13px;
+  }
+
+  .content :global(:is(.mermaid-diagram, .mermaid-error)) {
+    margin: 0 0 24px;
+    padding: 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+  }
+
+  .content :global(.mermaid-diagram) {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+
+  .content :global(.mermaid-diagram svg) {
+    height: auto;
+  }
+
+  .content :global(.mermaid-error) {
+    padding: 12px 16px;
+    font-size: 13px;
+  }
+
+  .content :global(.mermaid-error pre) {
+    margin: 8px 0 0;
+    max-height: 200px;
+    overflow: auto;
+    background: none;
+    border: 0;
+    padding: 0;
   }
 
   .content :global(.hljs-keyword),

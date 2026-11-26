@@ -30,6 +30,11 @@
   --preview-rule: #ececea;
   --preview-table-border: #e0e0dd;
   --preview-table-head: #f8f8f7;
+  /* Front matter card and diagram boxes, from the Reading artboard. */
+  --card-bg: #f8f8f7;
+  --card-border: #e0e0dd;
+  --card-label: #6b6b67;
+  --pill-bg: #ececea;
   color-scheme: light dark;
 }
 
@@ -65,6 +70,10 @@
     --preview-rule: #333337;
     --preview-table-border: #36363b;
     --preview-table-head: #26262a;
+    --card-bg: #26262a;
+    --card-border: #36363b;
+    --card-label: #a0a0a8;
+    --pill-bg: #34343a;
   }
 }
 
