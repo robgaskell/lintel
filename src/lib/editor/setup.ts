@@ -10,12 +10,13 @@ import {
 import { search, searchKeymap } from '@codemirror/search';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
+import { editorTheme } from '../theme/editorTheme';
 import { formattingKeymap } from './commands';
 
 /** Extensions for one markdown editor; `onChange` gets the full text after each edit. */
 export function editorExtensions(onChange: (text: string) => void): Extension[] {
   return [
-    // History, its keymap, the default keymap and base highlighting.
+    // History, its keymap and the default keymap; editorTheme replaces its highlighting.
     minimalSetup,
     // Above minimalSetup, whose Mod-i (select parent syntax) would otherwise beat italic.
     Prec.high(keymap.of(formattingKeymap)),
@@ -29,22 +30,6 @@ export function editorExtensions(onChange: (text: string) => void): Extension[] 
     EditorView.updateListener.of((update) => {
       if (update.docChanged) onChange(update.state.doc.toString());
     }),
-    theme,
+    editorTheme,
   ];
 }
-
-const theme = EditorView.theme({
-  '&': { height: '100%', color: 'var(--editor-text)', backgroundColor: 'var(--editor-bg)' },
-  '&.cm-focused': { outline: 'none' },
-  '.cm-scroller': {
-    fontFamily: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
-    fontSize: '13px',
-    lineHeight: '22px',
-  },
-  '.cm-content': { padding: '18px 0', caretColor: 'var(--accent)' },
-  '.cm-cursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
-  '.cm-gutters': { backgroundColor: 'var(--editor-bg)', color: 'var(--muted)', border: 'none' },
-  '.cm-lineNumbers .cm-gutterElement': { minWidth: '30px', padding: '0 14px 0 8px' },
-  '.cm-activeLine': { backgroundColor: 'var(--active-line)' },
-  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--editor-text)' },
-});

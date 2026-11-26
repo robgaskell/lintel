@@ -6,7 +6,8 @@ import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
 import { ImageLoader } from '../render/imageLoader';
 import { openPaths } from '../os/open';
 import { renderMarkdown } from '../render/markdown';
-import { settings, updateSettings } from '../settings/settings.svelte';
+import { DEFAULT_SETTINGS, settings, updateSettings, type Settings } from '../settings/settings.svelte';
+import { applyTheme } from '../theme/theme';
 import { fakePreviewLayout } from '../../test/layout';
 import Preview from './Preview.svelte';
 
@@ -37,6 +38,12 @@ beforeEach(() => {
     svg: `<svg id="${id}" xmlns="http://www.w3.org/2000/svg"><text>${mermaidTheme}:${src.trim()}</text></svg>`,
   }));
 });
+
+afterEach(() => applyTheme(withTheme('light')));
+
+function withTheme(theme: Settings['theme']): Settings {
+  return { ...structuredClone(DEFAULT_SETTINGS), theme } as Settings;
+}
 
 function show(src: string, docPath: string | null = '/notes/doc.md', onLineVisible = vi.fn()) {
   docCount += 1;
@@ -484,23 +491,22 @@ describe('Preview diagrams', () => {
     expect(container.querySelector('.content p')?.textContent).toBe('c');
   });
 
-  it('draws diagrams again in the dark theme when the OS switches (Ruling 101)', async () => {
-    const listeners: ((event: { matches: boolean }) => void)[] = [];
-    window.matchMedia = vi.fn(() => ({
-      matches: false,
-      addEventListener: (_: string, fn: (event: { matches: boolean }) => void) => listeners.push(fn),
-      removeEventListener: vi.fn(),
-    })) as unknown as typeof window.matchMedia;
-    try {
-      const { container } = show(diagram('Theme'));
-      await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('default:graph TD; Theme'));
+  it('draws diagrams again in the dark theme when the resolved theme changes (Ruling 128)', async () => {
+    applyTheme(withTheme('light'));
+    const { container } = show(diagram('Theme'));
+    await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('default:graph TD; Theme'));
 
-      for (const listener of listeners) listener({ matches: true });
+    applyTheme(withTheme('dark'));
 
-      await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('dark:graph TD; Theme'));
-    } finally {
-      delete (window as { matchMedia?: unknown }).matchMedia;
-    }
+    await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('dark:graph TD; Theme'));
+  });
+
+  it('draws a new preview in the theme already applied', async () => {
+    applyTheme(withTheme('dark'));
+    const { container } = show(diagram('Late'));
+
+    await vi.waitFor(() => expect(container.querySelector('svg')?.textContent).toBe('dark:graph TD; Late'));
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
   });
 });
 

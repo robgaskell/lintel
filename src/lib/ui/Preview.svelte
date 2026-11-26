@@ -13,6 +13,8 @@
   import { ImageLoader } from '../render/imageLoader';
   import { renderMermaidIn, type DiagramTheme } from '../render/mermaid';
   import { settings, updateSettings } from '../settings/settings.svelte';
+  import { resolvedTheme } from '../theme/theme';
+  import '../theme/hljs.css';
   import FrontMatterCard from './FrontMatterCard.svelte';
   import RemoteImagesBanner from './RemoteImagesBanner.svelte';
   import { openPaths } from '../os/open';
@@ -47,9 +49,8 @@
   let page: HTMLDivElement;
   let content: HTMLDivElement;
 
-  // Follows the OS until M3.1's theme setting replaces it (Ruling 101).
-  const darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
-  let theme: DiagramTheme = darkQuery?.matches ? 'dark' : 'light';
+  // The theme diagrams are drawn in; follows the theme engine (Ruling 128).
+  let theme: DiagramTheme = $resolvedTheme;
   // A hidden tab draws its diagrams when it is shown, not while out of sight (Ruling 115).
   let diagramsWaiting = false;
 
@@ -112,6 +113,13 @@
     untrack(() => patch(next, path, remote));
   });
 
+  $effect(() => {
+    const next = $resolvedTheme;
+    if (next === theme) return;
+    theme = next;
+    untrack(drawDiagrams);
+  });
+
   onMount(() => {
     // Images, diagrams, the front matter card, a resize or the reading width move blocks.
     const observer = new ResizeObserver(() => {
@@ -120,15 +128,7 @@
       scrollToLine(topLine);
     });
     observer.observe(page);
-    const onTheme = (event: MediaQueryListEvent) => {
-      theme = event.matches ? 'dark' : 'light';
-      drawDiagrams();
-    };
-    darkQuery?.addEventListener('change', onTheme);
-    return () => {
-      observer.disconnect();
-      darkQuery?.removeEventListener('change', onTheme);
-    };
+    return () => observer.disconnect();
   });
 
   // Parsed into an inert template first, so no relative src ever requests the app origin.
@@ -316,7 +316,8 @@
     box-sizing: border-box;
     background: var(--editor-bg);
     color: var(--preview-text);
-    font-size: 15px;
+    font-family: var(--font-read);
+    font-size: var(--size-read);
     line-height: 1.6;
     outline: none;
   }
@@ -329,7 +330,6 @@
     max-width: 720px;
     margin: 0 auto;
     padding: 32px 24px 48px;
-    font-size: 16px;
     line-height: 1.65;
   }
 
@@ -347,27 +347,28 @@
     font-weight: 700;
   }
 
+  /* Split and Read keep the artboards' ratios: 26/19/16 px on 15 px, 30/21 px on 16 px. */
   .content :global(h1) {
-    font-size: 26px;
+    font-size: 1.73em;
   }
 
   .reading .content :global(h1) {
-    font-size: 30px;
+    font-size: 1.875em;
   }
 
   .content :global(h2) {
-    font-size: 19px;
+    font-size: 1.27em;
     padding-bottom: 4px;
     border-bottom: 1px solid var(--preview-rule);
   }
 
   .reading .content :global(h2) {
-    font-size: 21px;
+    font-size: 1.3125em;
     padding-bottom: 6px;
   }
 
   .content :global(h3) {
-    font-size: 16px;
+    font-size: 1.07em;
   }
 
   .content :global(:is(p, ul, ol, pre, table, blockquote, details, figure)) {
@@ -399,7 +400,7 @@
   }
 
   .content :global(code) {
-    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-edit);
     font-size: 0.87em;
     background: var(--preview-code-bg);
     padding: 1px 5px;
@@ -412,8 +413,8 @@
     border: 1px solid var(--preview-code-border);
     border-radius: 6px;
     overflow-x: auto;
-    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 13px;
+    font-family: var(--font-edit);
+    font-size: 0.87em;
     line-height: 1.5;
   }
 
@@ -431,7 +432,7 @@
 
   .content :global(table) {
     border-collapse: collapse;
-    font-size: 14px;
+    font-size: 0.93em;
     display: block;
     overflow-x: auto;
   }
@@ -495,24 +496,5 @@
     background: none;
     border: 0;
     padding: 0;
-  }
-
-  .content :global(.hljs-keyword),
-  .content :global(.hljs-built_in),
-  .content :global(.hljs-literal) {
-    color: var(--preview-code-keyword);
-  }
-
-  .content :global(.hljs-string) {
-    color: var(--preview-code-string);
-  }
-
-  .content :global(.hljs-comment) {
-    color: var(--preview-code-comment);
-  }
-
-  .content :global(.hljs-number),
-  .content :global(.hljs-title) {
-    color: var(--preview-code-title);
   }
 </style>

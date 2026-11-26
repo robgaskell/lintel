@@ -15,6 +15,7 @@
   import { handleCloseRequested } from './lib/os/window';
   import { renderDelayMs } from './lib/render/scrollSync';
   import { loadSettings, settings } from './lib/settings/settings.svelte';
+  import { applyTheme, followTheme } from './lib/theme/theme';
   import EmptyState from './lib/ui/EmptyState.svelte';
   import StatusBar from './lib/ui/StatusBar.svelte';
 
@@ -81,11 +82,15 @@
     const showError = (err: unknown) => message(String(err), { title: 'Lintel', kind: 'error' });
     let disposed = false;
     let stopMenu = () => {};
+    // The defaults apply until the stored settings arrive (Ruling 128).
+    const stopTheme = followTheme(() => settings);
     // Settings decide whether Open Recent shows; a failed load keeps the defaults.
     loadSettings()
       .catch(showError)
       .then(() => {
-        if (!disposed) stopMenu = syncAppMenu(menuHandlers, showError);
+        if (disposed) return;
+        applyTheme(settings);
+        stopMenu = syncAppMenu(menuHandlers, showError);
       });
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
@@ -100,6 +105,7 @@
     return () => {
       disposed = true;
       stopMenu();
+      stopTheme();
       stopActive();
       stopRecent();
       unlistenClose.then((stop) => stop());
@@ -154,11 +160,9 @@
     height: 100%;
   }
 
+  /* Dockview's light theme forces color-scheme: light; take the resolved theme instead. */
   :global(.dockview-theme-light.lintel-dock) {
-    color-scheme: light dark;
-    --tab-strip: #ececea;
-    --tab-close: #6b6b67;
-    --tab-close-hover-bg: rgba(0, 0, 0, 0.07);
+    color-scheme: inherit;
     --dv-group-view-background-color: var(--editor-bg);
     --dv-tabs-and-actions-container-background-color: var(--tab-strip);
     --dv-tabs-and-actions-container-height: 40px;
@@ -173,14 +177,6 @@
     --dv-inactivegroup-hiddenpanel-tab-color: var(--muted-strong);
     --dv-tab-divider-color: transparent;
     --dv-separator-border: var(--border);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(.dockview-theme-light.lintel-dock) {
-      --tab-strip: #252524;
-      --tab-close: #a3a39e;
-      --tab-close-hover-bg: rgba(255, 255, 255, 0.1);
-    }
   }
 
   :global(.lintel-dock .dv-tabs-and-actions-container) {

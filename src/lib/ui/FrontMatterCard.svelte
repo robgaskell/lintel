@@ -91,7 +91,7 @@
 
   .fm-code,
   .fm-yaml {
-    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-edit);
   }
 
   .fm-pills {

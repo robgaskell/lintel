@@ -7,6 +7,7 @@ import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked } from './lib/os/menu';
 import { openPaths } from './lib/os/open';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
+import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
 import App from './App.svelte';
 
 // App's own wiring is under test; everything it calls out to is faked.
@@ -54,9 +55,10 @@ vi.mock('./lib/os/recent', () => ({
   recordRecent: vi.fn(),
   clearRecent: vi.fn(),
 }));
-vi.mock('./lib/settings/settings.svelte', () => ({
+vi.mock('./lib/settings/settings.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/settings/settings.svelte')>()),
   loadSettings: vi.fn(async () => {}),
-  settings: { recentLimit: 5 },
+  onSettingsChanged: vi.fn(() => () => {}),
 }));
 
 function setActive(id: string | null) {
@@ -80,6 +82,7 @@ beforeEach(() => {
   fake.activeListeners.clear();
   fake.focusHandler = null;
   outline.visible = true;
+  Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   vi.clearAllMocks();
 });
 
@@ -163,5 +166,31 @@ describe('App outline tick (Ruling 120)', () => {
 
     fake.focusHandler!({ payload: true });
     expect(setOutlineChecked).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('App theme (Ruling 128)', () => {
+  it('applies the defaults at mount, then the stored settings once they load', async () => {
+    let finishLoad = () => {};
+    vi.mocked(loadSettings).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishLoad = () => {
+            settings.theme = 'dark';
+            settings.fontSize = 20;
+            resolve(settings);
+          };
+        }),
+    );
+    render(App);
+    const root = document.documentElement;
+    expect(root.dataset.theme).toBe('light');
+    expect(root.style.getPropertyValue('--size-read')).toBe('16px');
+
+    finishLoad();
+
+    await vi.waitFor(() => expect(root.dataset.theme).toBe('dark'));
+    expect(root.style.getPropertyValue('--bg')).toBe('#181817');
+    expect(root.style.getPropertyValue('--size-edit')).toBe('18px');
   });
 });

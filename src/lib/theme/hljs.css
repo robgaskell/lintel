@@ -1,0 +1,43 @@
+/* highlight.js token colours for preview code blocks; values switch with [data-theme] in app.css. */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-literal,
+.hljs-type,
+.hljs-selector-tag,
+.hljs-name {
+  color: var(--preview-code-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--preview-code-string);
+}
+
+.hljs-comment,
+.hljs-meta,
+.hljs-quote {
+  color: var(--preview-code-comment);
+}
+
+.hljs-number,
+.hljs-title,
+.hljs-attr,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-variable,
+.hljs-section {
+  color: var(--preview-code-title);
+}
+
+.hljs-deletion {
+  color: var(--lint-warning);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 700;
+}
