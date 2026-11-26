@@ -16,6 +16,10 @@ const READ_ONLY: &str = "This file is read-only.";
 const NOT_AN_IMAGE: &str = "Lintel shows png, jpg, jpeg, gif, webp and svg images only.";
 // 1 MB = 1,000,000 bytes, as for the large-file guard.
 const MAX_IMAGE_BYTES: usize = 10_000_000;
+const NETWORK_PATH: &str = "Lintel does not load images from network paths.";
+const NOT_IMAGE_FILE: &str = "Not an image file.";
+// A stalled disk or mount must not hold a worker that Save also needs (Ruling 95).
+const IMAGE_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Serialize)]
 pub struct ReadResult {
@@ -114,13 +118,41 @@ fn strip_verbatim_prefix(path: &str) -> String {
 }
 
 /// A local image as a `data:` URI, so the preview never needs a file scope on the webview.
+/// Refuses network paths, other types, content that is not that type, and files over 10 MB.
 #[tauri::command]
 pub async fn read_image_as_data_uri(path: String) -> Result<String, String> {
-    let mime = image_mime(Path::new(&path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || read_within(path, IMAGE_BUDGET, read_image))
+        .await
+        .map_err(|e| format!("Could not read the image: {e}"))?
+}
+
+/// Runs `read` on its own thread; past `budget` it is left to finish on its own.
+fn read_within<F>(path: String, budget: Duration, read: F) -> Result<String, String>
+where
+    F: FnOnce(&str) -> Result<String, String> + Send + 'static,
+{
+    let (send, answer) = mpsc::channel();
+    let shown = path.clone();
+    thread::spawn(move || {
+        let _ = send.send(read(&path));
+    });
+    match answer.recv_timeout(budget) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("Timed out reading {shown}.")),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!("Could not read {shown}.")),
+    }
+}
+
+fn read_image(path: &str) -> Result<String, String> {
+    // Opening a UNC path on Windows connects to that host and can leak the user's hash (Ruling 94).
+    if is_network_path(path) {
+        return Err(NETWORK_PATH.to_owned());
+    }
+    let kind = image_kind(Path::new(path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
     let fail = |e: io::Error| format!("Could not read {path}: {e}");
     let mut bytes = Vec::new();
     // Reading one byte past the limit catches a file that grows after a size check would.
-    File::open(&path)
+    File::open(path)
         .map_err(fail)?
         .take(MAX_IMAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -128,20 +160,115 @@ pub async fn read_image_as_data_uri(path: String) -> Result<String, String> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(format!("{path} is larger than 10 MB, so it is not shown."));
     }
-    Ok(format!("data:{mime};base64,{}", BASE64_STANDARD.encode(&bytes)))
+    // A symlinked "logo.png" may point at a key file; only real images pass (Ruling 96).
+    if !kind.matches(&bytes) {
+        return Err(NOT_IMAGE_FILE.to_owned());
+    }
+    Ok(format!("data:{};base64,{}", kind.mime(), BASE64_STANDARD.encode(&bytes)))
 }
 
-// By extension only: the preview shows what the file name claims, as a browser would.
-fn image_mime(path: &Path) -> Option<&'static str> {
+/// Two leading separators in any mix (`//`, `\\`, `/\`, `\/`) mean UNC, `\\?\` or `\\.\` on
+/// Windows. Checked on every OS, so the rule is tested everywhere.
+fn is_network_path(path: &str) -> bool {
+    let mut chars = path.chars();
+    let is_sep = |c: Option<char>| matches!(c, Some('/' | '\\'));
+    if is_sep(chars.next()) && is_sep(chars.next()) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = Path::new(path).components().next() {
+            return matches!(
+                prefix.kind(),
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..)
+            );
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy)]
+enum ImageKind {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+    Svg,
+}
+
+// The type comes from the extension; the content must then agree with it.
+fn image_kind(path: &Path) -> Option<ImageKind> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
+        "png" => ImageKind::Png,
+        "jpg" | "jpeg" => ImageKind::Jpeg,
+        "gif" => ImageKind::Gif,
+        "webp" => ImageKind::Webp,
+        "svg" => ImageKind::Svg,
         _ => return None,
     })
+}
+
+impl ImageKind {
+    fn mime(self) -> &'static str {
+        match self {
+            ImageKind::Png => "image/png",
+            ImageKind::Jpeg => "image/jpeg",
+            ImageKind::Gif => "image/gif",
+            ImageKind::Webp => "image/webp",
+            ImageKind::Svg => "image/svg+xml",
+        }
+    }
+
+    fn matches(self, bytes: &[u8]) -> bool {
+        match self {
+            ImageKind::Png => bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+            ImageKind::Jpeg => bytes.starts_with(&[0xFF, 0xD8, 0xFF]),
+            ImageKind::Gif => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+            ImageKind::Webp => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+            ImageKind::Svg => std::str::from_utf8(bytes).is_ok_and(starts_with_svg_element),
+        }
+    }
+}
+
+/// True when the first element is `<svg`, after an optional BOM, XML declaration,
+/// comments and doctype (with or without an internal subset).
+fn starts_with_svg_element(text: &str) -> bool {
+    let mut rest = text.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        let skipped = if rest.starts_with("<?") {
+            rest.find("?>").map(|end| end + 2)
+        } else if rest.starts_with("<!--") {
+            rest.find("-->").map(|end| end + 3)
+        } else if rest.get(..9).is_some_and(|head| head.eq_ignore_ascii_case("<!DOCTYPE")) {
+            doctype_end(rest)
+        } else {
+            break;
+        };
+        match skipped {
+            Some(end) => rest = &rest[end..],
+            None => return false,
+        }
+    }
+    rest.strip_prefix("<svg")
+        .and_then(|after| after.chars().next())
+        .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/')
+}
+
+// A doctype ends at the first `>` outside its `[...]` internal subset.
+fn doctype_end(text: &str) -> Option<usize> {
+    let mut in_subset = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            '[' => in_subset = true,
+            ']' => in_subset = false,
+            '>' if !in_subset => return Some(i + 1),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Returns the sha-256 hex of the bytes written.
@@ -596,15 +723,27 @@ mod tests {
         assert_eq!(found, vec![false, true, true]);
         assert!(started.elapsed() < std::time::Duration::from_millis(400));
     }
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0];
+    const GIF: &[u8] = b"GIF89a";
+    const WEBP: &[u8] = b"RIFF\x24\x00\x00\x00WEBPVP8 ";
+    const SVG: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+    fn read_image(path: &Path) -> Result<String, String> {
+        block_on(read_image_as_data_uri(path_str(path)))
+    }
+
+    fn data_uri(mime: &str, bytes: &[u8]) -> String {
+        format!("data:{mime};base64,{}", BASE64_STANDARD.encode(bytes))
+    }
+
     #[test]
     fn image_becomes_a_data_uri_with_its_type() {
         let dir = temp_dir();
         let file = dir.join("pic.png");
-        fs::write(&file, [0x89, b'P', b'N', b'G']).unwrap();
+        fs::write(&file, PNG).unwrap();
 
-        let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
-
-        assert_eq!(uri, "data:image/png;base64,iVBORw==");
+        assert_eq!(read_image(&file).unwrap(), "data:image/png;base64,iVBORw0KGgo=");
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -612,17 +751,16 @@ mod tests {
     fn image_type_comes_from_the_extension_in_any_case() {
         let dir = temp_dir();
         let cases = [
-            ("a.JPG", "image/jpeg"),
-            ("b.jpeg", "image/jpeg"),
-            ("c.gif", "image/gif"),
-            ("d.webp", "image/webp"),
-            ("e.svg", "image/svg+xml"),
+            ("a.JPG", "image/jpeg", JPEG),
+            ("b.jpeg", "image/jpeg", JPEG),
+            ("c.gif", "image/gif", GIF),
+            ("d.webp", "image/webp", WEBP),
+            ("e.svg", "image/svg+xml", SVG),
         ];
-        for (name, mime) in cases {
+        for (name, mime, bytes) in cases {
             let file = dir.join(name);
-            fs::write(&file, b"x").unwrap();
-            let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
-            assert_eq!(uri, format!("data:{mime};base64,eA=="), "{name}");
+            fs::write(&file, bytes).unwrap();
+            assert_eq!(read_image(&file).unwrap(), data_uri(mime, bytes), "{name}");
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -632,9 +770,8 @@ mod tests {
         let dir = temp_dir();
         for name in ["a.bmp", "notes.md", "README", "pic.png.exe"] {
             let file = dir.join(name);
-            fs::write(&file, b"x").unwrap();
-            let err = block_on(read_image_as_data_uri(path_str(&file))).unwrap_err();
-            assert_eq!(err, NOT_AN_IMAGE, "{name}");
+            fs::write(&file, PNG).unwrap();
+            assert_eq!(read_image(&file).unwrap_err(), NOT_AN_IMAGE, "{name}");
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -643,9 +780,11 @@ mod tests {
     fn image_refuses_a_file_over_10_mb() {
         let dir = temp_dir();
         let file = dir.join("big.png");
-        fs::write(&file, vec![0u8; MAX_IMAGE_BYTES + 1]).unwrap();
+        let mut bytes = PNG.to_vec();
+        bytes.resize(MAX_IMAGE_BYTES + 1, 0);
+        fs::write(&file, bytes).unwrap();
 
-        let err = block_on(read_image_as_data_uri(path_str(&file))).unwrap_err();
+        let err = read_image(&file).unwrap_err();
 
         assert!(err.contains("larger than 10 MB"), "{err}");
         assert!(err.contains("big.png"), "{err}");
@@ -656,22 +795,115 @@ mod tests {
     fn image_of_exactly_10_mb_is_read() {
         let dir = temp_dir();
         let file = dir.join("edge.gif");
-        fs::write(&file, vec![0u8; MAX_IMAGE_BYTES]).unwrap();
+        let mut bytes = GIF.to_vec();
+        bytes.resize(MAX_IMAGE_BYTES, 0);
+        fs::write(&file, bytes).unwrap();
 
-        let uri = block_on(read_image_as_data_uri(path_str(&file))).unwrap();
-
-        assert!(uri.starts_with("data:image/gif;base64,AAAA"));
+        assert!(read_image(&file).unwrap().starts_with("data:image/gif;base64,R0lGODlh"));
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn image_names_a_missing_file() {
         let dir = temp_dir();
-        let file = path_str(&dir.join("gone.png"));
+        let file = dir.join("gone.png");
 
-        let err = block_on(read_image_as_data_uri(file.clone())).unwrap_err();
+        let err = read_image(&file).unwrap_err();
 
-        assert!(err.starts_with(&format!("Could not read {file}")), "{err}");
+        assert!(err.starts_with(&format!("Could not read {}", path_str(&file))), "{err}");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Ruling 94: these must be refused before any read, so no test touches a network.
+    #[test]
+    fn image_refuses_network_paths_on_every_os() {
+        let paths = [
+            "//evil.example/share/a.png",
+            r"\\evil.example\share\a.png",
+            r"/\evil.example\share\a.png",
+            r"\/evil.example/share/a.png",
+            r"\\?\UNC\evil.example\share\a.png",
+            r"\\.\pipe\name.png",
+        ];
+        for path in paths {
+            let err = block_on(read_image_as_data_uri(path.to_owned())).unwrap_err();
+            assert_eq!(err, NETWORK_PATH, "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn image_refuses_unc_and_device_prefixes() {
+        for path in [r"\\server\share\a.png", r"\\?\UNC\server\share\a.png", r"\\.\COM1\a.png"] {
+            assert!(is_network_path(path), "{path}");
+        }
+        assert!(!is_network_path(r"C:\pics\a.png"));
+    }
+
+    // Ruling 96: the content must be what the extension claims.
+    #[test]
+    fn image_refuses_content_that_is_not_that_image_type() {
+        let dir = temp_dir();
+        let cases: [(&str, &[u8]); 8] = [
+            ("text.png", b"-----BEGIN OPENSSH PRIVATE KEY-----\n"),
+            ("jpeg-bytes.png", JPEG),
+            ("short.jpg", &[0xFF, 0xD8]),
+            ("text.gif", b"GIF90a"),
+            ("wave.webp", b"RIFF\x24\x00\x00\x00WAVEfmt "),
+            ("page.svg", b"<html><svg/></html>"),
+            ("binary.svg", &[0xFF, 0xFE, b'<', 0]),
+            ("accent.svg", "<!DOCTYPé><svg/>".as_bytes()),
+        ];
+        for (name, bytes) in cases {
+            let file = dir.join(name);
+            fs::write(&file, bytes).unwrap();
+            assert_eq!(read_image(&file).unwrap_err(), NOT_IMAGE_FILE, "{name}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_refuses_a_symlinked_png_that_points_at_a_text_file() {
+        let dir = temp_dir();
+        let secret = dir.join("id_ed25519");
+        fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n").unwrap();
+        let logo = dir.join("logo.png");
+        std::os::unix::fs::symlink(&secret, &logo).unwrap();
+
+        assert_eq!(read_image(&logo).unwrap_err(), NOT_IMAGE_FILE);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn svg_may_start_with_a_declaration_comments_and_a_doctype() {
+        let dir = temp_dir();
+        let file = dir.join("logo.svg");
+        let svg = "\u{feff}<?xml version=\"1.0\"?>\n<!-- made by hand -->\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"x.dtd\" [ <!ENTITY a \"b\"> ]>\n<svg>\n</svg>";
+        fs::write(&file, svg).unwrap();
+
+        assert_eq!(read_image(&file).unwrap(), data_uri("image/svg+xml", svg.as_bytes()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Ruling 95: a stalled read gives up after the budget instead of holding a worker.
+    #[test]
+    fn image_read_gives_up_after_its_budget() {
+        let started = std::time::Instant::now();
+
+        let err = read_within("/slow.png".to_owned(), Duration::from_millis(100), |_| {
+            std::thread::sleep(Duration::from_millis(1000));
+            Ok(String::new())
+        })
+        .unwrap_err();
+
+        assert_eq!(err, "Timed out reading /slow.png.");
+        assert!(started.elapsed() < Duration::from_millis(600));
+    }
+
+    #[test]
+    fn image_read_within_budget_returns_the_result() {
+        let got = read_within("/a.png".to_owned(), Duration::from_secs(1), |p| Ok(p.to_owned()));
+        assert_eq!(got.unwrap(), "/a.png");
     }
 }
