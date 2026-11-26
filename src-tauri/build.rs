@@ -8,6 +8,8 @@ fn main() {
         "read_text_file",
         "write_text_file",
         "fetch_remote_image",
+        "claim_path",
+        "release_path",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
         .expect("failed to run tauri-build");

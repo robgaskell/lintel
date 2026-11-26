@@ -1,6 +1,7 @@
 mod files;
 mod remote;
 mod startup;
+mod windows;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -28,6 +29,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .manage(windows::PathRegistry::default())
+        .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
+                window
+                    .state::<windows::PathRegistry>()
+                    .drop_window(window.label());
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             startup::disable_window_tabbing();
@@ -42,7 +51,9 @@ pub fn run() {
             files::read_image_as_data_uri,
             files::read_text_file,
             files::write_text_file,
-            remote::fetch_remote_image
+            remote::fetch_remote_image,
+            windows::claim_path,
+            windows::release_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lintel");
@@ -72,8 +83,8 @@ fn navigation_guard<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-/// The Settings window has no menu bar of its own, and closes with the main window,
-/// whose webview runs every menu command (Ruling 142).
+/// The Settings window has no menu bar of its own, and closes with the last document
+/// window, whose webview runs every menu command (Rulings 142, 190).
 fn settings_window<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("settings-window")
         .on_window_ready(|window| {
@@ -91,7 +102,8 @@ fn settings_window<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 ..
             } = event
             {
-                on_window_destroyed(label, || {
+                let open = app.webview_windows();
+                on_window_destroyed(label, open.keys().map(String::as_str), || {
                     if let Some(settings) = app.get_webview_window(SETTINGS) {
                         let _ = settings.destroy();
                     }
@@ -101,8 +113,17 @@ fn settings_window<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-fn on_window_destroyed(label: &str, close_settings: impl FnOnce()) {
-    if label == "main" {
+// `open` may still list the destroyed window.
+fn on_window_destroyed<'a>(
+    label: &str,
+    open: impl IntoIterator<Item = &'a str>,
+    close_settings: impl FnOnce(),
+) {
+    if label == SETTINGS {
+        return;
+    }
+    let doc_window_left = open.into_iter().any(|other| other != label && other != SETTINGS);
+    if !doc_window_left {
         close_settings();
     }
 }
@@ -162,15 +183,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_closes_with_the_main_window_only() {
-        let closed = |label: &str| {
+    fn settings_closes_with_the_last_document_window() {
+        let closed = |label: &str, open: &[&str]| {
             let mut closed = false;
-            on_window_destroyed(label, || closed = true);
+            on_window_destroyed(label, open.iter().copied(), || closed = true);
             closed
         };
-        assert!(closed("main"));
-        assert!(!closed(SETTINGS));
-        assert!(!closed("doc-2"));
+        assert!(closed("main", &[SETTINGS]));
+        assert!(closed("main", &["main", SETTINGS]), "the closing window does not count");
+        assert!(closed("w-1", &[SETTINGS]));
+        assert!(!closed("main", &["w-1", SETTINGS]));
+        assert!(!closed("w-1", &["main", SETTINGS]));
+        assert!(!closed(SETTINGS, &[]));
     }
 
     #[test]
@@ -194,7 +218,7 @@ mod tests {
         }
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        assert_eq!(main["windows"], serde_json::json!(["main"]));
+        assert_eq!(main["windows"], serde_json::json!(["main", "w-*"]));
     }
 
     fn url(s: &str) -> Url {
