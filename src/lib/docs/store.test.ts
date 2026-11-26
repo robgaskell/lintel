@@ -110,6 +110,63 @@ describe('saveDoc', () => {
     expect(isDirty(doc)).toBe(true);
   });
 
+  it('asks for a path for a clean, empty untitled doc', async () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+    saveDialog.mockResolvedValue('/notes/empty.md');
+    write.mockResolvedValue('h1');
+
+    expect(await saveDoc(doc.id)).toBe(true);
+
+    expect(saveDialog).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('/notes/empty.md', '');
+    expect(doc.path).toBe('/notes/empty.md');
+  });
+
+  it('keeps the doc dirty when the write fails', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    doc.text = 'ab\n';
+    write.mockRejectedValue('Could not save /notes/a.md: disk full');
+
+    await expect(saveDoc(doc.id)).rejects.toBe('Could not save /notes/a.md: disk full');
+
+    expect(isDirty(doc)).toBe(true);
+    expect(doc.diskHash).toBe('h0');
+  });
+
+  it('clears the held disk version on save', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    doc.text = 'mine\n';
+    doc.external = 'conflict';
+    doc.diskText = 'theirs\n';
+    write.mockResolvedValue('h1');
+
+    await saveDoc(doc.id);
+
+    expect(doc.external).toBe('none');
+    expect(doc.diskText).toBeNull();
+  });
+
+  it('writes once when Save is pressed twice during one write', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    doc.text = 'ab\n';
+    let finish: (hash: string) => void = () => {};
+    write.mockImplementation(() => new Promise<string>((resolve) => (finish = resolve)));
+
+    const first = saveDoc(doc.id);
+    const second = saveDoc(doc.id);
+    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+    finish('h1');
+
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws for an unknown doc id', async () => {
+    await expect(saveDoc('no-such-id')).rejects.toThrow('no-such-id');
+    await expect(saveDocAs('no-such-id')).rejects.toThrow('no-such-id');
+  });
+
   it('asks for a path when the doc is untitled, and returns false on cancel', async () => {
     const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
     doc.text = 'new\n';
@@ -134,5 +191,17 @@ describe('saveDocAs', () => {
     expect(doc.title).toBe('new.md');
     expect(doc.diskHash).toBe('h2');
     expect(isDirty(doc)).toBe(false);
+  });
+
+  it('keeps the old path when the write fails', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    saveDialog.mockResolvedValue('/notes/b.md');
+    write.mockRejectedValue('This file is read-only.');
+
+    await expect(saveDocAs(doc.id)).rejects.toBe('This file is read-only.');
+
+    expect(doc.path).toBe('/notes/a.md');
+    expect(doc.title).toBe('a.md');
+    expect(doc.diskHash).toBe('h0');
   });
 });

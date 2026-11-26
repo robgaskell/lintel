@@ -55,20 +55,53 @@ export function isDirty(doc: DocState): boolean {
   return doc.text !== doc.savedText;
 }
 
-/** Resolves to false if the user cancels the Save As dialog. */
-export async function saveDoc(id: string): Promise<boolean> {
+/**
+ * Resolves to false only if the user cancels the Save As dialog.
+ * Rejects for an unknown id. A second call while a save is running gets the first call's promise.
+ */
+export function saveDoc(id: string): Promise<boolean> {
+  return onceAtATime(id, async () => runSave(getDoc(id)));
+}
+
+/** As saveDoc, but always asks for a path. */
+export function saveDocAs(id: string): Promise<boolean> {
+  return onceAtATime(id, async () => runSaveAs(getDoc(id)));
+}
+
+export function findByPath(path: string): DocState | undefined {
+  for (const doc of docs.values()) {
+    if (doc.path === path) return doc;
+  }
+  return undefined;
+}
+
+const inFlight = new Map<string, Promise<boolean>>();
+
+// A double Cmd+S must not start two writes of the same doc (Ruling 11).
+function onceAtATime(id: string, run: () => Promise<boolean>): Promise<boolean> {
+  const running = inFlight.get(id);
+  if (running) return running;
+  const promise = run().finally(() => inFlight.delete(id));
+  inFlight.set(id, promise);
+  return promise;
+}
+
+function getDoc(id: string): DocState {
   const doc = docs.get(id);
-  if (!doc) return false;
+  if (!doc) throw new Error(`No open document has id ${id}`);
+  return doc;
+}
+
+async function runSave(doc: DocState): Promise<boolean> {
+  // Untitled docs always ask for a path, even when empty (Ruling 14).
+  if (doc.path === null) return runSaveAs(doc);
   // A clean save must not touch the file, so its bytes stay identical.
   if (!isDirty(doc) && doc.external !== 'deleted') return true;
-  if (doc.path === null) return saveDocAs(id);
   await writeTo(doc, doc.path);
   return true;
 }
 
-export async function saveDocAs(id: string): Promise<boolean> {
-  const doc = docs.get(id);
-  if (!doc) return false;
+async function runSaveAs(doc: DocState): Promise<boolean> {
   const path = await save({
     defaultPath: doc.path ?? `${doc.title}.md`,
     filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
@@ -78,13 +111,6 @@ export async function saveDocAs(id: string): Promise<boolean> {
   doc.path = path;
   doc.title = baseName(path);
   return true;
-}
-
-export function findByPath(path: string): DocState | undefined {
-  for (const doc of docs.values()) {
-    if (doc.path === path) return doc;
-  }
-  return undefined;
 }
 
 async function writeTo(doc: DocState, path: string): Promise<void> {

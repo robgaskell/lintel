@@ -14,6 +14,11 @@ describe('detectLineEnding', () => {
     expect(detectLineEnding('a\r\nb\n')).toBe('\n');
   });
 
+  it('counts a lone CR with LF', () => {
+    expect(detectLineEnding('a\rb\rc\r\n')).toBe('\n');
+    expect(detectLineEnding('a\rb\r\nc\r\nd\r\n')).toBe('\r\n');
+  });
+
   it('gives a file with no newline LF', () => {
     expect(detectLineEnding('abc')).toBe('\n');
     expect(detectLineEnding('')).toBe('\n');
@@ -23,6 +28,10 @@ describe('detectLineEnding', () => {
 describe('toBuffer', () => {
   it('turns CRLF into LF', () => {
     expect(toBuffer('a\r\nb\r\n')).toBe('a\nb\n');
+  });
+
+  it('turns a lone CR into LF', () => {
+    expect(toBuffer('a\rb\r\nc\r')).toBe('a\nb\nc\n');
   });
 
   it('leaves LF text alone', () => {
