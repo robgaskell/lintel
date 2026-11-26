@@ -193,7 +193,8 @@ impl Links for RealLinks {
 
 /// Walks `path` one component at a time from the root, checking each symlink's target for a
 /// network prefix before following it. So no step opens a path through a link to a share,
-/// which on Windows would connect to that host (Ruling 116).
+/// which on Windows would connect to that host (Ruling 116). A chain of more than 40 links
+/// also counts as reaching one, since its end was never checked (Ruling 118).
 fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
     let mut resolved = PathBuf::new();
     let mut rest: VecDeque<PathBuf> = path.components().map(|c| PathBuf::from(c.as_os_str())).collect();
@@ -219,7 +220,8 @@ fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
         }
         hops += 1;
         if hops > 40 {
-            return false; // a loop: opening the path fails later with its own error
+            // A loop, or a chain too long to check to its end: refuse (Ruling 118).
+            return true;
         }
         resolved.pop();
         if target.has_root() {
@@ -1006,11 +1008,22 @@ mod tests {
         assert!(!walk_reaches_network_path(Path::new("/docs/plain.png"), &links));
     }
 
+    // Ruling 118: past the hop cap the walk cannot tell, so it refuses.
     #[test]
-    fn walk_stops_on_a_link_loop() {
+    fn walk_refuses_a_link_loop() {
         let links = FakeLinks::new(&[("/a", "/b"), ("/b", "/a")]);
 
-        assert!(!walk_reaches_network_path(Path::new("/a/x.png"), &links));
+        assert!(walk_reaches_network_path(Path::new("/a/x.png"), &links));
+    }
+
+    #[test]
+    fn walk_refuses_a_45_link_chain_that_ends_at_a_share() {
+        let names: Vec<String> = (0..=45).map(|i| format!("/l{i}")).collect();
+        let mut chain: Vec<(&str, &str)> = names.windows(2).map(|w| (w[0].as_str(), w[1].as_str())).collect();
+        chain.push(("/l45", "//evil.example/share"));
+        let links = FakeLinks::new(&chain);
+
+        assert!(walk_reaches_network_path(Path::new("/l0/a.png"), &links));
     }
 
     #[cfg(unix)]
