@@ -188,6 +188,45 @@ describe('Close Others and Close All', () => {
     expect(docs.size).toBe(3);
   });
 
+  it("closes nothing after Don't Save on one tab and Cancel on the next", async () => {
+    const [a, b, c] = ['a.md', 'b.md', 'c.md'].map(fileDoc);
+    open(a, b, c);
+    b.text = 'unsaved b';
+    c.text = 'unsaved c';
+    messageDialog.mockResolvedValueOnce("Don't Save").mockResolvedValueOnce('Cancel');
+
+    await ws.closeAll();
+
+    expect(messageDialog).toHaveBeenCalledTimes(2);
+    expect(ws.docIdsInOrder()).toEqual([a.id, b.id, c.id]);
+    expect(docs.size).toBe(3);
+  });
+
+  it("acts on the target tab's group only (Ruling 172)", async () => {
+    const [a1, a2, a3, b1, b2] = ['a1.md', 'a2.md', 'a3.md', 'b1.md', 'b2.md'].map(fileDoc);
+    open(a1, a2, a3);
+    ws.openDoc(b1, { referenceId: a1.id, direction: 'right' });
+    ws.openDoc(b2, { referenceId: b1.id });
+
+    await ws.closeOthers(a2.id);
+    expect(ws.docIdsInOrder()).toEqual([a2.id, b1.id, b2.id]);
+
+    await ws.closeAll(b2.id);
+    expect(ws.docIdsInOrder()).toEqual([a2.id]);
+    expect([...docs.keys()]).toEqual([a2.id]);
+  });
+
+  it('closeAll with no target acts on the active group', async () => {
+    const [a1, a2, b1] = ['a1.md', 'a2.md', 'b1.md'].map(fileDoc);
+    open(a1, a2);
+    ws.openDoc(b1, { referenceId: a1.id, direction: 'right' });
+    ws.activate(a2.id);
+
+    await ws.closeAll();
+
+    expect(ws.docIdsInOrder()).toEqual([b1.id]);
+  });
+
   it('closeOthers asks about a dirty tab before closing any', async () => {
     const a = fileDoc('a.md');
     const b = fileDoc('b.md');
@@ -302,6 +341,59 @@ describe('showTabMenu', () => {
     choose(idOf('Close'));
 
     await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([b.id]));
+  });
+
+  it("closes the right-clicked tab's group only from Close All", async () => {
+    const [a1, b1, b2] = ['a1.md', 'b1.md', 'b2.md'].map(fileDoc);
+    open(a1);
+    ws.openDoc(b1, { referenceId: a1.id, direction: 'right' });
+    ws.openDoc(b2, { referenceId: b1.id });
+    ws.activate(a1.id);
+
+    await showTabMenu(b1.id, 0, 0);
+    choose(idOf('Close All'));
+
+    await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([a1.id]));
+  });
+
+  it('ignores a second right-click until the first menu has closed (Ruling 175)', async () => {
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    open(a, b);
+    ws.setPinned(a.id, true);
+    await showTabMenu(b.id, 0, 0);
+    const popup = native.menus[0].popup;
+    popup.mockClear();
+    let closeMenu: () => void = () => {};
+    popup.mockImplementationOnce(() => new Promise<void>((resolve) => (closeMenu = resolve)));
+
+    const first = showTabMenu(a.id, 0, 0);
+    await vi.waitFor(() => expect(popup).toHaveBeenCalledOnce());
+    await showTabMenu(b.id, 0, 0);
+    expect(popup).toHaveBeenCalledOnce();
+    expect(native.items.get(idOf('Unpin Tab'))).toBeDefined();
+    choose(idOf('Close'));
+    closeMenu();
+    await first;
+
+    await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([b.id]));
+    await showTabMenu(b.id, 0, 0);
+    expect(popup).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows an error when the menu cannot open (Ruling 175)', async () => {
+    const a = fileDoc('a.md');
+    open(a);
+    await showTabMenu(a.id, 0, 0);
+    native.menus[0].popup.mockRejectedValueOnce(new Error('popup refused'));
+
+    host
+      .querySelector(`.lintel-tab[data-doc-id="${a.id}"]`)!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(String(messageDialog.mock.calls[0]?.[0])).toContain('popup refused'));
+    await showTabMenu(a.id, 0, 0);
+    expect(native.menus[0].popup).toHaveBeenCalled();
   });
 
   it('shows an error from an action in a dialog', async () => {

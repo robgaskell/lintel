@@ -105,14 +105,17 @@ export class Workspace {
     if (panel) this.sortPinnedFirst(panel.group);
   }
 
-  /** Closes every tab but `id` and the pinned ones, after one round of prompts (Ruling 166). */
+  /**
+   * Closes the other unpinned tabs in the group of `id`, after one round of prompts
+   * (Rulings 166, 172).
+   */
   closeOthers(id: string): Promise<void> {
-    return this.closeUnpinned(this.docIdsInOrder().filter((other) => other !== id));
+    return this.closeUnpinned(this.groupDocIds(id).filter((other) => other !== id));
   }
 
-  /** Closes every tab but the pinned ones, after one round of prompts (Ruling 166). */
-  closeAll(): Promise<void> {
-    return this.closeUnpinned(this.docIdsInOrder());
+  /** Closes the unpinned tabs in the group of `id`, or of the active tab (Rulings 166, 172). */
+  closeAll(id?: string): Promise<void> {
+    return this.closeUnpinned(this.groupDocIds(id));
   }
 
   /** Activates the next tab of the active group in visible order, wrapping at the end. */
@@ -186,6 +189,11 @@ export class Workspace {
     }
   }
 
+  private groupDocIds(id?: string): string[] {
+    const group = id === undefined ? this.api.activeGroup : this.api.getPanel(id)?.group;
+    return group?.panels.map((panel) => panel.id) ?? [];
+  }
+
   private stepTab(step: 1 | -1): void {
     const group = this.api.activeGroup;
     const panels = group?.panels ?? [];
@@ -206,12 +214,15 @@ export class Workspace {
     this.sorting = true;
     try {
       order.forEach((panel, i) => {
-        if (group.panels[i] !== panel) panel.api.moveTo({ group, index: i });
+        if (group.panels[i] === panel) return;
+        // Moving the group's shown tab without activating it would show a neighbour instead;
+        // activating any other tab would show that one (Ruling 175).
+        panel.api.moveTo({ group, index: i, skipSetActive: panel !== group.activePanel });
       });
     } finally {
       this.sorting = false;
     }
-    // moveTo activates the panel it moves.
+    // Moving a group's shown tab also makes that group the active one.
     if (active && this.api.activePanel !== active) active.api.setActive();
   }
 

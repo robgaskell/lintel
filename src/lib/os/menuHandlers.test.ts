@@ -3,7 +3,7 @@ import { message, open } from '@tauri-apps/plugin-dialog';
 import { docs, saveDoc, saveDocAs, type DocState } from '../docs/store.svelte';
 import { listenTabSwitchKeys, makeMenuHandlers, tabSwitchKey, type MenuHandlerDeps } from './menuHandlers';
 import { newUntitled, openPaths } from './open';
-import { isMac } from './platform';
+import { isMac, type Platform } from './platform';
 import { quitApp } from './quit';
 import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
@@ -308,6 +308,29 @@ describe('tab switching keys (Ruling 167)', () => {
     expect(tabSwitchKey(key('PageDown', { ctrlKey: true, shiftKey: true }), platform)).toBeNull();
     // Ctrl+Tab is the Window menu's own accelerator here.
     expect(tabSwitchKey(key('Tab', { ctrlKey: true }), platform)).toBeNull();
+  });
+
+  it("leaves each Window menu chord to the menu, so one press switches once (Ruling 174)", async () => {
+    const menuChords = {
+      macos: [
+        key('}', { code: 'BracketRight', metaKey: true, shiftKey: true }),
+        key('{', { code: 'BracketLeft', metaKey: true, shiftKey: true }),
+        key(']', { code: 'BracketRight', metaKey: true, shiftKey: true }),
+      ],
+      windows: [key('Tab', { ctrlKey: true }), key('Tab', { ctrlKey: true, shiftKey: true })],
+      linux: [key('Tab', { ctrlKey: true }), key('Tab', { ctrlKey: true, shiftKey: true })],
+    };
+    for (const [platform, chords] of Object.entries(menuChords)) {
+      for (const chord of chords) expect(tabSwitchKey(chord, platform as Platform), `${platform} ${chord.key}`).toBeNull();
+    }
+
+    const d = deps();
+    const stop = listenTabSwitchKeys(makeMenuHandlers(d), 'macos');
+    document.body.dispatchEvent(key('Tab', { ctrlKey: true }));
+    stop();
+    await vi.waitFor(() => expect(d.workspace.nextTab).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(d.workspace.nextTab).toHaveBeenCalledOnce();
   });
 
   it('runs the handler before the editor sees the key, until stopped', () => {

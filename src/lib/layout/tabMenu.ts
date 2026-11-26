@@ -42,7 +42,7 @@ export function tabMenuItems(doc: DocState, platform: Platform): TabMenuItem[] {
 const ACTIONS: Record<string, (tabs: TabActions, doc: DocState) => unknown> = {
   'tab-close': (tabs, doc) => tabs.closeDoc(doc.id),
   'tab-close-others': (tabs, doc) => tabs.closeOthers(doc.id),
-  'tab-close-all': (tabs) => tabs.closeAll(),
+  'tab-close-all': (tabs, doc) => tabs.closeAll(doc.id),
   // The live buffer, so unsaved edits are copied too.
   'tab-copy-contents': (_, doc) => writeText(doc.text),
   'tab-copy-path': (_, doc) => doc.path !== null && writeText(doc.path),
@@ -64,6 +64,9 @@ interface SharedMenu {
 let shared: Promise<SharedMenu> | null = null;
 let tabs: TabActions | null = null;
 let targetId: string | null = null;
+// True from a right-click until its menu closes; a second right-click meanwhile would
+// relabel the first menu and retarget its actions (Ruling 175).
+let showing = false;
 
 /** Replaces the webview's right-click menu on the tabs inside `el` with the tab menu. */
 export function attachTabMenu(el: HTMLElement, workspace: TabActions): () => void {
@@ -73,7 +76,7 @@ export function attachTabMenu(el: HTMLElement, workspace: TabActions): () => voi
     if (!id) return;
     event.preventDefault();
     showTabMenu(id, event.clientX, event.clientY).catch((err) =>
-      console.error('Tab menu failed', err),
+      message(`The tab menu could not open: ${err}`, { title: 'Lintel', kind: 'error' }),
     );
   };
   el.addEventListener('contextmenu', onContextMenu);
@@ -83,21 +86,30 @@ export function attachTabMenu(el: HTMLElement, workspace: TabActions): () => voi
   };
 }
 
-/** Shows the tab menu for `docId` at a point in the window's CSS pixels. */
+/**
+ * Shows the tab menu for `docId` at a point in the window's CSS pixels. Resolves once the
+ * menu has closed; does nothing while another tab menu is opening or open.
+ */
 export async function showTabMenu(docId: string, x: number, y: number): Promise<void> {
   const doc = docs.get(docId);
-  if (!doc) return;
-  targetId = docId;
-  const wanted = tabMenuItems(doc, currentPlatform());
-  const { menu, items } = await sharedMenu(wanted);
-  await Promise.all(
-    wanted.map(async ({ id, label, enabled }) => {
-      const item = items.get(id);
-      await item?.setText(label);
-      await item?.setEnabled(enabled);
-    }),
-  );
-  await menu.popup(new LogicalPosition(x, y));
+  if (!doc || showing) return;
+  showing = true;
+  try {
+    targetId = docId;
+    const wanted = tabMenuItems(doc, currentPlatform());
+    const { menu, items } = await sharedMenu(wanted);
+    await Promise.all(
+      wanted.map(async ({ id, label, enabled }) => {
+        const item = items.get(id);
+        await item?.setText(label);
+        await item?.setEnabled(enabled);
+      }),
+    );
+    // Tauri answers popup only after the menu closes (macOS and Windows run it modally).
+    await menu.popup(new LogicalPosition(x, y));
+  } finally {
+    showing = false;
+  }
 }
 
 /** The doc id of the tab that `target` is in, if any. */

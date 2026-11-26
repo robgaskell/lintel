@@ -27,6 +27,13 @@ function fileDoc(name: string): DocState {
   return createDoc({ path: `/notes/${name}`, raw: `# ${name}\n`, hash: 'h', mode: 'split' });
 }
 
+// A real pointer press: pointerdown then pointerup on the same element.
+function press(el: Element): void {
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+  el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0 }));
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+}
+
 function tabFor(id: string): HTMLElement {
   const tab = host.querySelector<HTMLElement>(`.lintel-tab[data-doc-id="${id}"]`);
   if (!tab) throw new Error(`no tab for ${id}`);
@@ -155,7 +162,7 @@ describe('Workspace', () => {
     ws.openDoc(a);
     flushSync();
 
-    tabFor(a.id).querySelector<HTMLButtonElement>('button.close')!.click();
+    press(tabFor(a.id).querySelector('.close')!);
     await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([]));
     expect(docs.has(a.id)).toBe(false);
   });
@@ -167,7 +174,7 @@ describe('Workspace', () => {
     flushSync();
 
     expect(tabFor(a.id).querySelector('.pin')).not.toBeNull();
-    expect(tabFor(a.id).querySelector('button.close')).toBeNull();
+    expect(tabFor(a.id).querySelector('.close')).toBeNull();
   });
 
   it('stores only the doc id in the layout, never the text', () => {
@@ -344,13 +351,57 @@ describe('Workspace', () => {
     expect(docs.size).toBe(2);
   });
 
-  it('labels the close button with the doc name', () => {
+  it('gives a tab no pressable or focusable control inside it (Ruling 171)', () => {
     const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
     ws.openDoc(a);
+    ws.openDoc(b);
+    b.text = 'unsaved';
     flushSync();
 
-    const close = tabFor(a.id).querySelector<HTMLButtonElement>('button.close')!;
-    expect(close.getAttribute('aria-label')).toBe('Close a.md');
+    for (const doc of [a, b]) {
+      const tab = tabFor(doc.id).closest('.dv-tab')!;
+      const controls = tab.querySelectorAll('button, input, select, textarea, a[href], [tabindex], [role=button]');
+      expect(controls.length, doc.title).toBe(0);
+      expect(tab.querySelector('.close')?.getAttribute('aria-hidden'), doc.title).toBe('true');
+    }
+  });
+
+  it('selects, never closes, on a click with no pointer press, even on the close mark (Ruling 171)', async () => {
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    ws.openDoc(a);
+    ws.openDoc(b);
+    flushSync();
+
+    // An accessibility press sends a click with no pointerdown or pointerup.
+    tabFor(a.id).querySelector<HTMLElement>('.close')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ws.docIdsInOrder()).toEqual([a.id, b.id]);
+    expect(ws.activeDocId()).toBe(a.id);
+  });
+
+  it('closes only when the pointer goes down and up on the close mark', async () => {
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    ws.openDoc(a);
+    ws.openDoc(b);
+    flushSync();
+    const close = tabFor(a.id).querySelector('.close')!;
+
+    // Down on the mark, then dragged away before release.
+    close.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    close.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+    close.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    // Down elsewhere, released over the mark.
+    tabFor(b.id).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    close.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ws.docIdsInOrder()).toEqual([a.id, b.id]);
+
+    press(close);
+    await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([b.id]));
   });
 
   it('focuses the editor when the already-active doc is activated again', async () => {
@@ -425,7 +476,55 @@ describe('Workspace pinning (Ruling 165)', () => {
     flushSync();
 
     expect(tabFor(a.id).querySelector('.pin')).not.toBeNull();
-    expect(tabFor(a.id).querySelector('button.close')).toBeNull();
+    expect(tabFor(a.id).querySelector('.close')).toBeNull();
+  });
+
+  it("keeps each group's shown tab when pinning in another group (Ruling 175)", () => {
+    const [a1, a2, b1, b2, b3] = ['a1.md', 'a2.md', 'b1.md', 'b2.md', 'b3.md'].map(fileDoc);
+    ws.openDoc(a1);
+    ws.openDoc(a2);
+    ws.openDoc(b1, { referenceId: a1.id, direction: 'right' });
+    ws.openDoc(b2, { referenceId: b1.id });
+    ws.openDoc(b3, { referenceId: b1.id });
+    ws.activate(a1.id);
+    const api = (ws as unknown as { api: DockviewApi }).api;
+    const shownInB = () => api.getPanel(b1.id)!.group.activePanel?.id;
+    expect(shownInB()).toBe(b3.id);
+
+    ws.setPinned(b2.id, true);
+    expect([ws.activeDocId(), shownInB()]).toEqual([a1.id, b3.id]);
+    ws.setPinned(b3.id, true);
+    expect([ws.activeDocId(), shownInB()]).toEqual([a1.id, b3.id]);
+    expect(ws.docIdsInOrder()).toEqual([a1.id, a2.id, b2.id, b3.id, b1.id]);
+  });
+
+  it('never moves a tab from inside its own move event (Ruling 175)', () => {
+    const [p1, p2, a] = ['p1.md', 'p2.md', 'a.md'].map(fileDoc);
+    for (const doc of [p1, p2, a]) ws.openDoc(doc);
+    ws.setPinned(p1.id, true);
+    ws.setPinned(p2.id, true);
+    const api = (ws as unknown as { api: DockviewApi }).api;
+    const proto = Object.getPrototypeOf(api.getPanel(a.id)!.api) as { moveTo: (o: unknown) => void };
+    const moveTo = proto.moveTo;
+    let depth = 0;
+    let deepest = 0;
+    proto.moveTo = function (this: unknown, options: unknown) {
+      deepest = Math.max(deepest, ++depth);
+      try {
+        moveTo.call(this, options);
+      } finally {
+        depth--;
+      }
+    };
+    try {
+      // Dropping the unpinned tab first needs two moves to put the pinned ones back in front.
+      api.getPanel(a.id)!.api.moveTo({ index: 0 });
+    } finally {
+      proto.moveTo = moveTo;
+    }
+
+    expect(ws.docIdsInOrder()).toEqual([p1.id, p2.id, a.id]);
+    expect(deepest).toBe(2);
   });
 
   it('puts pinned tabs first again after an unpinned tab is moved in front of them', () => {
@@ -472,6 +571,22 @@ describe('Workspace tab switching (Ruling 167)', () => {
     expect(ws.activeDocId()).toBe(a.id);
     ws.previousTab();
     expect(ws.activeDocId()).toBe(b.id);
+  });
+
+  it('leaves focus alone with one tab', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    await vi.waitFor(() => expect(document.activeElement?.closest('.cm-editor')).not.toBeNull());
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
+    ws.nextTab();
+    ws.previousTab();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
   });
 
   it('does nothing with one tab or none', () => {
