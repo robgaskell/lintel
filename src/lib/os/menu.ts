@@ -225,7 +225,6 @@ export function menuEntries(
     id: `mode-${id}`,
     text,
     accelerator: `CmdOrCtrl+${key}`,
-    enabled: false,
     action: () => h.setMode(id),
   });
   const view: SubmenuOptions = {

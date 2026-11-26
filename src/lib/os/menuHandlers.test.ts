@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message, open } from '@tauri-apps/plugin-dialog';
-import { saveDoc, saveDocAs } from '../docs/store.svelte';
+import { docs, saveDoc, saveDocAs, type DocState } from '../docs/store.svelte';
 import { makeMenuHandlers, type MenuHandlerDeps } from './menuHandlers';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
@@ -9,7 +9,7 @@ import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
-vi.mock('../docs/store.svelte', () => ({ saveDoc: vi.fn(), saveDocAs: vi.fn() }));
+vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
 vi.mock('./open', () => ({ newUntitled: vi.fn(), openPaths: vi.fn() }));
 vi.mock('./platform', () => ({ isMac: vi.fn(() => true) }));
 vi.mock('./quit', () => ({ quitApp: vi.fn() }));
@@ -29,7 +29,10 @@ function deps(): MenuHandlerDeps {
   };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  docs.clear();
+});
 
 describe('makeMenuHandlers', () => {
   it('quits through quitApp with the workspace', async () => {
@@ -109,6 +112,32 @@ describe('makeMenuHandlers', () => {
       name: 'All files',
       extensions: ['*'],
     });
+  });
+
+  it('sets the mode of the active doc only', async () => {
+    const active = { id: 'doc-1', mode: 'split' } as DocState;
+    const other = { id: 'doc-2', mode: 'split' } as DocState;
+    docs.set(active.id, active);
+    docs.set(other.id, other);
+
+    makeMenuHandlers(deps()).setMode('read');
+
+    await vi.waitFor(() => expect(active.mode).toBe('read'));
+    expect(other.mode).toBe('split');
+    expect(message).not.toHaveBeenCalled();
+  });
+
+  it('does nothing to modes when no doc is active', async () => {
+    const doc = { id: 'doc-1', mode: 'split' } as DocState;
+    docs.set(doc.id, doc);
+    const d = deps();
+    vi.mocked(d.workspace.activeDocId).mockReturnValue(null);
+
+    makeMenuHandlers(d).setMode('edit');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(doc.mode).toBe('split');
+    expect(message).not.toHaveBeenCalled();
   });
 
   it('says so when an item without a handler yet is chosen', async () => {

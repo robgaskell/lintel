@@ -1,0 +1,92 @@
+import { slugify } from './markdown';
+
+/** What a click on a preview link should do. */
+export type HrefAction =
+  | { kind: 'external'; url: string } // opened by the system (Ruling 80)
+  | { kind: 'anchor'; fragment: string } // decoded, without the '#'
+  | { kind: 'file'; target: string } // as written; resolve with resolveTarget
+  | { kind: 'ignore' };
+
+const EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+// RFC 3986 scheme. One letter followed by ':' is a Windows drive, not a scheme.
+const SCHEME = /^[a-z][a-z0-9+.-]+:/i;
+
+export function classifyHref(href: string): HrefAction {
+  if (href === '' || href.startsWith('//')) return { kind: 'ignore' };
+  if (href.startsWith('#')) return { kind: 'anchor', fragment: decode(href.slice(1)) };
+  if (!SCHEME.test(href)) return { kind: 'file', target: href };
+  try {
+    const url = new URL(href);
+    // The opener's scope match is case-sensitive, so the scheme goes in lower-case.
+    if (EXTERNAL_SCHEMES.has(url.protocol)) return { kind: 'external', url: url.href };
+  } catch {
+    // Not a URL the system could open either.
+  }
+  return { kind: 'ignore' };
+}
+
+/** How the preview treats an image source. Remote images are never fetched (Ruling 68). */
+export function classifyImageSrc(src: string): 'data' | 'remote' | 'local' {
+  if (/^data:/i.test(src)) return 'data';
+  if (src.startsWith('//') || SCHEME.test(src)) return 'remote';
+  return 'local';
+}
+
+export function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path);
+}
+
+/**
+ * The file a link or image target names, resolved against the doc's folder with string
+ * logic only. Null when it cannot be resolved: an empty target, a relative target in an
+ * unsaved doc, or a Windows drive-letter target, which v1 does not support (Ruling 81).
+ */
+export function resolveTarget(docPath: string | null, target: string): string | null {
+  const path = decode(target.replace(/[?#].*$/s, ''));
+  if (path === '' || /^[a-z]:/i.test(path)) return null;
+  if (path.startsWith('/')) return joinUnder('/', path.split('/'), '/');
+  if (docPath === null) return null;
+  const { root, rest } = splitRoot(docPath);
+  const sep = root.includes('\\') ? '\\' : '/';
+  const folder = rest.split(/[\\/]/).slice(0, -1);
+  return joinUnder(root, [...folder, ...path.split(/[\\/]/)], sep);
+}
+
+/**
+ * The `h-` heading id a `#fragment` points at, or null. Tries the fragment as written,
+ * lower-cased, then slugged as the renderer slugs heading text (Ruling 64).
+ */
+export function headingIdFor(fragment: string, ids: ReadonlySet<string>): string | null {
+  const candidates = [
+    fragment,
+    `h-${fragment}`,
+    `h-${fragment.toLowerCase()}`,
+    `h-${slugify(fragment, new Map())}`,
+  ];
+  return candidates.find((id) => id.startsWith('h-') && ids.has(id)) ?? null;
+}
+
+function decode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+// The part of a path `..` cannot climb above: "/", "C:\" or "\\server\share\".
+function splitRoot(path: string): { root: string; rest: string } {
+  const match = /^([a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/]|\/)/i.exec(path);
+  const root = match?.[0] ?? '';
+  return { root, rest: path.slice(root.length) };
+}
+
+function joinUnder(root: string, parts: string[], sep: string): string {
+  const kept: string[] = [];
+  for (const part of parts) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') kept.pop();
+    else kept.push(part);
+  }
+  return root + kept.join(sep);
+}

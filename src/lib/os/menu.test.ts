@@ -69,6 +69,7 @@ type Entry = {
   id?: string;
   text?: string;
   enabled?: boolean;
+  accelerator?: string;
   item?: unknown;
   items?: Entry[];
   action?: () => void;
@@ -148,10 +149,26 @@ describe('menuEntries', () => {
   it('disables the items whose features come later', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
     const later = ['settings', 'print', 'export-pdf', 'export-html', 'export-docx'];
-    const modes = ['mode-edit', 'mode-split', 'mode-read', 'toggle-outline'];
-    for (const id of [...later, ...modes]) expect(byId(entries, id).enabled).toBe(false);
-    for (const id of ['new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find']) {
+    for (const id of [...later, 'toggle-outline']) expect(byId(entries, id).enabled).toBe(false);
+    const ready = ['new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find'];
+    for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);
+    }
+  });
+
+  it('sets the mode from View > Edit, Split and Read, on Mod-1, 2 and 3', () => {
+    const h = handlers();
+    const entries = menuEntries(h, [], 'macos') as Entry[];
+    const cases = [
+      ['mode-edit', 'edit', 'CmdOrCtrl+1'],
+      ['mode-split', 'split', 'CmdOrCtrl+2'],
+      ['mode-read', 'read', 'CmdOrCtrl+3'],
+    ] as const;
+    for (const [id, mode, accelerator] of cases) {
+      const item = byId(entries, id);
+      expect(item.accelerator).toBe(accelerator);
+      item.action!();
+      expect(h.setMode).toHaveBeenLastCalledWith(mode);
     }
   });
 

@@ -1,3 +1,4 @@
+import { SvelteSet } from 'svelte/reactivity';
 import { message } from '@tauri-apps/plugin-dialog';
 import { normalizePath, readTextFile, type ReadResult } from '../ipc';
 import { createDoc, findByPath } from '../docs/store.svelte';
@@ -8,6 +9,12 @@ import { recordRecent } from './recent';
 type DocOpener = Pick<Workspace, 'openDoc' | 'activate'>;
 
 let workspace: DocOpener | null = null;
+
+/** Docs opened in Edit because they are large; DocPane shows the notice while an id is here. */
+export const largeFileNotices: Set<string> = new SvelteSet<string>();
+
+// Spec: above 2 MB a tab opens in Edit only (1 MB = 1,000,000 bytes, Ruling 78).
+const LARGE_FILE_BYTES = 2_000_000;
 
 export function setWorkspace(target: DocOpener): void {
   workspace = target;
@@ -41,7 +48,11 @@ export async function openPaths(paths: string[]): Promise<void> {
       target.activate(raced.id);
     } else {
       const { text: raw, hash } = result;
-      target.openDoc(createDoc({ path, raw, hash, mode: settings.defaultMode }));
+      // raw is the file's text before newline changes, so its UTF-8 length is the file size.
+      const large = new TextEncoder().encode(raw).length > LARGE_FILE_BYTES;
+      const doc = createDoc({ path, raw, hash, mode: large ? 'edit' : settings.defaultMode });
+      if (large) largeFileNotices.add(doc.id);
+      target.openDoc(doc);
     }
     // Not awaited: a slow store must not hold up the next file (Ruling 71).
     void recordRecent(path);

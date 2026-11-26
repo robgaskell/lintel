@@ -12,6 +12,24 @@
   --toolbar-divider: #e0e0dd;
   --toolbar-icon: #2e2e2c;
   --toolbar-hover: rgba(0, 0, 0, 0.06);
+  --mode-bg: #eeeeec;
+  --mode-text: #4b4b48;
+  --mode-selected-bg: #ffffff;
+  --mode-selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  /* Preview: code background and link from the R54 palette defaults. */
+  --preview-text: #1f1f1e;
+  --preview-link: #2563eb;
+  --preview-code-bg: #f4f4f3;
+  --preview-code-border: #e8e8e5;
+  --preview-code-keyword: #1d4ed8;
+  --preview-code-string: #15803d;
+  --preview-code-title: #9a3412;
+  --preview-code-comment: #6b6b67;
+  --preview-quote-border: #dadad7;
+  --preview-quote-text: #4b4b48;
+  --preview-rule: #ececea;
+  --preview-table-border: #e0e0dd;
+  --preview-table-head: #f8f8f7;
   color-scheme: light dark;
 }
 
@@ -30,6 +48,23 @@
     --toolbar-divider: #3a3a38;
     --toolbar-icon: #d6d6d2;
     --toolbar-hover: rgba(255, 255, 255, 0.08);
+    --mode-bg: #2c2c30;
+    --mode-text: #b4b4bb;
+    --mode-selected-bg: #3a3a40;
+    --mode-selected-shadow: none;
+    --preview-text: #e6e6e8;
+    --preview-link: #8ab4ff;
+    --preview-code-bg: #1f1f1e;
+    --preview-code-border: #333337;
+    --preview-code-keyword: #8ab4ff;
+    --preview-code-string: #86c99a;
+    --preview-code-title: #f0b37e;
+    --preview-code-comment: #9a9a95;
+    --preview-quote-border: #4a4a52;
+    --preview-quote-text: #c4c4ca;
+    --preview-rule: #333337;
+    --preview-table-border: #36363b;
+    --preview-table-head: #26262a;
   }
 }
 

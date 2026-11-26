@@ -3,7 +3,7 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { normalizePath, readTextFile } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
 import { settings } from '../settings/settings.svelte';
-import { newUntitled, openPaths, setWorkspace } from './open';
+import { largeFileNotices, newUntitled, openPaths, setWorkspace } from './open';
 import { recordRecent } from './recent';
 
 vi.mock('../ipc', () => ({
@@ -34,6 +34,7 @@ beforeEach(() => {
   workspace.activate.mockReset();
   vi.mocked(recordRecent).mockReset();
   settings.defaultMode = 'split';
+  largeFileNotices.clear();
   setWorkspace(workspace);
 });
 
@@ -94,6 +95,41 @@ describe('openPaths', () => {
     await openPaths(['/a.md']);
 
     expect([...docs.values()][0].mode).toBe('read');
+  });
+});
+
+describe('openPaths large-file guard', () => {
+  it('opens a 2,000,001-byte file in Edit whatever defaultMode says, with the notice', async () => {
+    for (const mode of ['split', 'read'] as const) {
+      docs.clear();
+      settings.defaultMode = mode;
+      read.mockResolvedValue({ text: 'a'.repeat(2_000_001), hash: 'h' });
+
+      await openPaths(['/big.md']);
+
+      const [doc] = docs.values();
+      expect(doc.mode).toBe('edit');
+      expect(largeFileNotices.has(doc.id)).toBe(true);
+    }
+  });
+
+  it('opens a file of exactly 2,000,000 bytes in the default mode, with no notice', async () => {
+    read.mockResolvedValue({ text: 'a'.repeat(2_000_000), hash: 'h' });
+
+    await openPaths(['/edge.md']);
+
+    const [doc] = docs.values();
+    expect(doc.mode).toBe('split');
+    expect(largeFileNotices.has(doc.id)).toBe(false);
+  });
+
+  it('counts UTF-8 bytes, not characters', async () => {
+    // 1,000,001 characters of two bytes each.
+    read.mockResolvedValue({ text: 'é'.repeat(1_000_001), hash: 'h' });
+
+    await openPaths(['/accents.md']);
+
+    expect([...docs.values()][0].mode).toBe('edit');
   });
 });
 

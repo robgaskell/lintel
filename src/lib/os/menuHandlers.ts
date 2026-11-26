@@ -1,5 +1,5 @@
 import { message, open } from '@tauri-apps/plugin-dialog';
-import { saveDoc, saveDocAs } from '../docs/store.svelte';
+import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
@@ -25,6 +25,12 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
     if (saved) workspace.refreshTab(id);
   }
 
+  function setMode(mode: ViewMode) {
+    const id = workspace.activeDocId();
+    const doc = id ? docs.get(id) : undefined;
+    if (doc) doc.mode = mode;
+  }
+
   return {
     quit: guarded(() => quitApp(workspace)),
     newDoc: guarded(newUntitled),
@@ -34,7 +40,7 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
     save: guarded(() => saveActive(false)),
     saveAs: guarded(() => saveActive(true)),
     closeTab: guarded(() => closeTabOrWindow(workspace, currentWindow())),
-    setMode: notYet,
+    setMode: (mode) => guarded(() => setMode(mode))(),
     toggleOutline: notYet,
     print: notYet,
     exportPdf: notYet,
