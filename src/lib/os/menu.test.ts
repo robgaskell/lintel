@@ -307,11 +307,31 @@ describe('buildAppMenu', () => {
     await buildAppMenu(h, []);
     const first = await vi.mocked(CheckMenuItem.new).mock.results[0].value;
     expect(first.checked).toBe(true);
+    // The live item itself goes into the menu, or ticking it would change nothing on screen.
+    const view = (vi.mocked(Menu.new).mock.lastCall![0]!.items as Built[]).find(
+      (entry) => (entry as { text?: string }).text === 'View',
+    );
+    expect(view?.items).toContain(first);
 
     await setOutlineChecked(false);
 
     expect(first.setChecked).toHaveBeenLastCalledWith(false);
     expect(Menu.new).toHaveBeenCalledOnce();
+  });
+
+  it('re-ticks the item when the outline is toggled while the menu is being built', async () => {
+    const real = vi.mocked(CheckMenuItem.new).getMockImplementation()!;
+    vi.mocked(CheckMenuItem.new).mockImplementationOnce(async (opts) => {
+      const item = await real(opts);
+      outline.visible = false; // a toggle lands mid-build
+      return item;
+    });
+
+    await buildAppMenu(handlers(), []);
+
+    const item = await vi.mocked(CheckMenuItem.new).mock.results[0].value;
+    expect(item.checked).toBe(false);
+    expect(item.setChecked).toHaveBeenCalledWith(false);
   });
 
   it('moves the tick to the new item after a rebuild, which starts with the current value', async () => {
