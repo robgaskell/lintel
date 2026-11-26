@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pathsExist } from '../ipc';
-import { fakeStore, resetFakes } from '../../test/fakes';
-import { clearRecent, getRecent, onRecentChanged, recordRecent } from './recent';
+import { fakeStore, loads, resetFakes } from '../../test/fakes';
+import {
+  clearRecent,
+  getRecent,
+  knownRecent,
+  onRecentChanged,
+  recentMayHaveChanged,
+  recordRecent,
+} from './recent';
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('../ipc', () => ({ pathsExist: vi.fn() }));
@@ -24,6 +31,26 @@ describe('recordRecent', () => {
 
     expect(await getRecent(20)).toEqual(['/a.md', '/b.md']);
     expect(store().data.get('version')).toBe(1);
+  });
+
+  it('saves recent.json after each change, with autoSave off', async () => {
+    await recordRecent('/a.md');
+    expect(store().saves).toBe(1);
+    await clearRecent();
+    expect(store().saves).toBe(2);
+    expect(loads).toContainEqual({ path: 'recent.json', options: { autoSave: false } });
+  });
+
+  it('never rejects, even when a listener throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stop = onRecentChanged(() => {
+      throw new Error('listener broke');
+    });
+
+    await expect(recordRecent('/a.md')).resolves.toBeUndefined();
+
+    stop();
+    error.mockRestore();
   });
 
   it('keeps the newest 20 of 25', async () => {
@@ -84,6 +111,43 @@ describe('getRecent', () => {
     expect(await getRecent(3)).toEqual(['/20.md', '/18.md', '/17.md']);
     expect(stored()).not.toContain('/19.md');
     expect(stored()).toHaveLength(19);
+  });
+});
+
+describe('knownRecent', () => {
+  it('returns the stored list at once, without checking the disk', async () => {
+    await recordRecent('/a.md');
+    await recordRecent('/b.md');
+    let finishCheck: (found: boolean[]) => void = () => {};
+    exists.mockReturnValueOnce(new Promise((resolve) => (finishCheck = resolve)));
+    const checking = getRecent(5);
+
+    expect(await knownRecent(1)).toEqual(['/b.md']);
+    expect(await knownRecent(0)).toEqual([]);
+    finishCheck([true, true]);
+    await checking;
+  });
+});
+
+describe('a stored list from another version', () => {
+  it('is ignored', async () => {
+    store().data.set('version', 2);
+    store().data.set('paths', ['/a.md']);
+
+    expect(await getRecent(5)).toEqual([]);
+    expect(await knownRecent(5)).toEqual([]);
+  });
+});
+
+describe('recentMayHaveChanged', () => {
+  it('tells listeners, so the menu reads the list again', () => {
+    const changed = vi.fn();
+    const stop = onRecentChanged(changed);
+
+    recentMayHaveChanged();
+
+    expect(changed).toHaveBeenCalledOnce();
+    stop();
   });
 });
 

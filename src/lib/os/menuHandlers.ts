@@ -5,7 +5,7 @@ import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
 import { quitApp } from './quit';
-import { clearRecent } from './recent';
+import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
 
 export interface MenuHandlerDeps {
@@ -29,7 +29,7 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
     quit: guarded(() => quitApp(workspace)),
     newDoc: guarded(newUntitled),
     open: guarded(chooseFiles),
-    openRecent: (path) => guarded(() => openPaths([path]))(),
+    openRecent: (path) => guarded(() => openRecent(path))(),
     clearRecent: guarded(clearRecent),
     save: guarded(() => saveActive(false)),
     saveAs: guarded(() => saveActive(true)),
@@ -48,6 +48,15 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
 const notYet = guarded(() => {
   throw new Error('Not implemented yet');
 });
+
+// openPaths reports its own errors; reading the list again drops the entry if the file is gone.
+async function openRecent(path: string) {
+  try {
+    await openPaths([path]);
+  } finally {
+    recentMayHaveChanged();
+  }
+}
 
 async function chooseFiles() {
   const markdown = { name: 'Markdown', extensions: ['md', 'markdown'] };

@@ -27,7 +27,7 @@ export async function openPaths(paths: string[]): Promise<void> {
       const open = findByPath(path);
       if (open) {
         target.activate(open.id);
-        await recordRecent(path);
+        void recordRecent(path);
         continue;
       }
       result = await readTextFile(path);
@@ -43,7 +43,8 @@ export async function openPaths(paths: string[]): Promise<void> {
       const { text: raw, hash } = result;
       target.openDoc(createDoc({ path, raw, hash, mode: settings.defaultMode }));
     }
-    await recordRecent(path);
+    // Not awaited: a slow store must not hold up the next file (Ruling 71).
+    void recordRecent(path);
   }
 }
 

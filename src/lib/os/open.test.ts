@@ -106,6 +106,18 @@ describe('openPaths and Open Recent', () => {
     expect(vi.mocked(recordRecent).mock.calls).toEqual([['/x/a.md'], ['/b.md']]);
   });
 
+  it('does not wait for the record, so a slow store never holds up the next file', async () => {
+    vi.mocked(recordRecent).mockReturnValue(new Promise(() => {}));
+
+    const done = await Promise.race([
+      openPaths(['/a.md', '/b.md']).then(() => 'done'),
+      new Promise((resolve) => setTimeout(() => resolve('stuck'), 100)),
+    ]);
+
+    expect(done).toBe('done');
+    expect(docs.size).toBe(2);
+  });
+
   it('records a file that was already open, so it moves to the top', async () => {
     await openPaths(['/a.md']);
     vi.mocked(recordRecent).mockClear();

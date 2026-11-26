@@ -143,8 +143,8 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   await writeTo(doc, path);
   doc.path = await normalizedOrAsGiven(path);
   doc.title = baseName(doc.path);
-  // Every Save As route passes here: the menu, Cmd+S on untitled, the close prompt (Ruling 49).
-  await recordRecent(doc.path);
+  // Every Save As route passes here (Ruling 49). Not awaited: a slow store must not delay a save.
+  void recordRecent(doc.path);
   return true;
 }
 

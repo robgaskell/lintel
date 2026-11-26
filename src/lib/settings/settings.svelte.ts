@@ -63,50 +63,73 @@ const CHANGED = 'lintel://settings-changed';
 export const settings: Settings = $state(structuredClone(DEFAULT_SETTINGS) as Settings);
 
 /**
- * Reads settings.json into `settings`. A file with an unknown `version` is copied to
- * settings.json.bak and emptied, and the defaults are used (Ruling 52).
+ * Reads settings.json into `settings`; a field that is missing or invalid gets its default.
+ * A file with an unknown `version` is copied to settings.json.bak and emptied (Ruling 52).
+ * If that copy fails, the file is left alone, the defaults are used, and this rejects.
  */
-export async function loadSettings(): Promise<Settings> {
-  const store = await settingsStore();
-  const stored = new Map(await store.entries<unknown>());
-  const next = structuredClone(DEFAULT_SETTINGS) as Settings;
-  if (stored.size > 0 && stored.get('version') !== 1) {
-    await keepBackup(Object.fromEntries(stored));
-    await store.clear();
-    await store.save();
-  } else {
-    for (const key of Object.keys(next) as (keyof Settings)[]) {
-      const value = stored.get(key);
-      if (sameShape(value, next[key])) (next as unknown as Record<string, unknown>)[key] = value;
+export function loadSettings(): Promise<Settings> {
+  return oneAtATime(async () => {
+    const store = await settingsStore();
+    const stored = new Map(await store.entries<unknown>());
+    const next = structuredClone(DEFAULT_SETTINGS) as Settings;
+    if (stored.size > 0 && stored.get('version') !== 1) {
+      Object.assign(settings, next);
+      await keepBackup(Object.fromEntries(stored));
+      await store.clear();
+      await store.save();
+    } else {
+      for (const [key, read] of Object.entries(READERS)) {
+        const value = read(stored.get(key));
+        if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
+      }
     }
-  }
-  Object.assign(settings, next);
-  return structuredClone(next);
+    Object.assign(settings, next);
+    return structuredClone(next);
+  });
 }
 
 /** Saves the patched settings to settings.json, then tells every window. */
-export async function updateSettings(patch: Partial<Settings>): Promise<void> {
-  const next: Settings = { ...$state.snapshot(settings), ...patch, version: 1 };
-  const store = await settingsStore();
-  // Every key is written, so the file is whole even if it started empty.
-  for (const [key, value] of Object.entries(next)) await store.set(key, value);
-  await store.save();
-  Object.assign(settings, next);
-  await emit(CHANGED, next);
+export function updateSettings(patch: Partial<Settings>): Promise<void> {
+  return oneAtATime(async () => {
+    // Merged inside the queue, so an update made at the same time is not overwritten.
+    const changes = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    const next: Settings = { ...$state.snapshot(settings), ...changes, version: 1 };
+    const store = await settingsStore();
+    // Every key is written, so the file is whole even if it started empty.
+    for (const [key, value] of Object.entries(next)) await store.set(key, value);
+    await store.save();
+    Object.assign(settings, next);
+    await emit(CHANGED, next);
+  });
 }
 
-/** Calls `cb` after any window changes settings, this one included. Returns an unsubscribe. */
-export function onSettingsChanged(cb: (s: Settings) => void): () => void {
+/**
+ * Calls `cb` after any window changes settings, this one included. Returns an unsubscribe.
+ * `onError` hears about a listener that could not be registered.
+ */
+export function onSettingsChanged(
+  cb: (s: Settings) => void,
+  onError: (err: unknown) => void = (err) => console.error('Could not watch settings:', err),
+): () => void {
   let active = true;
   const unlisten = listen<Settings>(CHANGED, ({ payload }) => {
     if (!active) return;
     Object.assign(settings, payload);
     cb(payload);
   });
+  unlisten.catch(onError);
   return () => {
     active = false;
-    unlisten.then((stop) => stop());
+    unlisten.then((stop) => stop()).catch(() => {});
   };
+}
+
+let queue: Promise<unknown> = Promise.resolve();
+
+function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
+  const run = queue.then(task);
+  queue = run.catch(() => {});
+  return run;
 }
 
 let opened: Promise<Store> | null = null;
@@ -125,8 +148,58 @@ async function keepBackup(entries: Record<string, unknown>): Promise<void> {
   await writeTextFile(path, JSON.stringify(entries, null, 2));
 }
 
-function sameShape(value: unknown, fallback: unknown): boolean {
-  if (value === undefined || typeof value !== typeof fallback) return false;
-  if (typeof value !== 'object') return true;
-  return value !== null && !Array.isArray(value);
+type Reader<T> = (value: unknown) => T | undefined;
+
+/** One reader per stored field: the value to use, or undefined to keep the default. */
+const READERS: { [K in Exclude<keyof Settings, 'version'>]: Reader<Settings[K]> } = {
+  theme: oneOf(['light', 'dark', 'system']),
+  palettes: (value) => {
+    if (!isRecord(value)) return undefined;
+    const light = readPalette(value.light);
+    const dark = readPalette(value.dark);
+    return light && dark ? { light, dark } : undefined;
+  },
+  readingFont: readString,
+  editorFont: readString,
+  fontSize: intIn(12, 24),
+  defaultMode: oneOf(['edit', 'split', 'read']),
+  recentLimit: intIn(0, 20),
+  lint: (value) =>
+    isRecord(value) && typeof value.enabled === 'boolean' && isRecord(value.rules)
+      ? { enabled: value.enabled, rules: value.rules as Record<string, boolean | object> }
+      : undefined,
+  updates: (value) =>
+    isRecord(value) && typeof value.autoCheck === 'boolean'
+      ? { autoCheck: value.autoCheck }
+      : undefined,
+};
+
+function oneOf<T extends string>(allowed: readonly T[]): Reader<T> {
+  return (value) => (allowed.includes(value as T) ? (value as T) : undefined);
+}
+
+function intIn(min: number, max: number): Reader<number> {
+  return (value) =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(max, Math.max(min, Math.round(value)))
+      : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+const COLOUR = /^#[0-9A-Fa-f]{6}$/;
+
+function readPalette(value: unknown): Palette | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = ['background', 'text', 'accent', 'link', 'codeBackground'] as const;
+  if (!keys.every((key) => typeof value[key] === 'string' && COLOUR.test(value[key]))) {
+    return undefined;
+  }
+  return Object.fromEntries(keys.map((key) => [key, value[key]])) as unknown as Palette;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

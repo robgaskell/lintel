@@ -12,7 +12,7 @@ import { openFindReplace } from '../editor/commands';
 import { activeView } from '../editor/views';
 import { onSettingsChanged, settings } from '../settings/settings.svelte';
 import { currentPlatform, type Platform } from './platform';
-import { getRecent, onRecentChanged } from './recent';
+import { getRecent, knownRecent, onRecentChanged } from './recent';
 
 export interface MenuHandlers {
   quit(): void;
@@ -37,44 +37,69 @@ type MenuEntry = MenuItemOptions | PredefinedMenuItemOptions | SubmenuOptions;
 let installing: Promise<void> = Promise.resolve();
 let generation = 0;
 
+// One rebuild per burst, such as opening several files at once.
+const COALESCE_MS = 100;
+
 /**
  * Builds the menu bar now, and again whenever the recent list or `recentLimit` changes.
- * Returns a function that stops the rebuilds.
+ * Each build shows the stored list at once, then the checked list if it differs, so a slow
+ * disk never holds up the menu (Ruling 71). Returns a function that stops the rebuilds.
  */
 export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): () => void {
   let latest = 0;
   let limit = settings.recentLimit;
-  const rebuild = async () => {
-    const request = ++latest;
-    const recent = await recentForMenu();
-    // A slow read of the list must not overwrite the menu a later change asked for.
-    if (request !== latest) return;
-    await buildAppMenu(h, recent);
-  };
-  const rebuildOrReport = () => void rebuild().catch(onError);
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const stopRecent = onRecentChanged(rebuildOrReport);
+  const rebuildNow = () => {
+    const request = ++latest;
+    void rebuild(h, () => request === latest).catch(onError);
+  };
+  const rebuildSoon = () => {
+    timer ??= setTimeout(() => {
+      timer = null;
+      rebuildNow();
+    }, COALESCE_MS);
+  };
+
+  const stopRecent = onRecentChanged(rebuildSoon);
   const stopSettings = onSettingsChanged((next) => {
     if (next.recentLimit === limit) return;
     limit = next.recentLimit;
-    rebuildOrReport();
-  });
-  rebuildOrReport();
+    rebuildSoon();
+  }, onError);
+  rebuildNow();
   return () => {
+    if (timer) clearTimeout(timer);
     stopRecent();
     stopSettings();
   };
 }
 
-/** Null hides Open Recent (`recentLimit` 0). A list that cannot be read shows as empty. */
-async function recentForMenu(): Promise<string[] | null> {
-  if (settings.recentLimit <= 0) return null;
-  try {
-    return await getRecent(settings.recentLimit);
-  } catch (err) {
+/** `isLatest` turns false once a newer rebuild starts; this one then stops. */
+async function rebuild(h: MenuHandlers, isLatest: () => boolean): Promise<void> {
+  const limit = settings.recentLimit;
+  // Null hides Open Recent.
+  if (limit <= 0) return buildAppMenu(h, null);
+  const known = await knownRecent(limit).catch((err) => {
     console.error('Could not read the Open Recent list:', err);
     return [];
+  });
+  if (!isLatest()) return;
+  await buildAppMenu(h, known);
+
+  let checked: string[];
+  try {
+    checked = await getRecent(limit);
+  } catch (err) {
+    console.error('Could not check the Open Recent list:', err);
+    return;
   }
+  if (!isLatest() || sameList(known, checked)) return;
+  await buildAppMenu(h, checked);
+}
+
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((path, i) => path === b[i]);
 }
 
 /**
@@ -268,7 +293,11 @@ function openRecentMenu(
     text: 'Open Recent',
     enabled: recent.length > 0,
     items: [
-      ...recent.map((path) => ({ text: path, action: () => h.openRecent(path) })),
+      // Menus read a single & as a mnemonic marker and hide it.
+      ...recent.map((path) => ({
+        text: path.replaceAll('&', '&&'),
+        action: () => h.openRecent(path),
+      })),
       ...(recent.length > 0 ? [separator] : []),
       { id: 'clear-recent', text: 'Clear Menu', action: () => h.clearRecent() },
     ],

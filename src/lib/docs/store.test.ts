@@ -424,6 +424,20 @@ describe('Save As and Open Recent', () => {
     expect(vi.mocked(recordRecent).mock.calls).toEqual([['/notes/one.md'], ['/notes/two.md']]);
   });
 
+  it('does not wait for the record, so a slow store never holds up the save', async () => {
+    vi.mocked(recordRecent).mockReturnValue(new Promise(() => {}));
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'split' });
+    saveDialog.mockResolvedValue('/notes/new.md');
+    write.mockResolvedValue('h1');
+
+    const done = await Promise.race([
+      saveDocAs(doc.id),
+      new Promise((resolve) => setTimeout(() => resolve('stuck'), 100)),
+    ]);
+
+    expect(done).toBe(true);
+  });
+
   it('records nothing for a plain save, a cancelled Save As or a failed write', async () => {
     const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'split' });
     doc.text = 'b\n';

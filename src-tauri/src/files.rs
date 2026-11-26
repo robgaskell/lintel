@@ -6,6 +6,9 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 const NOT_UTF8: &str = "Lintel opens UTF-8 text files only.";
 const READ_ONLY: &str = "This file is read-only.";
@@ -43,11 +46,55 @@ pub async fn normalize_path(path: String) -> Result<String, String> {
     Ok(real)
 }
 
-/// Whether each path is an existing file, in order. plugin-fs `exists` cannot be used
-/// because its `**` scope rejects paths under dot-folders such as ~/.claude (Ruling 51).
+/// Whether each path may still be a file, in order. False only when it is definitely gone.
+/// plugin-fs `exists` is not used: its `**` scope rejects dot-folders such as ~/.claude (Ruling 51).
 #[tauri::command]
 pub async fn paths_exist(paths: Vec<String>) -> Vec<bool> {
-    paths.iter().map(|path| Path::new(path).is_file()).collect()
+    let count = paths.len();
+    tauri::async_runtime::spawn_blocking(move || check_within(paths, CHECK_BUDGET, may_be_file))
+        .await
+        .unwrap_or_else(|_| vec![true; count])
+}
+
+// A stat on a network mount whose server is gone can block for minutes (Ruling 71).
+const CHECK_BUDGET: Duration = Duration::from_secs(1);
+
+/// Errors other than "not there", such as permission denied, count as present, so a file
+/// that only cannot be checked right now is not dropped from Open Recent.
+fn may_be_file(path: &Path) -> bool {
+    match fs::metadata(path) {
+        Ok(meta) => meta.is_file(),
+        Err(e) => !matches!(
+            e.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ),
+    }
+}
+
+/// Runs `check` on each path, in order, on its own thread. Paths not answered within
+/// `budget` count as present; a stuck check is left to finish on its own.
+fn check_within<F>(paths: Vec<String>, budget: Duration, check: F) -> Vec<bool>
+where
+    F: Fn(&Path) -> bool + Send + 'static,
+{
+    let mut found = vec![true; paths.len()];
+    let (send, answers) = mpsc::channel();
+    thread::spawn(move || {
+        for (i, path) in paths.iter().enumerate() {
+            if send.send((i, check(Path::new(path)))).is_err() {
+                return;
+            }
+        }
+    });
+    let deadline = Instant::now() + budget;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match answers.recv_timeout(left) {
+            Ok((i, present)) => found[i] = present,
+            // Out of time, or every path answered.
+            Err(_) => break,
+        }
+    }
+    found
 }
 
 /// Windows canonical paths start with `\\?\`, which other tools and file dialogs do not use.
@@ -480,5 +527,38 @@ mod tests {
 
         assert_eq!(found, vec![true]);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paths_exist_counts_a_file_it_may_not_stat_as_present() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let locked = dir.join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("a.md"), "x").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let found = block_on(paths_exist(vec![path_str(&locked.join("a.md"))]));
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(found, vec![true]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_over_budget_count_as_present() {
+        let paths = vec!["/gone".to_owned(), "/slow".to_owned(), "/after".to_owned()];
+        let started = std::time::Instant::now();
+
+        let found = check_within(paths, std::time::Duration::from_millis(50), |path| {
+            if path == Path::new("/slow") {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            false
+        });
+
+        assert_eq!(found, vec![false, true, true]);
+        assert!(started.elapsed() < std::time::Duration::from_millis(400));
     }
 }

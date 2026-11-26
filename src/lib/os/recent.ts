@@ -20,11 +20,10 @@ export async function recordRecent(path: string): Promise<void> {
       const paths = await readPaths();
       await writePaths([path, ...paths.filter((p) => p !== path)].slice(0, MAX_STORED));
     });
+    notify();
   } catch (err) {
     console.error(`Could not add ${path} to Open Recent:`, err);
-    return;
   }
-  notify();
 }
 
 /** The newest `limit` paths whose files still exist. Missing ones are dropped for good. */
@@ -39,6 +38,12 @@ export async function getRecent(limit: number): Promise<string[]> {
   });
 }
 
+/** The newest `limit` stored paths, unchecked. Never waits on the disk, so it cannot hang. */
+export async function knownRecent(limit: number): Promise<string[]> {
+  if (limit <= 0) return [];
+  return (await readPaths()).slice(0, limit);
+}
+
 export async function clearRecent(): Promise<void> {
   await oneAtATime(() => writePaths([]));
   notify();
@@ -50,6 +55,11 @@ const listeners = new Set<() => void>();
 export function onRecentChanged(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
+}
+
+/** Asks listeners to read the list again, e.g. after a listed file failed to open. */
+export function recentMayHaveChanged(): void {
+  notify();
 }
 
 function notify(): void {

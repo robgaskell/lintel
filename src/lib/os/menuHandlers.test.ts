@@ -5,7 +5,7 @@ import { makeMenuHandlers, type MenuHandlerDeps } from './menuHandlers';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
 import { quitApp } from './quit';
-import { clearRecent } from './recent';
+import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
@@ -13,7 +13,7 @@ vi.mock('../docs/store.svelte', () => ({ saveDoc: vi.fn(), saveDocAs: vi.fn() })
 vi.mock('./open', () => ({ newUntitled: vi.fn(), openPaths: vi.fn() }));
 vi.mock('./platform', () => ({ isMac: vi.fn(() => true) }));
 vi.mock('./quit', () => ({ quitApp: vi.fn() }));
-vi.mock('./recent', () => ({ clearRecent: vi.fn() }));
+vi.mock('./recent', () => ({ clearRecent: vi.fn(), recentMayHaveChanged: vi.fn() }));
 vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
 
 function deps(): MenuHandlerDeps {
@@ -51,6 +51,18 @@ describe('makeMenuHandlers', () => {
       expect(closeTabOrWindow).toHaveBeenCalledWith(d.workspace, expect.anything());
       expect(openPaths).toHaveBeenCalledWith(['/notes/a.md']);
     });
+  });
+
+  it('re-reads the recent list after an Open Recent attempt, so a dead entry is pruned', async () => {
+    let finishOpen: () => void = () => {};
+    vi.mocked(openPaths).mockReturnValueOnce(new Promise<void>((resolve) => (finishOpen = resolve)));
+    makeMenuHandlers(deps()).openRecent('/notes/gone.md');
+
+    await vi.waitFor(() => expect(openPaths).toHaveBeenCalledWith(['/notes/gone.md']));
+    expect(recentMayHaveChanged).not.toHaveBeenCalled();
+    finishOpen();
+
+    await vi.waitFor(() => expect(recentMayHaveChanged).toHaveBeenCalledOnce());
   });
 
   it('empties the recent list from Clear Menu', async () => {

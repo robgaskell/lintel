@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Menu } from '@tauri-apps/api/menu';
-import { resetFakes } from '../../test/fakes';
+import { events, resetFakes } from '../../test/fakes';
 import { loadSettings, updateSettings } from '../settings/settings.svelte';
 import { buildAppMenu, menuEntries, syncAppMenu, type MenuHandlers } from './menu';
-import { getRecent } from './recent';
+import { getRecent, knownRecent } from './recent';
 
 // Models Tauri: one app-wide id -> handler map; a later item with the same id replaces
 // the handler, and closing a menu removes its ids whoever owns them now.
@@ -47,6 +47,7 @@ vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
 vi.mock('./recent', () => ({
   getRecent: vi.fn(),
+  knownRecent: vi.fn(),
   onRecentChanged: (cb: () => void) => {
     recentList.changed.add(cb);
     return () => recentList.changed.delete(cb);
@@ -58,6 +59,8 @@ beforeEach(async () => {
   recentList.changed.clear();
   vi.mocked(getRecent).mockReset();
   vi.mocked(getRecent).mockImplementation(async (limit) => ['/notes/a.md'].slice(0, limit));
+  vi.mocked(knownRecent).mockReset();
+  vi.mocked(knownRecent).mockImplementation(async (limit) => ['/notes/a.md'].slice(0, limit));
   await loadSettings();
   vi.mocked(Menu.new).mockClear();
 });
@@ -167,6 +170,15 @@ describe('menuEntries', () => {
     expect(recent.items!.slice(0, 2).map((e) => e.text)).toEqual(['/b.md', '/a.md']);
   });
 
+  it('doubles & in a path label so it is not read as a mnemonic, and opens the real path', () => {
+    const h = handlers();
+    const recent = byId(menuEntries(h, ['/R&D/a.md'], 'macos') as Entry[], 'open-recent');
+
+    expect(recent.items![0].text).toBe('/R&&D/a.md');
+    recent.items![0].action!();
+    expect(h.openRecent).toHaveBeenCalledWith('/R&D/a.md');
+  });
+
   it('leaves Open Recent out when the list is null (recentLimit 0)', () => {
     for (const platform of ['macos', 'windows', 'linux'] as const) {
       const ids = flatten(menuEntries(handlers(), null, platform) as Entry[]).map((e) => e.id);
@@ -214,12 +226,40 @@ describe('syncAppMenu', () => {
     return all.find((item) => item.id === 'open-recent');
   }
 
-  it('builds the menu with the newest recentLimit paths', async () => {
+  function recentTexts(): string[] | undefined {
+    return openRecentIn(lastBuild())?.items?.map((e) => e.text ?? '');
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+  function deferred<T>() {
+    let resolve: (value: T) => void = () => {};
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it('builds the menu with the newest recentLimit paths, once when the check changes nothing', async () => {
+    const stop = syncAppMenu(handlers(), vi.fn());
+
+    await vi.waitFor(() => expect(getRecent).toHaveBeenCalledWith(5));
+    await settle();
+    expect(Menu.new).toHaveBeenCalledOnce();
+    expect(knownRecent).toHaveBeenCalledWith(5);
+    expect(recentTexts()?.[0]).toBe('/notes/a.md');
+    stop();
+  });
+
+  it('builds at once from the stored list while the disk check is slow, then refines it', async () => {
+    const check = deferred<string[]>();
+    vi.mocked(getRecent).mockReturnValueOnce(check.promise);
     const stop = syncAppMenu(handlers(), vi.fn());
 
     await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
-    expect(getRecent).toHaveBeenCalledWith(5);
-    expect(openRecentIn(lastBuild())?.items?.[0].text).toBe('/notes/a.md');
+    expect(recentTexts()?.[0]).toBe('/notes/a.md');
+
+    check.resolve([]);
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
+    expect(recentTexts()).toEqual(['Clear Menu']);
     stop();
   });
 
@@ -227,11 +267,28 @@ describe('syncAppMenu', () => {
     const stop = syncAppMenu(handlers(), vi.fn());
     await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
 
+    vi.mocked(knownRecent).mockResolvedValue(['/notes/b.md', '/notes/a.md']);
     vi.mocked(getRecent).mockResolvedValue(['/notes/b.md', '/notes/a.md']);
     for (const cb of recentList.changed) cb();
 
     await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
-    expect(openRecentIn(lastBuild())?.items?.[0].text).toBe('/notes/b.md');
+    expect(recentTexts()?.[0]).toBe('/notes/b.md');
+    stop();
+  });
+
+  it('rebuilds once for a burst of changes', async () => {
+    const stop = syncAppMenu(handlers(), vi.fn());
+    await vi.waitFor(() => expect(getRecent).toHaveBeenCalledOnce());
+
+    // Spaced out like the writes of a multi-file open, so each would finish on its own.
+    for (let i = 0; i < 3; i++) {
+      for (const cb of recentList.changed) cb();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await settle();
+
+    expect(getRecent).toHaveBeenCalledTimes(2);
+    expect(Menu.new).toHaveBeenCalledTimes(2);
     stop();
   });
 
@@ -256,35 +313,49 @@ describe('syncAppMenu', () => {
     await updateSettings({ recentLimit: 3 });
 
     await vi.waitFor(() => expect(getRecent).toHaveBeenLastCalledWith(3));
+    await settle();
     expect(Menu.new).toHaveBeenCalledTimes(2);
     stop();
   });
 
-  it('ignores a slow list read once a later change has rebuilt the menu', async () => {
-    let finishRead: (paths: string[]) => void = () => {};
-    vi.mocked(getRecent).mockReturnValueOnce(new Promise((resolve) => (finishRead = resolve)));
+  it('ignores a slow list check once a later change has rebuilt the menu', async () => {
+    const check = deferred<string[]>();
+    vi.mocked(getRecent).mockReturnValueOnce(check.promise);
     const stop = syncAppMenu(handlers(), vi.fn());
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
 
     await updateSettings({ recentLimit: 0 });
-    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
-    finishRead(['/notes/old.md']);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
+    check.resolve(['/notes/old.md']);
+    await settle();
 
-    expect(Menu.new).toHaveBeenCalledOnce();
+    expect(Menu.new).toHaveBeenCalledTimes(2);
     expect(openRecentIn(lastBuild())).toBeUndefined();
     stop();
   });
 
   it('still builds the menu, with an empty Open Recent, when the list cannot be read', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(knownRecent).mockRejectedValue(new Error('store gone'));
     vi.mocked(getRecent).mockRejectedValue(new Error('store gone'));
     const onError = vi.fn();
     const stop = syncAppMenu(handlers(), onError);
 
     await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
-    expect(openRecentIn(lastBuild())?.items?.map((e) => e.text)).toEqual(['Clear Menu']);
+    await settle();
+    expect(Menu.new).toHaveBeenCalledOnce();
+    expect(recentTexts()).toEqual(['Clear Menu']);
     expect(onError).not.toHaveBeenCalled();
     stop();
     error.mockRestore();
+  });
+
+  it('reports a settings listener that could not be registered', async () => {
+    events.failNextListen = new Error('event plugin down');
+    const onError = vi.fn();
+    const stop = syncAppMenu(handlers(), onError);
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(new Error('event plugin down')));
+    stop();
   });
 });
