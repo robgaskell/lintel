@@ -2,7 +2,7 @@ import { emitTo } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { get } from 'svelte/store';
 import { settings } from '../lib/settings/settings.svelte';
-import { resolvedTheme } from '../lib/theme/theme';
+import { DEFAULT_PALETTES, resolvedTheme } from '../lib/theme/theme';
 
 export type SettingsSection = 'appearance' | 'editor' | 'files' | 'lint' | 'updates';
 
@@ -58,7 +58,8 @@ function create(section?: SettingsSection): Promise<void> {
     // Hidden and in the app's theme until its page has painted, as the main window is.
     visible: false,
     theme: settings.theme === 'system' ? undefined : settings.theme,
-    backgroundColor: settings.palettes[get(resolvedTheme)].background,
+    // Settings wears the default palette (Ruling 158).
+    backgroundColor: DEFAULT_PALETTES[get(resolvedTheme)].background,
   });
   return new Promise((resolve, reject) => {
     void win.once('tauri://created', () => {

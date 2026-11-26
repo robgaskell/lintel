@@ -56,7 +56,8 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: tauri.FakeWindo
 vi.mock('@tauri-apps/api/event', () => ({ emitTo: vi.fn(async () => {}) }));
 vi.mock('../lib/theme/theme', async () => {
   const { readable } = await import('svelte/store');
-  return { resolvedTheme: readable('dark') };
+  const { DEFAULT_SETTINGS } = await import('../lib/settings/settings.svelte');
+  return { resolvedTheme: readable('dark'), DEFAULT_PALETTES: DEFAULT_SETTINGS.palettes };
 });
 
 beforeEach(() => {
@@ -69,6 +70,8 @@ beforeEach(() => {
 describe('openSettingsWindow', () => {
   it('opens hidden, in the app theme, and is shown after 2 s if its page has not shown it (Ruling 154)', async () => {
     settings.theme = 'dark';
+    // Settings wears the default palette, so its first frame does too (Ruling 158).
+    settings.palettes.dark.background = '#000080';
     try {
       vi.useFakeTimers();
       const opened = openSettingsWindow();
@@ -84,6 +87,7 @@ describe('openSettingsWindow', () => {
     } finally {
       vi.useRealTimers();
       settings.theme = 'system';
+      settings.palettes.dark.background = '#181817';
     }
   });
 

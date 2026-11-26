@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { emit } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { resetFakes } from '../test/fakes';
-import { loadSettings, onSettingsChanged, type Settings } from '../lib/settings/settings.svelte';
-import { followTheme } from '../lib/theme/theme';
+import {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  onSettingsChanged,
+  settings,
+  updateSettings,
+  type Settings,
+} from '../lib/settings/settings.svelte';
+import { DEFAULT_PALETTES, followTheme } from '../lib/theme/theme';
 import { isMac } from '../lib/os/platform';
 import SettingsApp, { sections } from './SettingsApp.svelte';
 
@@ -44,7 +50,6 @@ vi.mock('@tauri-apps/api/event', () => import('../test/fakes').then((f) => f.eve
 const win = vi.hoisted(() => ({ destroy: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }));
 vi.mock('../lib/os/platform', () => ({ isMac: vi.fn(() => true) }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
 
 beforeEach(() => {
   resetFakes();
@@ -80,6 +85,32 @@ describe('SettingsApp', () => {
 
     await vi.waitFor(() => expect(controls(container)).toBe(false));
     expect(order).toEqual(['subscribe', 'load', 'loaded', 'theme']);
+  });
+
+  it('wears the default palette, never the one being edited, and does not save it as the theme (Ruling 158)', async () => {
+    render(SettingsApp);
+    load.finish();
+    await vi.waitFor(() => expect(followTheme).toHaveBeenCalled());
+    const [getSettings, options] = vi.mocked(followTheme).mock.calls[0];
+
+    settings.palettes.light.text = '#FFFFFF';
+    settings.fontSize = 20;
+
+    expect(getSettings().palettes).toEqual(DEFAULT_PALETTES);
+    expect(getSettings().fontSize).toBe(20);
+    expect(options).toEqual({ remember: false });
+    Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
+  });
+
+  it('shows a change that could not be saved in the window, since it has no dialogs (Ruling 160)', async () => {
+    const { getByRole, findByRole } = render(SettingsApp);
+    load.finish();
+    await vi.waitFor(() => expect(getByRole('button', { name: 'Dark' })).toHaveProperty('disabled', false));
+    vi.mocked(updateSettings).mockRejectedValueOnce(new Error('Settings could not be loaded'));
+
+    await fireEvent.click(getByRole('button', { name: 'Dark' }));
+
+    expect((await findByRole('alert')).textContent).toContain('Settings could not be loaded');
   });
 
   it('keeps controls disabled and says why when settings cannot be loaded', async () => {

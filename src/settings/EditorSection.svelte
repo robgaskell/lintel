@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ViewMode } from '../lib/docs/store.svelte';
-  import { settings, updateSettings } from '../lib/settings/settings.svelte';
-  import { showError } from './showError';
+  import { settings } from '../lib/settings/settings.svelte';
+  import { save } from './save.svelte';
 
   const modes: { id: ViewMode; label: string }[] = [
     { id: 'edit', label: 'Edit' },
@@ -18,7 +18,7 @@
         type="button"
         class="choice"
         aria-pressed={settings.defaultMode === mode.id}
-        onclick={() => updateSettings({ defaultMode: mode.id }).catch(showError)}>{mode.label}</button
+        onclick={() => save({ defaultMode: mode.id })}>{mode.label}</button
       >
     {/each}
   </div>

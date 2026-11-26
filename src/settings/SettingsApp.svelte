@@ -16,8 +16,9 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { loadSettings, onSettingsChanged, settings } from '../lib/settings/settings.svelte';
-  import { followTheme } from '../lib/theme/theme';
+  import { loadSettings, onSettingsChanged, settings, type Settings } from '../lib/settings/settings.svelte';
+  import { DEFAULT_PALETTES, followTheme } from '../lib/theme/theme';
+  import { saveError } from './save.svelte';
   import { isMac } from '../lib/os/platform';
   import { SECTION_EVENT } from './settingsWindow';
 
@@ -39,7 +40,7 @@
     loadSettings().then(
       () => {
         if (disposed) return;
-        stopTheme = followTheme(() => settings);
+        stopTheme = followTheme(withDefaultPalettes, { remember: false });
         ready = true;
       },
       (err) => (loadError = `Could not load settings: ${err}`),
@@ -54,6 +55,12 @@
       stopSection.then((stop) => stop()).catch(() => {});
     };
   });
+
+  // A custom palette may be unreadable; the window that fixes it must stay readable (Ruling 158).
+  // Not remembered, so the main window still starts in its own palette.
+  function withDefaultPalettes(): Settings {
+    return { ...settings, palettes: structuredClone(DEFAULT_PALETTES) as Settings['palettes'] };
+  }
 
   // Windows and Linux give this window no menu bar, so Close Tab's Ctrl+W is handled here.
   function onKeydown(e: KeyboardEvent) {
@@ -76,8 +83,8 @@
     {/each}
   </nav>
   <main>
-    {#if loadError}
-      <p class="load-error" role="alert">{loadError}</p>
+    {#if loadError || saveError.message}
+      <p class="error" role="alert">{loadError || saveError.message}</p>
     {/if}
     <fieldset disabled={!ready}>
       <legend class="visually-hidden">{sections.find((s) => s.id === current)?.label}</legend>
@@ -143,7 +150,7 @@
     border: 0;
   }
 
-  .load-error {
+  .error {
     margin: 16px 28px 0;
     color: var(--lint-warning);
   }

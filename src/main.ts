@@ -5,11 +5,13 @@ import SettingsApp from './settings/SettingsApp.svelte';
 import { restoreTheme } from './lib/theme/theme';
 import './app.css';
 
-// Before the first render, so the app never paints in the wrong theme (Ruling 150).
-restoreTheme();
-
 // The Settings window loads the same page with ?view=settings (settingsWindow.ts).
 const view = new URLSearchParams(location.search).get('view');
+
+// Before the first render, so the app never paints in the wrong theme (Ruling 150).
+// Settings never wears a custom palette, so it stays readable while one is edited (Ruling 158).
+restoreTheme({ defaultPalettes: view === 'settings' });
+
 const app = mount(view === 'settings' ? SettingsApp : App, { target: document.getElementById('app')! });
 
 // Windows open hidden; two frames on, a themed frame has been painted (Ruling 154). WebKit

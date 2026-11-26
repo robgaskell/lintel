@@ -359,6 +359,40 @@ describe('applyTheme', () => {
   });
 });
 
+describe('followTheme for the Settings window (Ruling 158)', () => {
+  it('applies what the getter gives on a settings change, not the raw change', () => {
+    const own = settingsWith({ theme: 'light' });
+    const stop = followTheme(() => own, { remember: false });
+
+    fake.settingsChanged!(withPalette('light', { ...DEFAULT_PALETTES.light, background: '#000000' }));
+
+    expect(root.style.getPropertyValue('--bg')).toBe(DEFAULT_PALETTES.light.background);
+    stop();
+  });
+
+  it('leaves the saved theme alone, so the main window still restores its own palette', () => {
+    applyTheme(withPalette('dark', NAVY));
+    const saved = localStorage.getItem('lintel:theme');
+
+    const stop = followTheme(() => settingsWith({ theme: 'light' }), { remember: false });
+    fake.settingsChanged!(settingsWith({ theme: 'light' }));
+
+    expect(localStorage.getItem('lintel:theme')).toBe(saved);
+    stop();
+  });
+
+  it('restores the saved theme with the default palette when asked', () => {
+    applyTheme(withPalette('dark', NAVY));
+    root.removeAttribute('style');
+
+    restoreTheme({ defaultPalettes: true });
+
+    expect(root.dataset.theme).toBe('dark');
+    expect(root.style.getPropertyValue('--bg')).toBe(DEFAULT_PALETTES.dark.background);
+    expect(root.style.getPropertyValue('--text')).toBe(DEFAULT_PALETTES.dark.text);
+  });
+});
+
 describe('restoreTheme (Ruling 150)', () => {
   it('puts back the theme the last applyTheme left, before any settings load', () => {
     applyTheme(withPalette('dark', NAVY));
@@ -433,7 +467,7 @@ describe('restoreTheme (Ruling 150)', () => {
 
 describe('followTheme', () => {
   it('applies now, then on an OS appearance change and on a settings change', () => {
-    const current = settingsWith({ theme: 'system' });
+    let current = settingsWith({ theme: 'system' });
     const stop = followTheme(() => current);
     expect(root.dataset.theme).toBe('light');
 
@@ -441,7 +475,9 @@ describe('followTheme', () => {
     expect(root.dataset.theme).toBe('dark');
     expect(get(resolvedTheme)).toBe('dark');
 
-    fake.settingsChanged!(settingsWith({ theme: 'light', fontSize: 22 }));
+    // As onSettingsChanged does, the settings are updated before the callback.
+    current = settingsWith({ theme: 'light', fontSize: 22 });
+    fake.settingsChanged!(current);
     expect(root.dataset.theme).toBe('light');
     expect(root.style.getPropertyValue('--size-read')).toBe('22px');
 

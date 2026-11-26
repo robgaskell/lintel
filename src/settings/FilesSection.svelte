@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { settings, updateSettings } from '../lib/settings/settings.svelte';
-  import { showError } from './showError';
+  import { settings } from '../lib/settings/settings.svelte';
+  import { save } from './save.svelte';
 
   const MAX_RECENT = 20;
 
@@ -18,7 +18,7 @@
     }
     const limit = Math.min(MAX_RECENT, Math.max(0, Math.round(typed)));
     draft = String(limit);
-    if (limit !== settings.recentLimit) updateSettings({ recentLimit: limit }).catch(showError);
+    if (limit !== settings.recentLimit) save({ recentLimit: limit });
   }
 </script>
 

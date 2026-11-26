@@ -1,18 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetFakes } from '../test/fakes';
 import { fireEvent, render } from '@testing-library/svelte';
 import { DEFAULT_SETTINGS, settings, updateSettings } from '../lib/settings/settings.svelte';
 import FilesSection from './FilesSection.svelte';
 
+// The real updateSettings on in-memory fakes, watched, so nested patches merge as they do live.
+vi.mock('@tauri-apps/plugin-store', () => import('../test/fakes').then((f) => f.storeModule));
+vi.mock('@tauri-apps/api/event', () => import('../test/fakes').then((f) => f.eventModule));
 vi.mock('../lib/settings/settings.svelte', async (importOriginal) => {
   const real = await importOriginal<typeof import('../lib/settings/settings.svelte')>();
-  return {
-    ...real,
-    updateSettings: vi.fn(async (patch: object) => void Object.assign(real.settings, patch)),
-  };
+  return { ...real, updateSettings: vi.fn(real.updateSettings) };
 });
-vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
+
+// Saves go through the update queue; one macrotask lets them land.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  resetFakes();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   vi.mocked(updateSettings).mockClear();
 });
@@ -36,8 +40,10 @@ describe('FilesSection: Recent files to show (Ruling 143)', () => {
 
     for (const value of [0, 20, 12]) {
       await fireEvent.input(field, { target: { value: String(value) } });
+      await settle();
       expect(updateSettings).not.toHaveBeenCalledWith({ recentLimit: value });
       await fireEvent.blur(field);
+      await settle();
       expect(updateSettings).toHaveBeenLastCalledWith({ recentLimit: value });
     }
   });
@@ -46,7 +52,10 @@ describe('FilesSection: Recent files to show (Ruling 143)', () => {
     const { field } = recentField();
 
     await fireEvent.input(field, { target: { value: '0' } });
+
+    await settle();
     await fireEvent.keyDown(field, { key: 'Enter' });
+    await settle();
 
     expect(updateSettings).toHaveBeenCalledWith({ recentLimit: 0 });
   });
@@ -55,7 +64,10 @@ describe('FilesSection: Recent files to show (Ruling 143)', () => {
     const { field } = recentField();
 
     await fireEvent.input(field, { target: { value: '21' } });
+
+    await settle();
     await fireEvent.blur(field);
+    await settle();
 
     expect(updateSettings).toHaveBeenCalledWith({ recentLimit: 20 });
     expect(updateSettings).not.toHaveBeenCalledWith({ recentLimit: 21 });
@@ -67,7 +79,10 @@ describe('FilesSection: Recent files to show (Ruling 143)', () => {
     const { field } = recentField();
 
     await fireEvent.input(field, { target: { value: '21' } });
+
+    await settle();
     await fireEvent.blur(field);
+    await settle();
 
     expect(field.value).toBe('20');
   });
@@ -76,16 +91,25 @@ describe('FilesSection: Recent files to show (Ruling 143)', () => {
     const { field } = recentField();
 
     await fireEvent.input(field, { target: { value: '' } });
+
+    await settle();
     await fireEvent.blur(field);
+    await settle();
     expect(updateSettings).not.toHaveBeenCalled();
     expect(field.value).toBe('5');
 
     await fireEvent.input(field, { target: { value: '-4' } });
+
+    await settle();
     await fireEvent.blur(field);
+    await settle();
     expect(updateSettings).toHaveBeenLastCalledWith({ recentLimit: 0 });
 
     await fireEvent.input(field, { target: { value: '7.6' } });
+
+    await settle();
     await fireEvent.blur(field);
+    await settle();
     expect(updateSettings).toHaveBeenLastCalledWith({ recentLimit: 8 });
   });
 

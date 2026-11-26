@@ -74,13 +74,15 @@ export function cssVariables(s: Settings, resolved: ResolvedTheme): Record<strin
 
 /**
  * Sets the variables, `data-theme` and `color-scheme` on <html>, then `resolvedTheme`,
- * and remembers them so the next launch starts in the same theme (Ruling 150).
+ * and remembers them so the next launch starts in the same theme (Ruling 150), unless
+ * `remember` is false.
  */
-export function applyTheme(s: Settings): void {
+export function applyTheme(s: Settings, remember = true): void {
   const resolved = resolveTheme(s.theme, systemQuery().matches);
   const vars = cssVariables(s, resolved);
   paint(resolved, vars);
   setWindowTheme(s.theme);
+  if (!remember) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: resolved, choice: s.theme, vars }));
   } catch {
@@ -88,8 +90,11 @@ export function applyTheme(s: Settings): void {
   }
 }
 
-/** Puts back the theme the last `applyTheme` saved. Call before mounting the app. */
-export function restoreTheme(): void {
+/**
+ * Puts back the theme the last `applyTheme` saved. Call before mounting the app. With
+ * `defaultPalettes`, the colours are the default palette of the saved light or dark theme.
+ */
+export function restoreTheme({ defaultPalettes = false } = {}): void {
   let saved: unknown;
   try {
     saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
@@ -97,22 +102,29 @@ export function restoreTheme(): void {
     return;
   }
   if (!isSavedTheme(saved)) return;
-  paint(saved.theme, saved.vars);
+  const vars = defaultPalettes
+    ? cssVariables({ ...DEFAULT_SETTINGS, theme: saved.theme } as Settings, saved.theme)
+    : saved.vars;
+  paint(saved.theme, vars);
   setWindowTheme(saved.choice, true);
 }
 
 /**
- * Applies the theme now, then again on a settings change in any window and on an OS
- * appearance change. Returns a stop function.
+ * Applies the theme from `getSettings` now, then again on a settings change in any window
+ * and on an OS appearance change. `remember` is passed to `applyTheme`. Returns a stop function.
  */
-export function followTheme(getSettings: () => Settings): () => void {
-  applyTheme(getSettings());
+export function followTheme(
+  getSettings: () => Settings,
+  { remember = true }: { remember?: boolean } = {},
+): () => void {
+  const apply = () => applyTheme(getSettings(), remember);
+  apply();
   const query = systemQuery();
-  const onSystemChange = () => applyTheme(getSettings());
-  query.addEventListener('change', onSystemChange);
-  const stopSettings = onSettingsChanged(applyTheme);
+  query.addEventListener('change', apply);
+  // onSettingsChanged updates the settings before calling back, so the getter is current.
+  const stopSettings = onSettingsChanged(apply);
   return () => {
-    query.removeEventListener('change', onSystemChange);
+    query.removeEventListener('change', apply);
     stopSettings();
   };
 }

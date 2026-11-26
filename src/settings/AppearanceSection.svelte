@@ -25,13 +25,13 @@
 <script lang="ts">
   import {
     settings,
-    updateSettings,
     type RemoteImagesChoice,
-    type Settings,
+    type SettingsPatch,
     type ThemeChoice,
   } from '../lib/settings/settings.svelte';
+  import { resolvedTheme } from '../lib/theme/theme';
   import PaletteEditor from './PaletteEditor.svelte';
-  import { showError } from './showError';
+  import { save } from './save.svelte';
 
   const MIN_SIZE = 12;
   const MAX_SIZE = 24;
@@ -49,9 +49,12 @@
 
   let customOpen = $state(false);
 
-  function update(patch: Partial<Settings>) {
-    updateSettings(patch).catch(showError);
+  function update(patch: SettingsPatch) {
+    save(patch);
   }
+
+  // This window always wears the default palette (Ruling 158), so the preview shows the real one.
+  const palette = $derived(settings.palettes[$resolvedTheme]);
 
   // A colour picker gives lower-case hex; the presets are upper-case.
   function isPicked(accent: (typeof ACCENTS)[number]): boolean {
@@ -62,10 +65,7 @@
   }
 
   function pickAccent(accent: (typeof ACCENTS)[number]) {
-    const { light, dark } = $state.snapshot(settings.palettes);
-    update({
-      palettes: { light: { ...light, accent: accent.light }, dark: { ...dark, accent: accent.dark } },
-    });
+    update({ palettes: { light: { accent: accent.light }, dark: { accent: accent.dark } } });
   }
 
   function setSize(value: string) {
@@ -162,10 +162,17 @@
 
 <div class="field">
   <span class="field-label" id="preview-label">Preview</span>
-  <div class="preview" aria-labelledby="preview-label">
+  <div
+    class="preview"
+    aria-labelledby="preview-label"
+    style:background={palette.background}
+    style:color={palette.text}
+  >
     <div class="preview-title">Release checklist</div>
     <div>
-      Steps Claude prepared for <strong>v0.4</strong>. See the <span class="preview-link">build notes</span>.
+      Steps Claude prepared for <strong>v0.4</strong>. See the
+      <span class="preview-link" style:color={palette.link}>build notes</span> and run
+      <code style:background={palette.codeBackground}>pnpm build</code>.
     </div>
   </div>
 </div>
@@ -221,8 +228,6 @@
     padding: 16px 18px;
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg);
-    color: var(--text);
     font-family: var(--font-read);
     font-size: var(--size-read);
     line-height: 1.6;
@@ -235,7 +240,13 @@
   }
 
   .preview-link {
-    color: var(--link);
     text-decoration: underline;
+  }
+
+  .preview code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-family: var(--font-edit);
+    font-size: 0.9em;
   }
 </style>

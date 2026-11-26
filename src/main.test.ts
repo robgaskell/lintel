@@ -56,6 +56,14 @@ describe('main', () => {
     expect(vi.mocked(restoreTheme).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(mount).mock.invocationCallOrder[0]);
   });
 
+  it('restores the Settings window with the default palette (Ruling 158)', async () => {
+    await start('?view=settings');
+    expect(restoreTheme).toHaveBeenCalledWith({ defaultPalettes: true });
+
+    await start('');
+    expect(restoreTheme).toHaveBeenCalledWith({ defaultPalettes: false });
+  });
+
   it('shows the hidden window two frames after the theme is restored (Ruling 154)', async () => {
     await start('');
     expect(win.show).not.toHaveBeenCalled();
