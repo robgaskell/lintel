@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ImageLoader } from './imageLoader';
+import { DROPPED, ImageLoader } from './imageLoader';
 
 type Pending = { path: string; resolve: (uri: string) => void; reject: (err: unknown) => void };
 
@@ -112,5 +112,54 @@ describe('ImageLoader', () => {
     await late;
 
     expect(loader.cached('/a.png')).toBeUndefined();
+  });
+
+  // Ruling 137: nothing more is sent once the doc closes or remote images are blocked again.
+  it('clear() during a queued burst sends nothing more', async () => {
+    const { read, pending } = manualRead();
+    const loader = new ImageLoader(read);
+    const loads = Array.from({ length: 12 }, (_, i) => loader.load(`https://x.test/${i}.png`));
+    const outcomes = loads.map((load) => load.then(() => 'loaded', () => 'refused'));
+    expect(read).toHaveBeenCalledTimes(4);
+
+    loader.clear();
+    for (const p of pending) p.resolve('data:x');
+    await settle();
+
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(await Promise.all(outcomes.slice(4))).toEqual(Array(8).fill('refused'));
+    void loader.load('https://x.test/new.png');
+    expect(read).toHaveBeenCalledTimes(5);
+  });
+
+  it('with readOnce, remembers a failure until clear', async () => {
+    const { read, pending } = manualRead();
+    const loader = new ImageLoader(read, 100, 4, { readOnce: true });
+
+    const first = loader.load('https://x.test/a.png');
+    pending[0]!.reject('The server answered 404 Not Found.');
+    await expect(first).rejects.toBe('The server answered 404 Not Found.');
+    await expect(loader.load('https://x.test/a.png')).rejects.toBe('The server answered 404 Not Found.');
+    expect(read).toHaveBeenCalledTimes(1);
+
+    loader.clear();
+    void loader.load('https://x.test/a.png');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('with readOnce, does not read an image again after the cap drops it', async () => {
+    const read = vi.fn(async () => 'x'.repeat(60));
+    const loader = new ImageLoader(read, 100, 4, { readOnce: true });
+
+    await loader.load('https://x.test/a.png');
+    await loader.load('https://x.test/b.png');
+
+    expect(loader.cached('https://x.test/a.png')).toBeUndefined();
+    await expect(loader.load('https://x.test/a.png')).rejects.toBe(DROPPED);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    loader.clear();
+    await loader.load('https://x.test/a.png');
+    expect(read).toHaveBeenCalledTimes(3);
   });
 });

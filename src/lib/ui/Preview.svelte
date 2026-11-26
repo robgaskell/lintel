@@ -60,12 +60,15 @@
   let anchors: Anchor[] = [];
   let anchorsStale = true;
 
-  // One per doc, so closing the tab drops its images (Ruling 97). Keys are absolute paths
-  // or http(s) URLs; remote ones share the same limits (Ruling 95).
-  const images = new ImageLoader((key) =>
-    /^https?:\/\//.test(key) ? fetchRemoteImage(key) : readImageAsDataUri(key),
-  );
-  onDestroy(() => images.clear());
+  // One per doc, so closing the tab drops its images (Ruling 97). Remote images have their
+  // own loader with the same limits, and each URL is fetched once per doc (Ruling 137).
+  const images = new ImageLoader((path) => readImageAsDataUri(path));
+  const remoteImages = new ImageLoader((url) => fetchRemoteImage(url), 50_000_000, 4, { readOnce: true });
+  onDestroy(() => {
+    images.clear();
+    remoteImages.clear();
+  });
+  let remoteWasAllowed = false;
 
   let remoteHeldBack = $state(0);
   const remoteChoice = $derived(remoteChoices.get(docId));
@@ -76,12 +79,14 @@
     settings.remoteImages === 'ask' && remoteChoice === undefined && remoteHeldBack > 0,
   );
 
+  // Load images asks again for anything that failed or was dropped before.
   function loadRemoteImages() {
+    remoteImages.clear();
     remoteChoices.set(docId, 'load');
   }
 
   function alwaysLoadRemoteImages() {
-    remoteChoices.set(docId, 'load');
+    loadRemoteImages();
     updateSettings({ remoteImages: 'load' }).catch(showError);
   }
 
@@ -131,6 +136,9 @@
     const started = performance.now();
     const template = document.createElement('template');
     template.innerHTML = next.html;
+    // Blocked again: fetches still queued must not go out.
+    if (remoteWasAllowed && !remote) remoteImages.clear();
+    remoteWasAllowed = remote;
     remoteHeldBack = prepareImages(template.content, path, remote);
     content.replaceChildren(template.content);
     // Known diagrams go in now; new ones arrive later and the ResizeObserver re-syncs.
@@ -179,7 +187,7 @@
         if (url === null) {
           img.replaceWith(altBox(img, 'Lintel loads images from http and https addresses only.'));
         } else if (remote) {
-          fill(img, url);
+          fill(img, url, remoteImages);
         } else {
           heldBack += 1;
           img.replaceWith(altBox(img, 'Remote images are blocked to protect your privacy.'));
@@ -192,21 +200,21 @@
         img.replaceWith(altBox(img, why));
         continue;
       }
-      fill(img, file);
+      fill(img, file, images);
     }
     return heldBack;
   }
 
   // The image never gets the document's src, only a data URI from Rust.
-  function fill(img: HTMLImageElement, key: string) {
+  function fill(img: HTMLImageElement, key: string, loader: ImageLoader) {
     // A known image is set in this pass, so a re-render never blinks it out.
-    const known = images.cached(key);
+    const known = loader.cached(key);
     if (known) {
       img.src = known;
       return;
     }
     img.removeAttribute('src');
-    images.load(key).then(
+    loader.load(key).then(
       (uri) => (img.src = uri),
       (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
     );

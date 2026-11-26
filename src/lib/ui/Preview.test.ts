@@ -97,14 +97,14 @@ describe('Preview images', () => {
     expect(container.querySelector('img')?.hasAttribute('srcset')).toBe(false);
   });
 
-  it('forgets its images when it closes (Ruling 105)', () => {
+  it('forgets its local and remote images when it closes (Rulings 105, 137)', () => {
     const clear = vi.spyOn(ImageLoader.prototype, 'clear');
     const { unmount } = show('![pic](a.png)\n');
     expect(clear).not.toHaveBeenCalled();
 
     unmount();
 
-    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledTimes(2);
     clear.mockRestore();
   });
 
@@ -234,6 +234,53 @@ describe('Preview remote images (spec: Remote images)', () => {
 
     await vi.waitFor(() => expect(container.querySelector('.image-alt')?.getAttribute('title')).toBe('Not an image file.'));
     expect(container.querySelector('.image-alt')?.textContent).toBe('A chart');
+  });
+
+  // Ruling 137: a remote image is fetched at most once while the doc is open.
+  it('makes no new fetch when the doc renders again after a failure', async () => {
+    settings.remoteImages = 'load';
+    fetchRemote.mockRejectedValue('The server answered 404 Not Found.');
+    const { container, rerender } = show(CHART);
+    await vi.waitFor(() => expect(container.querySelector('.image-alt')).not.toBeNull());
+
+    for (const edit of ['One.', 'Two.', 'Three.']) {
+      void rerender({ result: renderMarkdown(`${edit}\n\n${CHART}`) });
+      flushSync();
+      await vi.waitFor(() => expect(container.querySelector('.image-alt')?.getAttribute('title')).toContain('404'));
+    }
+
+    expect(fetchRemote).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends no queued fetch after the preview closes', async () => {
+    settings.remoteImages = 'load';
+    const pending: (() => void)[] = [];
+    fetchRemote.mockImplementation((url) => new Promise((resolve) => pending.push(() => resolve(`data:${url}`))));
+    const images = Array.from({ length: 12 }, (_, i) => `![${i}](https://example.com/${i}.png)`).join('\n\n');
+    const { unmount } = show(images);
+    expect(fetchRemote).toHaveBeenCalledTimes(4);
+
+    unmount();
+    for (const finish of pending) finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchRemote).toHaveBeenCalledTimes(4);
+  });
+
+  it('sends no queued fetch once remote images are blocked again', async () => {
+    settings.remoteImages = 'load';
+    const pending: (() => void)[] = [];
+    fetchRemote.mockImplementation((url) => new Promise((resolve) => pending.push(() => resolve(`data:${url}`))));
+    const images = Array.from({ length: 12 }, (_, i) => `![${i}](https://example.com/${i}.png)`).join('\n\n');
+    const { container } = show(images);
+
+    settings.remoteImages = 'block';
+    flushSync();
+    for (const finish of pending) finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchRemote).toHaveBeenCalledTimes(4);
+    expect(container.querySelectorAll('img')).toHaveLength(0);
   });
 
   it('fetches an image used twice only once', async () => {
