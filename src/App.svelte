@@ -1,22 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { message, open } from '@tauri-apps/plugin-dialog';
   import { saveDoc, saveDocAs } from './lib/docs/store.svelte';
+  import { setActiveDocSource } from './lib/editor/views';
   import { Workspace } from './lib/layout/workspace';
+  import { buildAppMenu, type MenuHandlers } from './lib/os/menu';
   import { newUntitled, openPaths, setWorkspace } from './lib/os/open';
+  import { isMac } from './lib/os/platform';
+  import { quitApp } from './lib/os/quit';
   import { closeTabOrWindow, handleCloseRequested } from './lib/os/window';
 
   let host: HTMLElement;
   let workspace: Workspace;
 
+  const MARKDOWN = { name: 'Markdown', extensions: ['md', 'markdown'] };
+  // macOS merges all filters into one list with no picker, so "All files" would undo the first (Ruling 38).
+  const OPEN_FILTERS = isMac() ? [MARKDOWN] : [MARKDOWN, { name: 'All files', extensions: ['*'] }];
+
   async function chooseFiles() {
-    const paths = await open({
-      multiple: true,
-      directory: false,
-      filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }],
-    });
+    const paths = await open({ multiple: true, directory: false, filters: OPEN_FILTERS });
     if (paths) await openPaths(paths);
   }
 
@@ -27,29 +30,47 @@
     if (saved) workspace.refreshTab(id);
   }
 
-  async function runMenu(id: string) {
-    try {
-      if (id === 'new') newUntitled();
-      else if (id === 'open') await chooseFiles();
-      else if (id === 'save') await saveActive(false);
-      else if (id === 'save-as') await saveActive(true);
-      else if (id === 'close-tab') await closeTabOrWindow(workspace, getCurrentWindow());
-    } catch (err) {
-      await message(String(err), { title: 'Lintel', kind: 'error' });
-    }
+  // Menu actions are fire-and-forget, so errors are shown here.
+  function guarded(action: () => void | Promise<void>) {
+    return () => {
+      Promise.resolve()
+        .then(action)
+        .catch((err) => message(String(err), { title: 'Lintel', kind: 'error' }));
+    };
   }
+
+  // Later steps fill in the handlers for menu items they enable.
+  const notYet = () => {};
+
+  const handlers: MenuHandlers = {
+    quit: guarded(() => quitApp(workspace)),
+    newDoc: guarded(newUntitled),
+    open: guarded(chooseFiles),
+    openRecent: (path) => guarded(() => openPaths([path]))(),
+    clearRecent: notYet,
+    save: guarded(() => saveActive(false)),
+    saveAs: guarded(() => saveActive(true)),
+    closeTab: guarded(() => closeTabOrWindow(workspace, getCurrentWindow())),
+    setMode: notYet,
+    toggleOutline: notYet,
+    print: notYet,
+    exportPdf: notYet,
+    exportHtml: notYet,
+    exportDocx: notYet,
+    openSettings: notYet,
+  };
 
   onMount(() => {
     workspace = new Workspace(host);
     setWorkspace(workspace);
-    // Temporary menu events from Rust; M1.3 replaces them.
-    const unlistenMenu = listen<string>('lintel://menu', (event) => runMenu(event.payload));
+    setActiveDocSource(workspace);
+    guarded(() => buildAppMenu(handlers, []))();
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
     );
     return () => {
-      unlistenMenu.then((stop) => stop());
       unlistenClose.then((stop) => stop());
+      setActiveDocSource(null);
       workspace.dispose();
     };
   });

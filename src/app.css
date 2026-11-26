@@ -8,6 +8,10 @@
   --editor-bg: #ffffff;
   --editor-text: #2b2b29;
   --active-line: #f3f6fd;
+  --toolbar-border: #e4e4e1;
+  --toolbar-divider: #e0e0dd;
+  --toolbar-icon: #2e2e2c;
+  --toolbar-hover: rgba(0, 0, 0, 0.06);
   color-scheme: light dark;
 }
 
@@ -22,6 +26,10 @@
     --editor-bg: #181817;
     --editor-text: #e4e4e1;
     --active-line: #22262e;
+    --toolbar-border: #2c2c2a;
+    --toolbar-divider: #3a3a38;
+    --toolbar-icon: #d6d6d2;
+    --toolbar-hover: rgba(255, 255, 255, 0.08);
   }
 }
 
