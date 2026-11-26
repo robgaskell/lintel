@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
+import { DEFAULT_SETTINGS, settings, type Settings } from '../settings/settings.svelte';
 import { editorExtensions, fontCompartment } from './setup';
 import { activeView, followEditorFont, registerView, setActiveDocSource, viewFor } from './views';
 
@@ -62,6 +62,24 @@ describe('followEditorFont (Ruling 170)', () => {
       parent: document.body,
       state: EditorState.create({ doc: 'a', extensions: editorExtensions(() => {}) }),
     });
+
+  it('gives editors made before the settings loaded the stored font at once', () => {
+    const early = editor();
+    const forget = registerView('doc-early', early);
+    const before = fontCompartment.get(early.state);
+    const sizeBefore = getComputedStyle(early.scrollDOM).fontSize;
+    settings.fontSize = 22;
+    try {
+      const stop = followEditorFont();
+      expect(fontCompartment.get(early.state)).not.toBe(before);
+      expect(getComputedStyle(early.scrollDOM).fontSize).not.toBe(sizeBefore);
+      stop();
+    } finally {
+      settings.fontSize = DEFAULT_SETTINGS.fontSize;
+      forget();
+      early.destroy();
+    }
+  });
 
   it("reconfigures each editor's font compartment on an editor font or size change only", () => {
     const views = [editor(), editor()];
