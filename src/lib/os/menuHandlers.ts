@@ -14,7 +14,12 @@ export interface MenuHandlerDeps {
     Workspace,
     'activeDocId' | 'closeDoc' | 'refreshTab' | 'docIdsInOrder' | 'activate'
   >;
-  currentWindow(): { destroy(): Promise<void>; setFocus(): Promise<void> };
+  currentWindow(): {
+    destroy(): Promise<void>;
+    unminimize(): Promise<void>;
+    show(): Promise<void>;
+    setFocus(): Promise<void>;
+  };
   outline: { visible: boolean };
   setOutlineChecked(checked: boolean): Promise<void>;
 }
@@ -47,12 +52,25 @@ export function makeMenuHandlers({
     });
   }
 
-  // Opening files from Settings acts in the main window, brought forward first.
+  // Opening files from Settings acts in the main window, brought forward first. macOS
+  // ignores focus for a minimised window, so it is unminimised and shown too (Ruling 156).
   function inMain(action: () => void | Promise<void>): () => void {
     return guarded(async () => {
-      if (await focusedSettingsWindow()) await currentWindow().setFocus();
+      if (await focusedSettingsWindow()) {
+        const main = currentWindow();
+        await main.unminimize();
+        await main.show();
+        await main.setFocus();
+      }
       await action();
     });
+  }
+
+  // The native item flips its own tick on click; setting it keeps the two in step.
+  async function toggleOutline() {
+    // From Settings the outline stays as it is, so the flipped tick is put back (Ruling 157).
+    if (!(await focusedSettingsWindow())) outline.visible = !outline.visible;
+    await setOutlineChecked(outline.visible);
   }
 
   async function closeTab() {
@@ -71,11 +89,7 @@ export function makeMenuHandlers({
     saveAs: forDoc(() => saveActive(true)),
     closeTab: guarded(closeTab),
     setMode: (mode) => forDoc(() => setMode(mode))(),
-    toggleOutline: forDoc(() => {
-      outline.visible = !outline.visible;
-      // The native item flips its own tick on click; setting it keeps the two in step.
-      return setOutlineChecked(outline.visible);
-    }),
+    toggleOutline: guarded(toggleOutline),
     print: forDoc(notYet),
     exportPdf: forDoc(notYet),
     exportHtml: forDoc(notYet),

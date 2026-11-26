@@ -21,7 +21,12 @@ vi.mock('../../settings/settingsWindow', () => ({
   openSettingsWindow: vi.fn(async () => {}),
 }));
 
-const mainWindow = { destroy: vi.fn(async () => {}), setFocus: vi.fn(async () => {}) };
+const mainWindow = {
+  destroy: vi.fn(async () => {}),
+  unminimize: vi.fn(async () => {}),
+  show: vi.fn(async () => {}),
+  setFocus: vi.fn(async () => {}),
+};
 
 function deps(): MenuHandlerDeps {
   return {
@@ -194,16 +199,29 @@ describe('makeMenuHandlers', () => {
       const d = deps();
       const h = makeMenuHandlers(d);
 
-      for (const command of [h.save, h.saveAs, h.toggleOutline, h.print, h.exportPdf]) command();
+      for (const command of [h.save, h.saveAs, h.print, h.exportPdf]) command();
       h.setMode('read');
 
-      await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(6));
+      await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(5));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(saveDoc).not.toHaveBeenCalled();
       expect(saveDocAs).not.toHaveBeenCalled();
       expect(doc.mode).toBe('split');
+      expect(message).not.toHaveBeenCalled();
+    });
+
+    it('keeps the outline on Show Outline and puts back the tick the menu flipped (Ruling 157)', async () => {
+      const d = deps();
+      const h = makeMenuHandlers(d);
+
+      h.toggleOutline();
+      await vi.waitFor(() => expect(d.setOutlineChecked).toHaveBeenCalledWith(true));
       expect(d.outline.visible).toBe(true);
-      expect(d.setOutlineChecked).not.toHaveBeenCalled();
+
+      d.outline.visible = false;
+      h.toggleOutline();
+      await vi.waitFor(() => expect(d.setOutlineChecked).toHaveBeenLastCalledWith(false));
+      expect(d.outline.visible).toBe(false);
       expect(message).not.toHaveBeenCalled();
     });
 
@@ -215,20 +233,24 @@ describe('makeMenuHandlers', () => {
       expect(mainWindow.destroy).not.toHaveBeenCalled();
     });
 
-    it('brings the main window forward for New, Open and Open Recent, then acts there', async () => {
+    it('unminimises, shows and focuses the main window for New, Open and Open Recent, then acts there (Ruling 156)', async () => {
       const order: string[] = [];
+      mainWindow.unminimize.mockImplementation(async () => void order.push('unminimize'));
+      mainWindow.show.mockImplementation(async () => void order.push('show'));
       mainWindow.setFocus.mockImplementation(async () => void order.push('focus'));
       vi.mocked(newUntitled).mockImplementation(() => void order.push('new') as never);
       vi.mocked(open).mockResolvedValue(null);
       const h = makeMenuHandlers(deps());
 
       h.newDoc();
-      await vi.waitFor(() => expect(order).toEqual(['focus', 'new']));
+      await vi.waitFor(() => expect(order).toEqual(['unminimize', 'show', 'focus', 'new']));
       h.open();
       await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
       h.openRecent('/notes/a.md');
       await vi.waitFor(() => expect(openPaths).toHaveBeenCalledWith(['/notes/a.md']));
 
+      expect(mainWindow.unminimize).toHaveBeenCalledTimes(3);
+      expect(mainWindow.show).toHaveBeenCalledTimes(3);
       expect(mainWindow.setFocus).toHaveBeenCalledTimes(3);
     });
   });
