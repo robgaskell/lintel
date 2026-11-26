@@ -58,6 +58,16 @@ describe('parseFrontMatter', () => {
     expect(r.frontMatterError).not.toContain('\n');
   });
 
+  // Ruling 117: yaml reports where it noticed the problem; the file line is that plus the fence.
+  it('numbers an unclosed flow sequence by file line, matching the yaml library', () => {
+    const alone = parseFrontMatter('name: [unclosed');
+    expect(alone.frontMatterError).toMatch(/at line 2, column 16$/);
+
+    // yaml only notices at the next key, block line 2, which is file line 3.
+    const followed = parseFrontMatter('name: [unclosed\ndescription: x');
+    expect(followed.frontMatterError).toMatch(/at line 3, column 1$/);
+  });
+
   it('refuses YAML that is not a mapping', () => {
     const r = parseFrontMatter('- a\n- b');
     expect(r.frontMatter).toBeNull();

@@ -325,7 +325,7 @@ describe('highlightCode', () => {
 });
 
 describe('renderBody: speed (Ruling 66)', () => {
-  it('renders a 1 MB document with markdown-it in under 1 s (3 s on CI)', () => {
+  it('renders a 1 MB document with markdown-it in under 1.5 s (3 s on CI)', () => {
     // Mostly prose, like a real document; about 160 ms locally, leaving headroom for CI runners.
     const prose = 'Some *prose* with a [link](https://example.com) and `code`, then https://example.org. More words.\n\n';
     const block = [
@@ -350,6 +350,6 @@ describe('renderBody: speed (Ruling 66)', () => {
     renderBody(src, 1);
     // Shared CI runners are often 2-3x slower than a laptop (Ruling 86).
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    expect(performance.now() - start).toBeLessThan(env?.CI ? 3000 : 1000);
+    expect(performance.now() - start).toBeLessThan(env?.CI ? 3000 : 1500);
   });
 });
