@@ -73,7 +73,10 @@ type RenderEnv = {
   slugs: Map<string, number>;
 };
 
-const md = new MarkdownIt({ html: true, linkify: true, typographer: false }).use(taskLists);
+/** Shared with extractHeadings, so both parsers see the same headings. */
+export const MARKDOWN_OPTIONS = { html: true, linkify: true, typographer: false } as const;
+
+const md = new MarkdownIt(MARKDOWN_OPTIONS).use(taskLists);
 
 md.core.ruler.push('lintel_blocks', (state: StateCore) => {
   const env = state.env as RenderEnv;
@@ -83,7 +86,7 @@ md.core.ruler.push('lintel_blocks', (state: StateCore) => {
     // Raw html_block tokens get the attribute too, but their renderer ignores it (Ruling 65).
     if (token.level === 0 && token.nesting !== -1) token.attrSet('data-source-line', String(line));
     if (token.type === 'heading_open') {
-      const text = plainText(state.tokens[i + 1]);
+      const text = headingText(state.tokens[i + 1]);
       const id = `h-${slugify(text, env.slugs)}`;
       token.attrSet('id', id);
       env.headings.push({ level: Number(token.tag.slice(1)) as Heading['level'], text, id, line });
@@ -105,11 +108,12 @@ md.renderer.rules.fence = (tokens, idx) => {
   return `<pre${lineAttr}><code class="${cls}">${highlightCode(token.content, lang)}</code></pre>\n`;
 };
 
-function plainText(inline: Token | undefined): string {
+/** The plain text of a heading's parsed inline token. */
+export function headingText(inline: Token | undefined): string {
   const parts = (inline?.children ?? []).map((child): string => {
     if (child.type === 'text' || child.type === 'code_inline') return child.content;
     if (child.type === 'softbreak' || child.type === 'hardbreak') return ' ';
-    if (child.type === 'image') return plainText(child);
+    if (child.type === 'image') return headingText(child);
     return '';
   });
   return parts.join('').trim();
