@@ -2,11 +2,12 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::RandomState;
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -144,12 +145,12 @@ where
 
 fn read_image(path: &str) -> Result<String, String> {
     // Opening a UNC path on Windows connects to that host and can leak the user's hash (Ruling 94).
-    if is_network_path(path) || links_to_network_path(Path::new(path)) {
+    if is_network_path(path) || walk_reaches_network_path(Path::new(path), &RealLinks) {
         return Err(NETWORK_PATH.to_owned());
     }
     let kind = image_kind(Path::new(path)).ok_or_else(|| NOT_AN_IMAGE.to_owned())?;
     let fail = |e: io::Error| format!("Could not read {path}: {e}");
-    // A symlinked folder can still lead to a share; judge where the path really goes (Ruling 104).
+    // A mapped drive canonicalises to its share, so it is refused too (Rulings 104, 116).
     let real = fs::canonicalize(path).map_err(fail)?;
     if resolves_to_network_path(&real.to_string_lossy()) {
         return Err(NETWORK_PATH.to_owned());
@@ -171,18 +172,62 @@ fn read_image(path: &str) -> Result<String, String> {
     Ok(format!("data:{};base64,{}", kind.mime(), BASE64_STANDARD.encode(&bytes)))
 }
 
-/// Follows the file's own symlink chain without opening the target, so a link to a share is
-/// refused before anything connects to it. `canonicalize` alone would connect first on Windows.
-fn links_to_network_path(path: &Path) -> bool {
-    let mut current = path.to_path_buf();
-    for _ in 0..40 {
-        let Ok(target) = fs::read_link(&current) else {
-            return false;
+/// What the walk needs from the filesystem; tests supply a fake.
+trait Links {
+    /// The target of `path` when `path` itself is a symlink. Must not follow the link.
+    fn link_target(&self, path: &Path) -> Option<PathBuf>;
+}
+
+struct RealLinks;
+
+impl Links for RealLinks {
+    // symlink_metadata and read_link read the link itself; neither opens what it points at.
+    fn link_target(&self, path: &Path) -> Option<PathBuf> {
+        let meta = fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_symlink() {
+            return None;
+        }
+        fs::read_link(path).ok()
+    }
+}
+
+/// Walks `path` one component at a time from the root, checking each symlink's target for a
+/// network prefix before following it. So no step opens a path through a link to a share,
+/// which on Windows would connect to that host (Ruling 116).
+fn walk_reaches_network_path(path: &Path, links: &impl Links) -> bool {
+    let mut resolved = PathBuf::new();
+    let mut rest: VecDeque<PathBuf> = path.components().map(|c| PathBuf::from(c.as_os_str())).collect();
+    let mut hops = 0;
+    while let Some(part) = rest.pop_front() {
+        match part.components().next() {
+            Some(Component::Normal(_)) => resolved.push(&part),
+            Some(Component::ParentDir) => {
+                resolved.pop();
+                continue;
+            }
+            Some(Component::RootDir | Component::Prefix(_)) => {
+                resolved.push(&part);
+                continue;
+            }
+            Some(Component::CurDir) | None => continue,
+        }
+        let Some(target) = links.link_target(&resolved) else {
+            continue;
         };
-        if is_network_path(&target.to_string_lossy()) {
+        if resolves_to_network_path(&target.to_string_lossy()) {
             return true;
         }
-        current = current.parent().map_or_else(|| target.clone(), |dir| dir.join(&target));
+        hops += 1;
+        if hops > 40 {
+            return false; // a loop: opening the path fails later with its own error
+        }
+        resolved.pop();
+        if target.has_root() {
+            resolved = PathBuf::new();
+        }
+        for part in target.components().rev() {
+            rest.push_front(PathBuf::from(part.as_os_str()));
+        }
     }
     false
 }
@@ -912,6 +957,70 @@ mod tests {
         std::os::unix::fs::symlink("real.png", &link).unwrap();
 
         assert_eq!(read_image(&link).unwrap(), "data:image/png;base64,iVBORw0KGgo=");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Symlinks as a map, recording every path the walk asks about.
+    struct FakeLinks {
+        links: std::collections::HashMap<PathBuf, PathBuf>,
+        asked: std::cell::RefCell<Vec<PathBuf>>,
+    }
+
+    impl FakeLinks {
+        fn new(links: &[(&str, &str)]) -> Self {
+            let links = links.iter().map(|(from, to)| (PathBuf::from(from), PathBuf::from(to))).collect();
+            FakeLinks { links, asked: Default::default() }
+        }
+    }
+
+    impl Links for FakeLinks {
+        fn link_target(&self, path: &Path) -> Option<PathBuf> {
+            self.asked.borrow_mut().push(path.to_path_buf());
+            self.links.get(path).cloned()
+        }
+    }
+
+    // Ruling 116: a folder link to a share is caught before anything looks inside it.
+    #[test]
+    fn walk_refuses_a_folder_link_to_a_share_before_following_it() {
+        let links = FakeLinks::new(&[("/docs/assets", "//evil.example/share")]);
+
+        assert!(walk_reaches_network_path(Path::new("/docs/assets/pics/a.png"), &links));
+        let asked = links.asked.borrow();
+        assert_eq!(asked.last().unwrap(), Path::new("/docs/assets"));
+        assert!(!asked.iter().any(|p| p.starts_with("/docs/assets/pics")));
+    }
+
+    #[test]
+    fn walk_follows_relative_links_and_dot_dot() {
+        let links = FakeLinks::new(&[("/docs/img", "../pics"), ("/pics", r"\\evil.example\share")]);
+
+        assert!(walk_reaches_network_path(Path::new("/docs/img/a.png"), &links));
+    }
+
+    #[test]
+    fn walk_allows_local_links_and_local_verbatim_targets() {
+        let links = FakeLinks::new(&[("/docs/img", "/pics"), ("/pics/a.png", r"\\?\C:\pics\a.png")]);
+
+        assert!(!walk_reaches_network_path(Path::new("/docs/img/a.png"), &links));
+        assert!(!walk_reaches_network_path(Path::new("/docs/plain.png"), &links));
+    }
+
+    #[test]
+    fn walk_stops_on_a_link_loop() {
+        let links = FakeLinks::new(&[("/a", "/b"), ("/b", "/a")]);
+
+        assert!(!walk_reaches_network_path(Path::new("/a/x.png"), &links));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_refuses_a_path_through_a_folder_link_to_a_network_path() {
+        let dir = temp_dir();
+        let assets = dir.join("assets");
+        std::os::unix::fs::symlink("//evil.example/share", &assets).unwrap();
+
+        assert_eq!(read_image(&assets.join("a.png")).unwrap_err(), NETWORK_PATH);
         fs::remove_dir_all(dir).unwrap();
     }
 
