@@ -115,6 +115,24 @@ describe('renderMarkdown: sanitising', () => {
     expect([...dom(html).children].map((el) => el.hasAttribute('data-source-line'))).toEqual([false, false]);
   });
 
+  it('drops every data- attribute except data-source-line (Ruling 87)', () => {
+    const html = renderMarkdown('<div data-tauri-drag-region data-x="1" data-source-line="3">a</div>\n').html;
+    const div = dom(html).firstElementChild;
+    expect(div?.getAttributeNames()).toEqual(['data-source-line']);
+  });
+
+  it('drops download on links (Ruling 88)', () => {
+    const html = renderMarkdown('<a href="a.md" download="x.md">a</a>\n').html;
+    expect(dom(html).querySelector('a')?.hasAttribute('download')).toBe(false);
+  });
+
+  it('keeps only exact renderer class shapes (Ruling 88)', () => {
+    const html = renderMarkdown(
+      '<div class="hljs hljs-x hljsevil hljs-A task-list-item-fake task-list-itemx task-list-item-checkbox">a</div>\n',
+    ).html;
+    expect(dom(html).firstElementChild?.getAttribute('class')).toBe('hljs hljs-x task-list-item-checkbox');
+  });
+
   it('refuses to render when DOMPurify cannot run', async () => {
     vi.resetModules();
     vi.doMock('dompurify', () => ({

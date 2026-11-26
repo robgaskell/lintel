@@ -127,7 +127,8 @@ purify.addHook('uponSanitizeElement', (node, data) => {
 
 // A document must not restyle the app or draw fake UI over it (Rulings 67, 85).
 // Anchors a document can still forge (h- ids, line numbers) are untrusted in later steps.
-const RENDERER_CLASS = /^(hljs.*|language-.+|task-list-item.*|contains-task-list|mermaid-src)$/;
+const RENDERER_CLASS =
+  /^(hljs|hljs-[a-z0-9_-]+|language-.+|task-list-item(-checkbox)?|contains-task-list|mermaid-src)$/;
 purify.addHook('uponSanitizeAttribute', (_node, data) => {
   if (data.attrName === 'class') {
     data.attrValue = data.attrValue.split(/\s+/).filter((c) => RENDERER_CLASS.test(c)).join(' ');
@@ -142,6 +143,9 @@ purify.addHook('uponSanitizeAttribute', (_node, data) => {
 // SANITIZE_DOM stays on; the h- prefix keeps heading ids clear of it (Ruling 64).
 const SANITIZE = {
   FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'option', 'dialog', 'iframe', 'object', 'embed'],
-  FORBID_ATTR: ['style', 'popover'],
-  ALLOW_DATA_ATTR: true,
+  // `download` would save a file instead of opening the link (Ruling 88).
+  FORBID_ATTR: ['style', 'popover', 'download'],
+  // Documents may not set data-tauri-drag-region or other data-* (Ruling 87).
+  ALLOW_DATA_ATTR: false,
+  ADD_ATTR: ['data-source-line'],
 };
