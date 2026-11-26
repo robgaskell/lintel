@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { writeTextFile } from '../ipc';
+import { normalizePath, writeTextFile } from '../ipc';
 import { message, save } from '@tauri-apps/plugin-dialog';
 import {
   closeDocWithPrompt,
@@ -14,6 +14,7 @@ import {
 } from './store.svelte';
 
 vi.mock('../ipc', () => ({
+  normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
 }));
@@ -23,6 +24,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 
 const write = vi.mocked(writeTextFile);
+const normalize = vi.mocked(normalizePath);
 const saveDialog = vi.mocked(save);
 const messageDialog = vi.mocked(message);
 
@@ -30,6 +32,8 @@ beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
   write.mockReset();
+  normalize.mockReset();
+  normalize.mockImplementation(async (path) => path);
   saveDialog.mockReset();
   messageDialog.mockReset();
 });
@@ -331,5 +335,60 @@ describe('confirmCloseAll', () => {
 
     expect(await confirmCloseAll([a.id])).toBe(true);
     expect(messageDialog).not.toHaveBeenCalled();
+  });
+});
+
+describe('closing while a save is still writing', () => {
+  function heldWrite() {
+    let finish: (hash: string) => void = () => {};
+    write.mockImplementationOnce(() => new Promise<string>((resolve) => (finish = resolve)));
+    return (hash: string) => finish(hash);
+  }
+
+  it('keeps the doc open when edits made after Cmd+S are still unsaved', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'v0', hash: 'h0', mode: 'split' });
+    doc.text = 'v1';
+    const finish = heldWrite();
+    const firstSave = saveDoc(doc.id);
+    doc.text = 'v2';
+    messageDialog.mockResolvedValue('Save');
+
+    const closing = closeDocWithPrompt(doc.id);
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalled());
+    finish('h1');
+
+    expect(await firstSave).toBe(true);
+    expect(await closing).toBe(false);
+    expect(docs.has(doc.id)).toBe(true);
+    expect(isDirty(doc)).toBe(true);
+  });
+
+  it('stops a close-all at a doc that is still dirty after its save', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'v0', hash: 'h0', mode: 'split' });
+    doc.text = 'v1';
+    const finish = heldWrite();
+    void saveDoc(doc.id);
+    doc.text = 'v2';
+    messageDialog.mockResolvedValue('Save');
+
+    const closing = confirmCloseAll([doc.id]);
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalled());
+    finish('h1');
+
+    expect(await closing).toBe(false);
+  });
+});
+
+describe('saveDocAs path', () => {
+  it('stores the normalised form of the chosen path', async () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'split' });
+    doc.text = 'x';
+    saveDialog.mockResolvedValue('/link/new.md');
+    write.mockResolvedValue('h1');
+    normalize.mockImplementation(async (path) => path.replace('/link/', '/real/'));
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+    expect(doc.path).toBe('/real/new.md');
+    expect(doc.title).toBe('new.md');
   });
 });

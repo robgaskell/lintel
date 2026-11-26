@@ -29,6 +29,32 @@ pub async fn read_text_file(path: String) -> Result<ReadResult, String> {
     Ok(ReadResult { text, hash })
 }
 
+/// The canonical spelling of an existing file's path, so one file never opens in two tabs.
+/// Letter case is not folded on case-insensitive volumes (Ruling 44).
+#[tauri::command]
+pub async fn normalize_path(path: String) -> Result<String, String> {
+    let real = fs::canonicalize(&path).map_err(|e| format!("Could not open {path}: {e}"))?;
+    let real = real
+        .into_os_string()
+        .into_string()
+        .map_err(|_| format!("Could not open {path}: the path is not valid Unicode."))?;
+    #[cfg(windows)]
+    let real = strip_verbatim_prefix(&real);
+    Ok(real)
+}
+
+/// Windows canonical paths start with `\\?\`, which other tools and file dialogs do not use.
+#[cfg(any(windows, test))]
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        path.to_owned()
+    }
+}
+
 /// Returns the sha-256 hex of the bytes written.
 #[tauri::command]
 pub async fn write_text_file(path: String, text: String) -> Result<String, String> {
@@ -201,6 +227,60 @@ mod tests {
 
         assert_eq!(err, "Lintel opens UTF-8 text files only.");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn normalize_path_removes_dot_segments() {
+        let dir = temp_dir();
+        fs::write(dir.join("note.md"), "x").unwrap();
+
+        let dotted = block_on(normalize_path(path_str(&dir.join(".").join("note.md")))).unwrap();
+        let plain = block_on(normalize_path(path_str(&dir.join("note.md")))).unwrap();
+
+        assert_eq!(dotted, plain);
+        assert!(!dotted.contains("/./"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalize_path_resolves_a_symlinked_folder() {
+        let dir = temp_dir();
+        let real = dir.join("real");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("note.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&real, dir.join("link")).unwrap();
+
+        let via_link =
+            block_on(normalize_path(path_str(&dir.join("link").join("note.md")))).unwrap();
+        let direct = block_on(normalize_path(path_str(&real.join("note.md")))).unwrap();
+
+        assert_eq!(via_link, direct);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn normalize_path_names_a_missing_file() {
+        let dir = temp_dir();
+        let missing = path_str(&dir.join("missing.md"));
+
+        let err = block_on(normalize_path(missing.clone())).unwrap_err();
+
+        assert!(err.contains(&missing), "{err}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_gives_plain_windows_paths() {
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\C:\notes\a.md"),
+            r"C:\notes\a.md"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\a.md"),
+            r"\\server\share\a.md"
+        );
+        assert_eq!(strip_verbatim_prefix(r"C:\notes\a.md"), r"C:\notes\a.md");
     }
 
     #[test]

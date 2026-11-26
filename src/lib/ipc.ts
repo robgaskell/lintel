@@ -13,3 +13,8 @@ export function readTextFile(path: string): Promise<ReadResult> {
 export function writeTextFile(path: string, text: string): Promise<string> {
   return invoke<string>('write_text_file', { path, text });
 }
+
+/** The canonical path of an existing file (symlinks and `.` resolved). Rejects if it is missing. */
+export function normalizePath(path: string): Promise<string> {
+  return invoke<string>('normalize_path', { path });
+}

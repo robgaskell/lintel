@@ -29,8 +29,9 @@ export class Workspace {
   private readonly panes = new Map<string, HTMLElement>();
   private readonly closing = new Map<string, Promise<boolean>>();
   private readonly focusListener: { dispose(): void };
+  private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
 
-  constructor(el: HTMLElement) {
+  constructor(private readonly el: HTMLElement) {
     this.api = createDockview(el, {
       theme: { name: 'lintel', className: 'dockview-theme-light lintel-dock' },
       disableFloatingGroups: true,
@@ -41,6 +42,8 @@ export class Workspace {
     this.focusListener = this.api.onDidActivePanelChange((e) => {
       if (e.panel) this.focusEditor(e.panel.id);
     });
+    // Capture phase, so this runs before dockview's own tab-list key handler.
+    el.addEventListener('keydown', this.onKeydown, true);
   }
 
   openDoc(doc: DocState, opts?: { referenceId?: string; direction?: 'right' | 'below' }): void {
@@ -109,6 +112,7 @@ export class Workspace {
   }
 
   dispose(): void {
+    this.el.removeEventListener('keydown', this.onKeydown, true);
     this.focusListener.dispose();
     this.api.dispose();
   }
@@ -118,6 +122,18 @@ export class Workspace {
     const panel = this.api.getPanel(id);
     if (panel) this.api.removePanel(panel);
     return true;
+  }
+
+  // dockview closes a focused tab on Delete or Backspace by removing its panel, which would
+  // skip the unsaved-changes prompt and leave the doc in `docs` with no tab.
+  private closeTabFromKeyboard(e: KeyboardEvent): void {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    const tab = e.target instanceof Element ? e.target.closest('.dv-tab') : null;
+    const id = tab?.querySelector<HTMLElement>('.lintel-tab')?.dataset.docId;
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void this.closeDoc(id);
   }
 
   private createPane(): IContentRenderer {

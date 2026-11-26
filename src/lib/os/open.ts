@@ -1,5 +1,5 @@
 import { message } from '@tauri-apps/plugin-dialog';
-import { readTextFile } from '../ipc';
+import { normalizePath, readTextFile, type ReadResult } from '../ipc';
 import { createDoc, findByPath, type ViewMode } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 
@@ -14,20 +14,25 @@ export function setWorkspace(target: DocOpener): void {
   workspace = target;
 }
 
-/** Every route that opens files ends here. An already-open path is activated, not reopened. */
+/**
+ * Every route that opens files ends here. Paths are normalised first, so an already-open
+ * file is activated, not reopened, whichever spelling reaches it (Ruling 44).
+ */
 export async function openPaths(paths: string[]): Promise<void> {
   const target = requireWorkspace();
-  for (const path of paths) {
-    const open = findByPath(path);
-    if (open) {
-      target.activate(open.id);
-      continue;
-    }
-    let result;
+  for (const given of paths) {
+    let path = given;
+    let result: ReadResult;
     try {
+      path = await normalizePath(given);
+      const open = findByPath(path);
+      if (open) {
+        target.activate(open.id);
+        continue;
+      }
       result = await readTextFile(path);
     } catch (err) {
-      await message(`Could not open ${path}.\n\n${String(err)}`, { title: 'Lintel', kind: 'error' });
+      await message(openErrorText(given, path, err), { title: 'Lintel', kind: 'error' });
       continue;
     }
     // Another openPaths call may have opened it while this read was in flight.
@@ -49,4 +54,11 @@ export function newUntitled(): void {
 function requireWorkspace(): DocOpener {
   if (!workspace) throw new Error('openPaths called before setWorkspace');
   return workspace;
+}
+
+// Most Rust errors already name the path; add it only when they do not.
+function openErrorText(given: string, normalised: string, err: unknown): string {
+  const text = String(err);
+  if (text.includes(given) || text.includes(normalised)) return text;
+  return `Could not open ${given}: ${text}`;
 }

@@ -3,9 +3,10 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { message, open } from '@tauri-apps/plugin-dialog';
-  import { confirmCloseAll, saveDoc, saveDocAs } from './lib/docs/store.svelte';
+  import { saveDoc, saveDocAs } from './lib/docs/store.svelte';
   import { Workspace } from './lib/layout/workspace';
   import { newUntitled, openPaths, setWorkspace } from './lib/os/open';
+  import { closeTabOrWindow, handleCloseRequested } from './lib/os/window';
 
   let host: HTMLElement;
   let workspace: Workspace;
@@ -26,29 +27,15 @@
     if (saved) workspace.refreshTab(id);
   }
 
-  async function closeActive() {
-    const id = workspace.activeDocId();
-    if (id) await workspace.closeDoc(id);
-  }
-
   async function runMenu(id: string) {
     try {
       if (id === 'new') newUntitled();
       else if (id === 'open') await chooseFiles();
       else if (id === 'save') await saveActive(false);
       else if (id === 'save-as') await saveActive(true);
-      else if (id === 'close-tab') await closeActive();
+      else if (id === 'close-tab') await closeTabOrWindow(workspace, getCurrentWindow());
     } catch (err) {
       await message(String(err), { title: 'Lintel', kind: 'error' });
-    }
-  }
-
-  async function confirmWindowClose(): Promise<boolean> {
-    try {
-      return await confirmCloseAll(workspace.docIdsInOrder(), (id) => workspace.activate(id));
-    } catch (err) {
-      await message(String(err), { title: 'Lintel', kind: 'error' });
-      return false;
     }
   }
 
@@ -57,10 +44,9 @@
     setWorkspace(workspace);
     // Temporary menu events from Rust; M1.3 replaces them.
     const unlistenMenu = listen<string>('lintel://menu', (event) => runMenu(event.payload));
-    // Tauri destroys the window after this handler unless it calls preventDefault.
-    const unlistenClose = getCurrentWindow().onCloseRequested(async (event) => {
-      if (!(await confirmWindowClose())) event.preventDefault();
-    });
+    const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
+      handleCloseRequested(event, workspace),
+    );
     return () => {
       unlistenMenu.then((stop) => stop());
       unlistenClose.then((stop) => stop());

@@ -1,6 +1,6 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { writeTextFile } from '../ipc';
+import { normalizePath, writeTextFile } from '../ipc';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
 export type ViewMode = 'edit' | 'split' | 'read';
@@ -135,8 +135,8 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   });
   if (path === null) return false;
   await writeTo(doc, path);
-  doc.path = path;
-  doc.title = baseName(path);
+  doc.path = await normalizedOrAsGiven(path);
+  doc.title = baseName(doc.path);
   return true;
 }
 
@@ -165,10 +165,22 @@ async function mayClose(doc: DocState): Promise<boolean> {
   if (answer === DONT_SAVE) return true;
   if (answer !== SAVE) return false;
   try {
-    return await saveDoc(doc.id);
+    if (!(await saveDoc(doc.id))) return false;
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
     return false;
+  }
+  // A save already running when Save was chosen wrote an older snapshot (Ruling 42).
+  return !isDirty(doc);
+}
+
+// The file is already written, so failing here would lose track of it; the chosen
+// spelling only weakens duplicate detection in openPaths.
+async function normalizedOrAsGiven(path: string): Promise<string> {
+  try {
+    return await normalizePath(path);
+  } catch {
+    return path;
   }
 }
 

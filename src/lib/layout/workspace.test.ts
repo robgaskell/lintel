@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
+import { EditorView } from '@codemirror/view';
 import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
 import { Workspace } from './workspace';
 
 vi.mock('../ipc', () => ({
+  normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
 }));
@@ -241,5 +243,78 @@ describe('Workspace', () => {
 
     ws.activate(a.id);
     await vi.waitFor(() => expect(document.activeElement).toBe(editorOf(a.id)));
+  });
+
+  it.each(['Backspace', 'Delete'])('asks before %s on a focused tab closes a dirty doc', async (key) => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    flushSync();
+    a.text = 'changed';
+    messageDialog.mockResolvedValue('Cancel');
+    const tab = tabFor(a.id).closest<HTMLElement>('.dv-tab')!;
+    tab.focus();
+
+    tab.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(ws.docIdsInOrder()).toEqual([a.id]);
+    expect(docs.has(a.id)).toBe(true);
+  });
+
+  it('closes a clean doc on Backspace on its tab, through the same path', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    flushSync();
+    const tab = tabFor(a.id).closest<HTMLElement>('.dv-tab')!;
+
+    tab.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(ws.docIdsInOrder()).toEqual([]));
+    expect(docs.has(a.id)).toBe(false);
+  });
+
+  it('destroys the editor when its doc closes', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    flushSync();
+    const destroy = vi.spyOn(EditorView.prototype, 'destroy');
+
+    await ws.closeDoc(a.id);
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+    destroy.mockRestore();
+  });
+
+  it('shares one prompt when the same doc is closed twice at once', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    a.text = 'changed';
+    let answer: (label: string) => void = () => {};
+    messageDialog.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+
+    const first = ws.closeDoc(a.id);
+    const second = ws.closeDoc(a.id);
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalled());
+    answer("Don't Save");
+
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(messageDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('focuses the editor when the already-active doc is activated again', async () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    const editor = () => host.querySelector(`[data-doc-pane="${a.id}"] .cm-content`) as HTMLElement;
+    await vi.waitFor(() => expect(document.activeElement).toBe(editor()));
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    elsewhere.focus();
+
+    ws.activate(a.id);
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(editor()));
+    elsewhere.remove();
   });
 });

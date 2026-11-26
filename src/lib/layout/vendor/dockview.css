@@ -1,4 +1,4 @@
-/* dockview-core 8.10.0 stylesheet, extracted from dist/dockview-core.js; MIT licence. */
+/* dockview-core 8.10.0 stylesheet, extracted from dist/dockview-core.js. Copyright (c) 2021 mathuo; MIT licence. */
 .dv-drop-target-container {
   position: absolute;
   z-index: 9999;
