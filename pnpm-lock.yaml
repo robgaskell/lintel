@@ -212,6 +212,9 @@ importers:
       codemirror:
         specifier: 6.0.2
         version: 6.0.2
+      dockview-core:
+        specifier: 8.10.0
+        version: 8.10.0
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.3.2
@@ -777,6 +780,9 @@ packages:
   devalue@6.0.4:
     resolution: {integrity: sha512-8L3d5HaKt6/wnWKRtwmJu7qrLM6YiGb6mxktIFfgjQzQzIAR5vAZdHioZv/252Pp4SN/xu47oxe7RlwoZzWTTA==}
     engines: {node: '>=18'}
+
+  dockview-core@8.10.0:
+    resolution: {integrity: sha512-11MpSwPbeCDkdHoq5dwG9cdy9Hr0chQ0idsJlUw5CuN0npOUk1MI0Mlt0dRMYHjgE34lmDUbEtRJGimscnveZA==}
 
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
@@ -1836,6 +1842,8 @@ snapshots:
   detect-libc@2.1.2: {}
 
   devalue@6.0.4: {}
+
+  dockview-core@8.10.0: {}
 
   dom-accessibility-api@0.5.16: {}
 

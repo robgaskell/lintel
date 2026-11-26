@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeTextFile } from '../ipc';
-import { save } from '@tauri-apps/plugin-dialog';
+import { message, save } from '@tauri-apps/plugin-dialog';
 import {
+  closeDocWithPrompt,
+  confirmCloseAll,
   createDoc,
   docs,
   findByPath,
@@ -16,17 +18,20 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
+  message: vi.fn(),
   save: vi.fn(),
 }));
 
 const write = vi.mocked(writeTextFile);
 const saveDialog = vi.mocked(save);
+const messageDialog = vi.mocked(message);
 
 beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
   write.mockReset();
   saveDialog.mockReset();
+  messageDialog.mockReset();
 });
 
 describe('createDoc', () => {
@@ -203,5 +208,128 @@ describe('saveDocAs', () => {
     expect(doc.path).toBe('/notes/a.md');
     expect(doc.title).toBe('a.md');
     expect(doc.diskHash).toBe('h0');
+  });
+});
+
+describe('closeDocWithPrompt', () => {
+  function dirtyDoc(path: string | null = '/notes/a.md') {
+    const doc = createDoc({ path, raw: 'a\n', hash: 'h0', mode: 'split' });
+    doc.text = 'a\nb\n';
+    return doc;
+  }
+
+  it('keeps a dirty doc open when the answer is Cancel', async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValue('Cancel');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(docs.has(doc.id)).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('offers Save, Don\'t Save and Cancel, naming the doc', async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValue('Cancel');
+
+    await closeDocWithPrompt(doc.id);
+
+    expect(messageDialog).toHaveBeenCalledTimes(1);
+    const [text, options] = messageDialog.mock.calls[0];
+    expect(text).toContain('a.md');
+    expect(options).toMatchObject({
+      kind: 'warning',
+      buttons: { yes: 'Save', no: "Don't Save", cancel: 'Cancel' },
+    });
+  });
+
+  it('treats an unknown answer as Cancel', async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValue('Yes');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(docs.has(doc.id)).toBe(true);
+  });
+
+  it("discards edits and removes the doc on Don't Save", async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValue("Don't Save");
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(true);
+    expect(docs.has(doc.id)).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('saves and removes the doc on Save', async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValue('Save');
+    write.mockResolvedValue('h1');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(true);
+    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\nb\n');
+    expect(docs.has(doc.id)).toBe(false);
+  });
+
+  it('keeps an untitled doc open when Save As is cancelled', async () => {
+    const doc = dirtyDoc(null);
+    messageDialog.mockResolvedValue('Save');
+    saveDialog.mockResolvedValue(null);
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(docs.has(doc.id)).toBe(true);
+  });
+
+  it('shows the error and keeps the doc open when the save fails', async () => {
+    const doc = dirtyDoc();
+    messageDialog.mockResolvedValueOnce('Save').mockResolvedValueOnce('Ok');
+    write.mockRejectedValue('Could not write /notes/a.md: disk full');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(docs.has(doc.id)).toBe(true);
+    expect(messageDialog).toHaveBeenCalledTimes(2);
+    expect(messageDialog.mock.calls[1][0]).toContain('disk full');
+    expect(messageDialog.mock.calls[1][1]).toMatchObject({ kind: 'error' });
+  });
+
+  it('closes a clean doc without asking', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h0', mode: 'split' });
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(true);
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(docs.has(doc.id)).toBe(false);
+  });
+});
+
+describe('confirmCloseAll', () => {
+  it('asks once per dirty doc, in the order given, and skips clean ones', async () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: '', mode: 'split' });
+    const b = createDoc({ path: '/b.md', raw: '', hash: '', mode: 'split' });
+    const c = createDoc({ path: '/c.md', raw: '', hash: '', mode: 'split' });
+    a.text = 'x';
+    c.text = 'y';
+    messageDialog.mockResolvedValue("Don't Save");
+    const shown: string[] = [];
+
+    expect(await confirmCloseAll([c.id, b.id, a.id], (id) => shown.push(id))).toBe(true);
+    expect(shown).toEqual([c.id, a.id]);
+    expect(messageDialog).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops at the first Cancel and closes nothing', async () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: '', mode: 'split' });
+    const b = createDoc({ path: '/b.md', raw: '', hash: '', mode: 'split' });
+    a.text = 'x';
+    b.text = 'y';
+    messageDialog.mockResolvedValueOnce("Don't Save").mockResolvedValueOnce('Cancel');
+
+    expect(await confirmCloseAll([a.id, b.id])).toBe(false);
+    expect(docs.has(a.id)).toBe(true);
+    expect(docs.has(b.id)).toBe(true);
+  });
+
+  it('returns true at once when nothing is dirty', async () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: '', mode: 'split' });
+
+    expect(await confirmCloseAll([a.id])).toBe(true);
+    expect(messageDialog).not.toHaveBeenCalled();
   });
 });

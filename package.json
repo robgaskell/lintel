@@ -23,7 +23,8 @@
     "@tauri-apps/api": "2.12.5",
     "@tauri-apps/plugin-dialog": "2.8.4",
     "@tauri-apps/plugin-fs": "2.7.1",
-    "codemirror": "6.0.2"
+    "codemirror": "6.0.2",
+    "dockview-core": "8.10.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.2",

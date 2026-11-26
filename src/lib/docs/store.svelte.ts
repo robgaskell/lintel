@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { save } from '@tauri-apps/plugin-dialog';
+import { message, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '../ipc';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
@@ -68,6 +68,33 @@ export function saveDocAs(id: string): Promise<boolean> {
   return onceAtATime(id, async () => runSaveAs(getDoc(id)));
 }
 
+/**
+ * Asks Save / Don't Save / Cancel when the doc is dirty, then removes it from `docs`.
+ * False means the doc stays open: Cancel, a cancelled Save As, or a failed save.
+ */
+export async function closeDocWithPrompt(id: string): Promise<boolean> {
+  if (!(await mayClose(getDoc(id)))) return false;
+  docs.delete(id);
+  return true;
+}
+
+/**
+ * Prompts for each dirty doc in `ids`, in order, without closing any of them.
+ * False at the first Cancel. `beforeAsk` lets the caller show the doc being asked about.
+ */
+export async function confirmCloseAll(
+  ids: string[],
+  beforeAsk?: (id: string) => void,
+): Promise<boolean> {
+  for (const id of ids) {
+    const doc = docs.get(id);
+    if (!doc || !isDirty(doc)) continue;
+    beforeAsk?.(id);
+    if (!(await mayClose(doc))) return false;
+  }
+  return true;
+}
+
 export function findByPath(path: string): DocState | undefined {
   for (const doc of docs.values()) {
     if (doc.path === path) return doc;
@@ -121,6 +148,28 @@ async function writeTo(doc: DocState, path: string): Promise<void> {
   doc.diskHash = hash;
   doc.external = 'none';
   doc.diskText = null;
+}
+
+const SAVE = 'Save';
+const DONT_SAVE = "Don't Save";
+const CANCEL = 'Cancel';
+
+async function mayClose(doc: DocState): Promise<boolean> {
+  if (!isDirty(doc)) return true;
+  const answer = await message(`Do you want to save the changes you made to "${doc.title}"?`, {
+    title: 'Lintel',
+    kind: 'warning',
+    buttons: { yes: SAVE, no: DONT_SAVE, cancel: CANCEL },
+  });
+  // The dialog returns the clicked label; anything unexpected (Esc, a dismissed sheet) is Cancel.
+  if (answer === DONT_SAVE) return true;
+  if (answer !== SAVE) return false;
+  try {
+    return await saveDoc(doc.id);
+  } catch (err) {
+    await message(String(err), { title: 'Lintel', kind: 'error' });
+    return false;
+  }
 }
 
 function baseName(path: string): string {
