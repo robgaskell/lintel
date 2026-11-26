@@ -1,6 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { message, save } from '@tauri-apps/plugin-dialog';
 import { normalizePath, writeTextFile } from '../ipc';
+import { recordRecent } from '../os/recent';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
 export type ViewMode = 'edit' | 'split' | 'read';
@@ -142,6 +143,8 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   await writeTo(doc, path);
   doc.path = await normalizedOrAsGiven(path);
   doc.title = baseName(doc.path);
+  // Every Save As route passes here: the menu, Cmd+S on untitled, the close prompt (Ruling 49).
+  await recordRecent(doc.path);
   return true;
 }
 

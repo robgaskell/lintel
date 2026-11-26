@@ -43,6 +43,13 @@ pub async fn normalize_path(path: String) -> Result<String, String> {
     Ok(real)
 }
 
+/// Whether each path is an existing file, in order. plugin-fs `exists` cannot be used
+/// because its `**` scope rejects paths under dot-folders such as ~/.claude (Ruling 51).
+#[tauri::command]
+pub async fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|path| Path::new(path).is_file()).collect()
+}
+
 /// Windows canonical paths start with `\\?\`, which other tools and file dialogs do not use.
 #[cfg(any(windows, test))]
 fn strip_verbatim_prefix(path: &str) -> String {
@@ -443,6 +450,35 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(file_names(&dir), vec!["link.md", "real.md"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paths_exist_reports_each_path_in_order() {
+        let dir = temp_dir();
+        fs::write(dir.join("a.md"), "x").unwrap();
+        fs::create_dir(dir.join("folder")).unwrap();
+
+        let found = block_on(paths_exist(vec![
+            path_str(&dir.join("missing.md")),
+            path_str(&dir.join("a.md")),
+            path_str(&dir.join("folder")),
+        ]));
+
+        assert_eq!(found, vec![false, true, false]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paths_exist_sees_files_inside_dot_folders() {
+        let dir = temp_dir();
+        let hidden = dir.join(".claude").join("plans");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("plan.md"), "x").unwrap();
+
+        let found = block_on(paths_exist(vec![path_str(&hidden.join("plan.md"))]));
+
+        assert_eq!(found, vec![true]);
         fs::remove_dir_all(dir).unwrap();
     }
 }

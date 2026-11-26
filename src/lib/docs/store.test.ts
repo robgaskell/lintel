@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizePath, writeTextFile } from '../ipc';
 import { message, save } from '@tauri-apps/plugin-dialog';
+import { recordRecent } from '../os/recent';
 import {
   closeDocWithPrompt,
   confirmCloseAll,
@@ -22,6 +23,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
   save: vi.fn(),
 }));
+vi.mock('../os/recent', () => ({ recordRecent: vi.fn() }));
 
 const write = vi.mocked(writeTextFile);
 const normalize = vi.mocked(normalizePath);
@@ -36,6 +38,7 @@ beforeEach(() => {
   normalize.mockImplementation(async (path) => path);
   saveDialog.mockReset();
   messageDialog.mockReset();
+  vi.mocked(recordRecent).mockReset();
 });
 
 describe('createDoc', () => {
@@ -390,5 +393,50 @@ describe('saveDocAs path', () => {
     expect(await saveDocAs(doc.id)).toBe(true);
     expect(doc.path).toBe('/real/new.md');
     expect(doc.title).toBe('new.md');
+  });
+});
+
+describe('Save As and Open Recent', () => {
+  it('records the normalised path chosen in Save As', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'split' });
+    saveDialog.mockResolvedValue('/link/b.md');
+    write.mockResolvedValue('h1');
+    normalize.mockImplementation(async (path) => path.replace('/link/', '/real/'));
+
+    await saveDocAs(doc.id);
+
+    expect(recordRecent).toHaveBeenCalledExactlyOnceWith('/real/b.md');
+  });
+
+  it('records the first save of an untitled doc from Cmd+S and from the close prompt', async () => {
+    write.mockResolvedValue('h1');
+    const first = createDoc({ path: null, raw: '', hash: '', mode: 'split' });
+    first.text = 'x';
+    saveDialog.mockResolvedValueOnce('/notes/one.md');
+    await saveDoc(first.id);
+
+    const second = createDoc({ path: null, raw: '', hash: '', mode: 'split' });
+    second.text = 'y';
+    saveDialog.mockResolvedValueOnce('/notes/two.md');
+    messageDialog.mockResolvedValue('Save');
+    await closeDocWithPrompt(second.id);
+
+    expect(vi.mocked(recordRecent).mock.calls).toEqual([['/notes/one.md'], ['/notes/two.md']]);
+  });
+
+  it('records nothing for a plain save, a cancelled Save As or a failed write', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'split' });
+    doc.text = 'b\n';
+    write.mockResolvedValue('h1');
+    await saveDoc(doc.id);
+
+    saveDialog.mockResolvedValueOnce(null);
+    await saveDocAs(doc.id);
+
+    saveDialog.mockResolvedValueOnce('/notes/c.md');
+    write.mockRejectedValue('This file is read-only.');
+    await expect(saveDocAs(doc.id)).rejects.toBe('This file is read-only.');
+
+    expect(recordRecent).not.toHaveBeenCalled();
   });
 });

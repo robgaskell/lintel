@@ -4,10 +4,11 @@
   import { message } from '@tauri-apps/plugin-dialog';
   import { setActiveDocSource } from './lib/editor/views';
   import { Workspace } from './lib/layout/workspace';
-  import { buildAppMenu } from './lib/os/menu';
+  import { syncAppMenu } from './lib/os/menu';
   import { makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
   import { handleCloseRequested } from './lib/os/window';
+  import { loadSettings } from './lib/settings/settings.svelte';
 
   let host: HTMLElement;
 
@@ -16,13 +17,21 @@
     setWorkspace(workspace);
     setActiveDocSource(workspace);
     const handlers = makeMenuHandlers({ workspace, currentWindow: getCurrentWindow });
-    buildAppMenu(handlers, []).catch((err) =>
-      message(String(err), { title: 'Lintel', kind: 'error' }),
-    );
+    const showError = (err: unknown) => message(String(err), { title: 'Lintel', kind: 'error' });
+    let disposed = false;
+    let stopMenu = () => {};
+    // Settings decide whether Open Recent shows; a failed load keeps the defaults.
+    loadSettings()
+      .catch(showError)
+      .then(() => {
+        if (!disposed) stopMenu = syncAppMenu(handlers, showError);
+      });
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
     );
     return () => {
+      disposed = true;
+      stopMenu();
       unlistenClose.then((stop) => stop());
       setActiveDocSource(null);
       workspace.dispose();

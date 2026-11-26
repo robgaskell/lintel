@@ -10,7 +10,9 @@ import type { EditorView } from '@codemirror/view';
 import type { ViewMode } from '../docs/store.svelte';
 import { openFindReplace } from '../editor/commands';
 import { activeView } from '../editor/views';
+import { onSettingsChanged, settings } from '../settings/settings.svelte';
 import { currentPlatform, type Platform } from './platform';
+import { getRecent, onRecentChanged } from './recent';
 
 export interface MenuHandlers {
   quit(): void;
@@ -35,15 +37,58 @@ type MenuEntry = MenuItemOptions | PredefinedMenuItemOptions | SubmenuOptions;
 let installing: Promise<void> = Promise.resolve();
 let generation = 0;
 
-/** Builds the native menu bar and replaces the current one; call again to rebuild. */
-export function buildAppMenu(h: MenuHandlers, recent: string[]): Promise<void> {
+/**
+ * Builds the menu bar now, and again whenever the recent list or `recentLimit` changes.
+ * Returns a function that stops the rebuilds.
+ */
+export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): () => void {
+  let latest = 0;
+  let limit = settings.recentLimit;
+  const rebuild = async () => {
+    const request = ++latest;
+    const recent = await recentForMenu();
+    // A slow read of the list must not overwrite the menu a later change asked for.
+    if (request !== latest) return;
+    await buildAppMenu(h, recent);
+  };
+  const rebuildOrReport = () => void rebuild().catch(onError);
+
+  const stopRecent = onRecentChanged(rebuildOrReport);
+  const stopSettings = onSettingsChanged((next) => {
+    if (next.recentLimit === limit) return;
+    limit = next.recentLimit;
+    rebuildOrReport();
+  });
+  rebuildOrReport();
+  return () => {
+    stopRecent();
+    stopSettings();
+  };
+}
+
+/** Null hides Open Recent (`recentLimit` 0). A list that cannot be read shows as empty. */
+async function recentForMenu(): Promise<string[] | null> {
+  if (settings.recentLimit <= 0) return null;
+  try {
+    return await getRecent(settings.recentLimit);
+  } catch (err) {
+    console.error('Could not read the Open Recent list:', err);
+    return [];
+  }
+}
+
+/**
+ * Builds the native menu bar and replaces the current one; call again to rebuild.
+ * `recent` null leaves Open Recent out; an empty list shows it disabled.
+ */
+export function buildAppMenu(h: MenuHandlers, recent: string[] | null): Promise<void> {
   // One at a time, so a slow build cannot overwrite a newer one.
   const run = installing.then(() => install(h, recent));
   installing = run.catch(() => {});
   return run;
 }
 
-async function install(h: MenuHandlers, recent: string[]): Promise<void> {
+async function install(h: MenuHandlers, recent: string[] | null): Promise<void> {
   const entries = menuEntries(h, recent, currentPlatform());
   stampBuildIds(entries, ++generation);
   const menu = await Menu.new({ items: entries });
@@ -56,7 +101,11 @@ async function install(h: MenuHandlers, recent: string[]): Promise<void> {
  * The menu bar's contents. Items for features that land in later steps are disabled.
  * There is no predefined Close Window: its Cmd+W would bypass Close Tab (Ruling 37).
  */
-export function menuEntries(h: MenuHandlers, recent: string[], platform: Platform): MenuEntry[] {
+export function menuEntries(
+  h: MenuHandlers,
+  recent: string[] | null,
+  platform: Platform,
+): MenuEntry[] {
   const mac = platform === 'macos';
   const separator: PredefinedMenuItemOptions = { item: 'Separator' };
   const settings: MenuItemOptions = {
@@ -96,7 +145,7 @@ export function menuEntries(h: MenuHandlers, recent: string[], platform: Platfor
     items: [
       { id: 'new', text: 'New', accelerator: 'CmdOrCtrl+N', action: () => h.newDoc() },
       { id: 'open', text: 'Open…', accelerator: 'CmdOrCtrl+O', action: () => h.open() },
-      openRecentMenu(h, recent, separator),
+      ...(recent === null ? [] : [openRecentMenu(h, recent, separator)]),
       { id: 'save', text: 'Save', accelerator: 'CmdOrCtrl+S', action: () => h.save() },
       {
         id: 'save-as',

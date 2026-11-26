@@ -5,6 +5,7 @@ import { makeMenuHandlers, type MenuHandlerDeps } from './menuHandlers';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
 import { quitApp } from './quit';
+import { clearRecent } from './recent';
 import { closeTabOrWindow } from './window';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
@@ -12,6 +13,7 @@ vi.mock('../docs/store.svelte', () => ({ saveDoc: vi.fn(), saveDocAs: vi.fn() })
 vi.mock('./open', () => ({ newUntitled: vi.fn(), openPaths: vi.fn() }));
 vi.mock('./platform', () => ({ isMac: vi.fn(() => true) }));
 vi.mock('./quit', () => ({ quitApp: vi.fn() }));
+vi.mock('./recent', () => ({ clearRecent: vi.fn() }));
 vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
 
 function deps(): MenuHandlerDeps {
@@ -49,6 +51,12 @@ describe('makeMenuHandlers', () => {
       expect(closeTabOrWindow).toHaveBeenCalledWith(d.workspace, expect.anything());
       expect(openPaths).toHaveBeenCalledWith(['/notes/a.md']);
     });
+  });
+
+  it('empties the recent list from Clear Menu', async () => {
+    makeMenuHandlers(deps()).clearRecent();
+    await vi.waitFor(() => expect(clearRecent).toHaveBeenCalledOnce());
+    expect(message).not.toHaveBeenCalled();
   });
 
   it('saves the active doc and refreshes its tab', async () => {

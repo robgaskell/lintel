@@ -8,8 +8,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             files::normalize_path,
+            files::paths_exist,
             files::read_text_file,
             files::write_text_file
         ])

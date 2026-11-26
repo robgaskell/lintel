@@ -18,3 +18,8 @@ export function writeTextFile(path: string, text: string): Promise<string> {
 export function normalizePath(path: string): Promise<string> {
   return invoke<string>('normalize_path', { path });
 }
+
+/** Whether each path is an existing file, in the same order. Never rejects for a missing path. */
+export function pathsExist(paths: string[]): Promise<boolean[]> {
+  return invoke<boolean[]>('paths_exist', { paths });
+}

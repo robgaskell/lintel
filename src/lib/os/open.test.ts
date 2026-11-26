@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
 import { normalizePath, readTextFile } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
+import { settings } from '../settings/settings.svelte';
 import { newUntitled, openPaths, setWorkspace } from './open';
+import { recordRecent } from './recent';
 
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
@@ -13,6 +15,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
   save: vi.fn(),
 }));
+vi.mock('./recent', () => ({ recordRecent: vi.fn() }));
 
 const read = vi.mocked(readTextFile);
 const normalize = vi.mocked(normalizePath);
@@ -29,6 +32,8 @@ beforeEach(() => {
   messageDialog.mockReset();
   workspace.openDoc.mockReset();
   workspace.activate.mockReset();
+  vi.mocked(recordRecent).mockReset();
+  settings.defaultMode = 'split';
   setWorkspace(workspace);
 });
 
@@ -79,6 +84,35 @@ describe('openPaths', () => {
     expect(messageDialog.mock.calls[0][0]).toContain('Lintel opens UTF-8 text files only.');
     expect(messageDialog.mock.calls[0][1]).toMatchObject({ kind: 'error' });
     expect([...docs.values()].map((d) => d.path)).toEqual(['/good.md']);
+    expect(recordRecent).toHaveBeenCalledOnce();
+    expect(recordRecent).toHaveBeenCalledWith('/good.md');
+  });
+
+  it('opens new docs in the mode Settings names', async () => {
+    settings.defaultMode = 'read';
+
+    await openPaths(['/a.md']);
+
+    expect([...docs.values()][0].mode).toBe('read');
+  });
+});
+
+describe('openPaths and Open Recent', () => {
+  it('records each opened file under its normalised path', async () => {
+    normalize.mockImplementation(async (path) => path.replace('/./', '/'));
+
+    await openPaths(['/x/./a.md', '/b.md']);
+
+    expect(vi.mocked(recordRecent).mock.calls).toEqual([['/x/a.md'], ['/b.md']]);
+  });
+
+  it('records a file that was already open, so it moves to the top', async () => {
+    await openPaths(['/a.md']);
+    vi.mocked(recordRecent).mockClear();
+
+    await openPaths(['/a.md']);
+
+    expect(recordRecent).toHaveBeenCalledWith('/a.md');
   });
 });
 
@@ -145,5 +179,14 @@ describe('newUntitled', () => {
     newUntitled();
 
     expect([...docs.values()].map((d) => d.title)).toEqual(['Untitled-1', 'Untitled-2']);
+  });
+
+  it('uses the mode Settings names', () => {
+    settings.defaultMode = 'edit';
+
+    newUntitled();
+
+    expect([...docs.values()][0].mode).toBe('edit');
+    expect(recordRecent).not.toHaveBeenCalled();
   });
 });

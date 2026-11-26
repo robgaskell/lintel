@@ -5,6 +5,7 @@ import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
 import { isMac } from './platform';
 import { quitApp } from './quit';
+import { clearRecent } from './recent';
 import { closeTabOrWindow } from './window';
 
 export interface MenuHandlerDeps {
@@ -29,7 +30,7 @@ export function makeMenuHandlers({ workspace, currentWindow }: MenuHandlerDeps):
     newDoc: guarded(newUntitled),
     open: guarded(chooseFiles),
     openRecent: (path) => guarded(() => openPaths([path]))(),
-    clearRecent: notYet,
+    clearRecent: guarded(clearRecent),
     save: guarded(() => saveActive(false)),
     saveAs: guarded(() => saveActive(true)),
     closeTab: guarded(() => closeTabOrWindow(workspace, currentWindow())),

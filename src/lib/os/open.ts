@@ -1,12 +1,11 @@
 import { message } from '@tauri-apps/plugin-dialog';
 import { normalizePath, readTextFile, type ReadResult } from '../ipc';
-import { createDoc, findByPath, type ViewMode } from '../docs/store.svelte';
+import { createDoc, findByPath } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
+import { settings } from '../settings/settings.svelte';
+import { recordRecent } from './recent';
 
 type DocOpener = Pick<Workspace, 'openDoc' | 'activate'>;
-
-// M1.4 replaces this with Settings.defaultMode.
-const NEW_DOC_MODE: ViewMode = 'split';
 
 let workspace: DocOpener | null = null;
 
@@ -28,6 +27,7 @@ export async function openPaths(paths: string[]): Promise<void> {
       const open = findByPath(path);
       if (open) {
         target.activate(open.id);
+        await recordRecent(path);
         continue;
       }
       result = await readTextFile(path);
@@ -39,15 +39,16 @@ export async function openPaths(paths: string[]): Promise<void> {
     const raced = findByPath(path);
     if (raced) {
       target.activate(raced.id);
-      continue;
+    } else {
+      const { text: raw, hash } = result;
+      target.openDoc(createDoc({ path, raw, hash, mode: settings.defaultMode }));
     }
-    const doc = createDoc({ path, raw: result.text, hash: result.hash, mode: NEW_DOC_MODE });
-    target.openDoc(doc);
+    await recordRecent(path);
   }
 }
 
 export function newUntitled(): void {
-  const doc = createDoc({ path: null, raw: '', hash: '', mode: NEW_DOC_MODE });
+  const doc = createDoc({ path: null, raw: '', hash: '', mode: settings.defaultMode });
   requireWorkspace().openDoc(doc);
 }
 
