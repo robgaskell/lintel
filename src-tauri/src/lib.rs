@@ -1,5 +1,6 @@
 mod appearance;
 mod files;
+mod lint_config;
 mod open_queue;
 mod os_integration;
 mod remote;
@@ -66,6 +67,7 @@ pub fn run() {
             open_queue::frontend_ready,
             watch::watch_path,
             watch::unwatch_path,
+            lint_config::find_lint_config,
             settings::update_settings
         ])
         .build(tauri::generate_context!())
@@ -432,12 +434,12 @@ mod tests {
     }
 
     #[test]
-    fn document_windows_may_watch_and_unwatch_files() {
+    fn document_windows_may_watch_files_and_find_lint_configs() {
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let granted = main["permissions"].as_array().unwrap();
         let build = include_str!("../build.rs");
-        for command in ["watch_path", "unwatch_path"] {
+        for command in ["watch_path", "unwatch_path", "find_lint_config"] {
             assert!(
                 build.contains(&format!("\"{command}\"")),
                 "{command} in build.rs"

@@ -18,6 +18,7 @@ fn main() {
         "frontend_ready",
         "watch_path",
         "unwatch_path",
+        "find_lint_config",
         "update_settings",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);

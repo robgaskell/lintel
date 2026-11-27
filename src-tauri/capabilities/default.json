@@ -29,6 +29,7 @@
     "allow-frontend-ready",
     "allow-watch-path",
     "allow-unwatch-path",
+    "allow-find-lint-config",
     "allow-update-settings",
     "clipboard-manager:allow-write-text",
     "dialog:default",
