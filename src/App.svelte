@@ -357,7 +357,7 @@
     gap: 12px;
   }
 
-  /* Over everything, so nothing is clicked or typed until the relaunch. */
+  /* Over everything, so nothing is clicked; the editor lock refuses typing and edit commands. */
   .installing {
     position: fixed;
     inset: 0;

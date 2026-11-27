@@ -14,6 +14,7 @@ import {
   toggleTaskList,
 } from './commands';
 import { editorExtensions } from './setup';
+import { registerView, setEditorsLocked } from './views';
 
 type Command = (view: EditorView) => boolean;
 
@@ -230,5 +231,75 @@ describe('in a full editor', () => {
     const replace = editor.dom.querySelector('.cm-search [name=replace]');
     expect(replace).not.toBeNull();
     expect(document.activeElement).toBe(replace);
+  });
+});
+
+describe('formatting on a locked editor (Ruling 351)', () => {
+  const commands: Command[] = [
+    toggleBold,
+    toggleItalic,
+    cycleHeading,
+    insertLink,
+    toggleBulletList,
+    toggleTaskList,
+    insertTable,
+    insertCodeBlock,
+  ];
+
+  function lockedEditor() {
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({
+        doc: 'hello',
+        extensions: editorExtensions(() => {}),
+        selection: { anchor: 0, head: 5 },
+      }),
+    });
+    const forget = registerView('locked-doc', view);
+    setEditorsLocked(true);
+    return {
+      view,
+      done() {
+        setEditorsLocked(false);
+        forget();
+        view.destroy();
+      },
+    };
+  }
+
+  // keyCode too: CodeMirror reads it to name a shifted letter.
+  const ctrlB = { key: 'b', keyCode: 66, ctrlKey: true };
+  const ctrlShiftH = { key: 'H', keyCode: 72, ctrlKey: true, shiftKey: true };
+  const key = (view: EditorView, init: KeyboardEventInit) =>
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+
+  it('Ctrl+B and Ctrl+Shift+H change nothing while an update installs', () => {
+    const { view, done } = lockedEditor();
+    try {
+      view.focus();
+      key(view, ctrlB);
+      key(view, ctrlShiftH);
+      expect(view.state.doc.toString()).toBe('hello');
+
+      setEditorsLocked(false);
+      key(view, ctrlShiftH);
+      expect(view.state.doc.toString()).toBe('# hello');
+      key(view, ctrlB);
+      expect(view.state.doc.toString()).toBe('# **hello**');
+    } finally {
+      done();
+    }
+  });
+
+  it('every formatting command, as the menus run it, does nothing', () => {
+    const { view, done } = lockedEditor();
+    try {
+      for (const command of commands) {
+        expect(command(view)).toBe(false);
+      }
+      expect(view.state.doc.toString()).toBe('hello');
+    } finally {
+      done();
+    }
   });
 });

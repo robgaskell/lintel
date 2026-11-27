@@ -158,6 +158,21 @@ describe('fixAll', () => {
   });
 });
 
+describe('fixes on a read-only editor (Ruling 351)', () => {
+  it('change nothing while an update installs', () => {
+    view = new EditorView({
+      state: EditorState.create({ doc: TEXT, extensions: [EditorState.readOnly.of(true)] }),
+      parent: document.body,
+    });
+    const issues = lintText(TEXT, { default: true });
+
+    fixAll(view, issues);
+    fixOne(view, md004(issues));
+
+    expect(view.state.doc.toString()).toBe(TEXT);
+  });
+});
+
 describe('fixOne', () => {
   it('fixes only the issue it is given, as one undo step', () => {
     const text = '# T\n\n- a\n* b\n+ c\n';

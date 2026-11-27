@@ -46,6 +46,8 @@ export function fixAll(view: EditorView, issues: LintIssue[], config?: object | 
 }
 
 function applyRaw(view: EditorView, issues: LintIssue[]): void {
+  // Read-only while an update installs (Ruling 351).
+  if (view.state.readOnly) return;
   const text = view.state.doc.toString();
   if (issues.length === 0 || issues.some((issue) => lintedText.get(issue) !== text)) return;
   // One call, so markdownlint can drop fixes that overlap (Ruling 267).

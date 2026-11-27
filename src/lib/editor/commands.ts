@@ -76,6 +76,7 @@ export function insertTable(view: EditorView): boolean {
  */
 export function insertCodeBlock(view: EditorView): boolean {
   const { state } = view;
+  if (state.readOnly) return false;
   const blocks = codeBlockSpans(state);
   const specs: ChangeSpec[] = blocks.map((block) => {
     if (!block.empty) {
@@ -155,6 +156,8 @@ function replaceRanges(
   edit: (range: SelectionRange, state: EditorState) => RangeEdit,
 ): boolean {
   const { state } = view;
+  // Read-only while an update installs (Ruling 351); CodeMirror's own commands check this too.
+  if (state.readOnly) return false;
   view.dispatch(state.changeByRange((range) => edit(range, state)), {
     scrollIntoView: true,
     userEvent: 'input',
@@ -230,6 +233,7 @@ function toggleListMarker(view: EditorView, marked: RegExp, prefix: string): boo
 /** Applies `edit` once to each selected line, however many ranges touch it. */
 function editLines(view: EditorView, edit: (line: Line) => ChangeSpec): boolean {
   const { state } = view;
+  if (state.readOnly) return false;
   const changes = state.changes(selectedLines(state).map(edit));
   view.dispatch({
     changes,
