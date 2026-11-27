@@ -1,6 +1,6 @@
 import { message, save } from '@tauri-apps/plugin-dialog';
 import type { ParagraphChild } from 'docx';
-import type { Code, Nodes, Parent, Root, RootContent } from 'mdast';
+import type { Code, Nodes, Root } from 'mdast';
 import type { RemarkDocxPlugin } from 'remark-docx';
 import type { DocState } from '../docs/store.svelte';
 import { readImageAsDataUri, writeBinaryFile } from '../ipc';
@@ -10,7 +10,8 @@ import { slugify } from '../render/markdown';
 import { renderMermaidToSvg } from '../render/mermaid';
 import { settings } from '../settings/settings.svelte';
 import { bytesToBase64, dataUriToBytes } from './bytes';
-import { keepsLink } from './exportLinks';
+import { gateDocx } from './docxGate';
+import { makeRawHtmlSafe } from './rawHtml';
 import { imageToPng, svgSize, svgToPng } from './svgToPng';
 import { exportName, withoutMarkdownExtension, writeUnlessOpen } from './target';
 
@@ -52,7 +53,7 @@ async function build(doc: ExportDoc): Promise<{ bytes: Uint8Array; unembedded: b
     .use(remarkParse)
     .use(remarkGfm)
     .use(() => pointAnchorsAtHeadings)
-    .use(() => (tree: Root) => keepSafeLinks(tree, images.inline))
+    .use(() => (tree: Root) => makeRawHtmlSafe(tree, images.inline))
     .use(remarkDocx, {
       title: withoutMarkdownExtension(doc.title),
       image: { load: images.load, toPng },
@@ -61,7 +62,7 @@ async function build(doc: ExportDoc): Promise<{ bytes: Uint8Array; unembedded: b
     // remark-docx prints front matter as text, so it goes first.
     .process(splitFrontMatter(doc.text).body);
   if (!(file.value instanceof Uint8Array)) throw new Error('The Word file could not be made.');
-  return { bytes: file.value, unembedded: images.unembedded() };
+  return { bytes: await gateDocx(file.value), unembedded: images.unembedded() };
 }
 
 // Never fetch: the CSP blocks it, and remote images stay remote (Ruling 315).
@@ -208,102 +209,6 @@ function pointAnchorsAtHeadings(tree: Root) {
     const action = classifyHref(node.url);
     const id = action.kind === 'anchor' ? headingIdFor(action.fragment, ids) : null;
     if (id) node.url = `#${id.slice(2)}`;
-  });
-}
-
-/**
- * Unsafe links (see keepsLink) become their text, in Markdown and in raw HTML. Raw HTML
- * images that are remote or on another computer become their alt text, as Markdown ones do
- * (Rulings 324, 325, 330). A reference uses its first definition, as remark-docx does.
- */
-function keepSafeLinks(tree: Root, inline: (svg: Uint8Array) => string) {
-  const definitions = new Map<string, string>();
-  walk(tree, (node) => {
-    if (node.type !== 'definition') return;
-    const key = node.identifier.toUpperCase();
-    if (!definitions.has(key)) definitions.set(key, node.url);
-  });
-  replaceEach(tree, (node) => {
-    if (node.type === 'link' && !keepsLink(node.url)) return node.children;
-    if (node.type === 'linkReference') {
-      const url = definitions.get(node.identifier.toUpperCase());
-      if (url !== undefined && !keepsLink(url)) return node.children;
-    }
-    if (node.type === 'html') node.value = safeRawHtml(node.value, inline);
-    return null;
-  });
-}
-
-/**
- * Raw HTML as docx/html may read it. The HTML is parsed as a browser would, changed on the
- * parsed tree, and written back out, which any HTML parser reads the same way (Ruling 330).
- * Inline SVGs and SVG data: images become pictures loaded through `inline`, so they reach
- * Word as PNG only. HTML with nothing that links or loads is left as written.
- */
-function safeRawHtml(html: string, inline: (svg: Uint8Array) => string): string {
-  if (!/href|src|<svg/i.test(html)) return html;
-  const template = document.createElement('template');
-  template.innerHTML = html;
-  const root = template.content;
-  const elements = [...root.querySelectorAll('*')];
-  const hrefs = elements.flatMap((el) => [...el.attributes].filter((a) => a.localName === 'href').map((a) => ({ el, a })));
-  const images = [...root.querySelectorAll('img')];
-  // A duplicate or oddly quoted attribute may read differently elsewhere, so then the parsed form is written.
-  let changed = hrefs.length !== count(html, /href/gi) || images.length !== count(html, /<img/gi);
-  for (const { el, a } of hrefs) {
-    if (keepsLink(a.value)) continue;
-    el.removeAttributeNode(a);
-    changed = true;
-  }
-  for (const img of images) {
-    const src = img.getAttribute('src') ?? '';
-    if (/^\s*data:/i.test(src)) {
-      if (!/^\s*data:image\/svg\+xml/i.test(src)) continue;
-      const svg = svgBytes(src);
-      if (svg) img.setAttribute('src', inline(svg));
-      else img.replaceWith(img.alt);
-    } else if (classifyImageSrc(src.trim()) === 'remote' || !keepsLink(src)) {
-      img.replaceWith(img.alt);
-    } else {
-      continue;
-    }
-    changed = true;
-  }
-  for (const svg of root.querySelectorAll('svg')) {
-    if (svg.parentElement?.closest('svg')) continue;
-    const img = document.createElement('img');
-    img.setAttribute('src', inline(new TextEncoder().encode(new XMLSerializer().serializeToString(svg))));
-    img.setAttribute('alt', svg.getAttribute('aria-label') ?? '');
-    svg.replaceWith(img);
-    changed = true;
-  }
-  return changed ? template.innerHTML : html;
-}
-
-function svgBytes(dataUri: string): Uint8Array | null {
-  try {
-    return dataUriToBytes(dataUri.trim());
-  } catch {
-    return null;
-  }
-}
-
-function count(text: string, pattern: RegExp): number {
-  return text.match(pattern)?.length ?? 0;
-}
-
-/** Visits every node below `node`; when `replace` returns nodes, they take the visited node's place. */
-function replaceEach(node: Nodes, replace: (node: Nodes) => RootContent[] | null) {
-  if (!('children' in node)) return;
-  const parent = node as Parent;
-  parent.children = parent.children.flatMap((child) => {
-    const replaced = replace(child);
-    if (replaced === null) {
-      replaceEach(child, replace);
-      return [child];
-    }
-    for (const kept of replaced) replaceEach(kept, replace);
-    return replaced;
   });
 }
 

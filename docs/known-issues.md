@@ -141,3 +141,10 @@ In Export as HTML and Export as Word, a link to a network path (`\\server\share`
 `//server/share`), any `file:` address, or an address that is not `http`, `https` or
 `mailto` keeps its text but is no longer a link. On Windows, opening such a link can send
 your sign-in details to another computer. Links to other files by relative path stay.
+
+### Links with a lone % lose their link
+
+In Export as HTML and Export as Word, a web address with a `%` that is not followed by two
+letters or digits of a `%` code, such as `https://example.com/?off=50%`, keeps its text but
+is no longer a link. So does an address with `%25`, the code for `%` itself. Lintel cannot
+be sure where such an address leads, so it leaves it as text.

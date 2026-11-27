@@ -4,7 +4,9 @@ import { message, save } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, opening, type DocState } from '../docs/store.svelte';
 import { claimPath, fetchRemoteImage, readImageAsDataUri, releasePath, writeBinaryFile } from '../ipc';
 import { renderMermaidToSvg } from '../render/mermaid';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { buildDocx, exportDocx } from './docx';
+import { gateDocx, OUTSIDE_CONTENT } from './docxGate';
 import { imageToPng, svgToPng } from './svgToPng';
 
 // A real 1x1 PNG, so the image size reader accepts it.
@@ -33,6 +35,11 @@ vi.mock('./svgToPng', async (importOriginal) => ({
   svgToPng: vi.fn(async () => PNG),
   imageToPng: vi.fn(async () => PNG),
 }));
+// The real gate, spied on so input-layer tests can turn it off (Ruling 335).
+vi.mock('./docxGate', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./docxGate')>();
+  return { ...real, gateDocx: vi.fn(real.gateDocx) };
+});
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(async () => {}), save: vi.fn() }));
 
 const fetchSpy = vi.fn(async () => new Response(PNG));
@@ -103,6 +110,28 @@ const SAMPLE = [
   '```',
   '',
 ].join('\n');
+
+
+// The verifier's round-2 vectors (Ruling 335): each hides a link from a node read alone.
+const JOINED_VECTORS: [string, string][] = [
+  ['xmp comment', 'x <xmp><!-- </xmp><a href=//evil-xmpc/x>t</a> --></xmp> y'],
+  ['noscript comment', 'x <noscript><!-- </noscript><a href=//evil-nsc/x>t</a> --></noscript> y'],
+  ['iframe comment', 'x <iframe><!-- </iframe><a href=//evil-ifc/x>t</a> --></iframe> y'],
+  ['noembed comment', 'x <noembed><!-- </noembed><a href=//evil-nec/x>t</a> --></noembed> y'],
+  ['noframes comment', 'x <noframes><!-- </noframes><a href=//evil-nfc/x>t</a> --></noframes> y'],
+  ['textarea comment', 'x <textarea><!-- </textarea><a href=//evil-tac/x>t</a> --></textarea> y'],
+  ['title comment', 'x <title><!-- </title><a href=//evil-tic/x>t</a> --></title> y'],
+  ['style comment', 'x <style><!-- </style><a href=//evil-stc/x>t</a> --></style> y'],
+  ['xmp attribute', 'x <xmp><i title="</xmp><a href=//evil-xmpa/x>t</a>">u</i></xmp> y'],
+  ['noscript attribute', 'x <noscript><i title="</noscript><a href=//evil-nsa/x>t</a>">u</i></noscript> y'],
+  ['xmp UNC image', 'x <xmp><!-- </xmp><img src="\\\\evil-xmpimg\\x.png" alt=I> --></xmp> y'],
+  ['xmp remote image', 'x <xmp><!-- </xmp><img src="https://evil-xmpimgr/x.png" alt=I> --></xmp> y'],
+  ['noscript block', '<div><noscript><p title="</noscript><a href=//evil-nsb/x>t</a>"></p></noscript></div>'],
+  ['math style', '<div><math><style><a title="</style><a href=//evil-mathsa/x>t</a>">u</a></style></math></div>'],
+  ['mglyph', '<div><form><math><mtext></form><form><mglyph><style></math><a href=//evil-mglyph/x>t</a></style></mglyph></form></mtext></math></form></div>'],
+  ['math CDATA', '<p><math><![CDATA[</math><a href=//evil-cdm/x>t</a>]]></math></p>'],
+  ['a NUL in the scheme', '<p><a href="fi\u0000le://evil-nul/x">t</a></p>'],
+];
 
 describe('buildDocx', () => {
   it('is a zip with the heading, table, code, links and one drawing per diagram; no front matter', async () => {
@@ -324,7 +353,9 @@ describe('buildDocx links (Ruling 324)', () => {
       "<a HREF='&#102;ile://evil-ent/x'>h3</a> <a href=//evil-unq/x>h4</a>",
       '<a title=">" href="file://evil-title/x">h5</a> <a href=" file://evil-space/x">h6</a>',
       '<a title="href=file://evil-copy/x" href=file://evil-copy/x>h7</a>',
-      '<a href="https://raw.example/">rawweb</a></p>',
+      '</p>',
+      '',
+      '<p><a href="https://raw.example/">rawweb</a></p>',
       '',
       '# Intro',
       '',
@@ -421,6 +452,131 @@ describe('buildDocx inline SVG (Ruling 330)', () => {
     expect(count(zip.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
     expect([...zip.keys()].some((name) => name.endsWith('.svg'))).toBe(false);
     expect([...zip.values()].join('\n')).not.toContain('u.example');
+  });
+});
+
+describe('Word links and images through both layers (Ruling 335)', () => {
+  const external = (rels: string) => [...rels.matchAll(/<Relationship [^>]*TargetMode="External"[^>]*>/g)].map(([r]) => r);
+
+  it.each(JOINED_VECTORS)('ends with no outside link or read for %s', async (_name, text) => {
+    const rels = (await parts(`${text}\n`)).get('word/_rels/document.xml.rels')!;
+    expect(external(rels).join('\n')).not.toMatch(/evil/);
+    expect(readImageAsDataUri).not.toHaveBeenCalled();
+  });
+
+  it.each(JOINED_VECTORS)('needs no output gate for %s: the input layer alone stops it', async (_name, text) => {
+    vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
+    const rels = (await parts(`${text}\n`)).get('word/_rels/document.xml.rels')!;
+    expect(external(rels).join('\n')).not.toMatch(/evil/);
+  });
+
+  it('turns raw HTML the parser reads differently from its text into that text (count mismatch)', async () => {
+    vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
+    const text = [
+      'x <noscript><!-- </noscript><a href=//evil-cm1/x>shown</a> --></noscript> y',
+      '',
+      '<div><form><math><mtext></form><form><mglyph><style></math><a href=//evil-cm2/x>t</a></style></mglyph></form></mtext></math></form></div>',
+      '',
+    ].join('\n');
+    const zip = await parts(text);
+    expect(zip.get('word/_rels/document.xml.rels')).not.toMatch(/evil/);
+    expect(zip.get('word/document.xml')).not.toMatch(/<w:hyperlink /);
+
+    // Fail closed: text that spells more hrefs than the parser finds is read as plain text.
+    const bold = (await parts('<p><b title="see href=x">bold</b></p>\n')).get('word/document.xml')!;
+    const run = [...bold.matchAll(/<w:r>(?:(?!<\/w:r>).)*<\/w:r>/gs)].map(([r]) => r).find((r) => r.includes('>bold<'))!;
+    expect(run).not.toContain('<w:b/>');
+  });
+
+  it('draws an inline <svg> split over a paragraph\'s nodes whole', async () => {
+    const zip = await parts('Logo <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20"/></svg> end\n');
+    expect(vi.mocked(svgToPng).mock.calls[0]?.[0]).toContain('<rect');
+    expect(count(zip.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
+  });
+
+  it('shows an inline <svg> with text inside as that text, never a blank picture', async () => {
+    const xml = (await parts('Logo <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text>Hi</text></svg> end\n')).get(
+      'word/document.xml',
+    )!;
+    expect(svgToPng).not.toHaveBeenCalled();
+    expect(count(xml, /<w:drawing>/g)).toBe(0);
+    expect(xml).toContain('Hi');
+  });
+});
+
+describe('the output gate (Ruling 335)', () => {
+  const realGate = async (bytes: Uint8Array) => (await vi.importActual<typeof import('./docxGate')>('./docxGate')).gateDocx(bytes);
+
+  async function built(text: string) {
+    vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
+    return unzipSync(await buildDocx(doc(text)));
+  }
+
+  function edit(files: Record<string, Uint8Array>, name: string, change: (xml: string) => string) {
+    files[name] = strToU8(change(strFromU8(files[name]!)));
+  }
+
+  it('removes an unsafe hyperlink put straight into a built file, and keeps its text', async () => {
+    const files = await built('[safe](https://ok.example/) and [web](https://web.example/)\n');
+    edit(files, 'word/_rels/document.xml.rels', (xml) => xml.replace('https://ok.example/', '\\\\evil-inj\\share'));
+
+    const out = unzip(await realGate(zipSync(files)));
+
+    expect(out.get('word/_rels/document.xml.rels')).not.toMatch(/evil/);
+    expect(out.get('word/_rels/document.xml.rels')).toContain('Target="https://web.example/"');
+    const xml = out.get('word/document.xml')!;
+    expect(xml.startsWith('<?xml')).toBe(true);
+    expect(count(xml, /<w:hyperlink /g)).toBe(1);
+    expect(xml).toContain('>safe<');
+  });
+
+  it('removes an unsafe hyperlink from footnotes too', async () => {
+    const files = await built('Note[^1].\n\n[^1]: See [it](https://ok.example/).\n');
+    edit(files, 'word/_rels/footnotes.xml.rels', (xml) => xml.replace('https://ok.example/', '//evil-fn/x'));
+    const out = unzip(await realGate(zipSync(files)));
+    expect(out.get('word/_rels/footnotes.xml.rels')).not.toMatch(/evil/);
+    expect(out.get('word/footnotes.xml')).not.toMatch(/<w:hyperlink /);
+  });
+
+  it('returns the same bytes when there is nothing to remove', async () => {
+    const bytes = zipSync(await built('[web](https://web.example/)\n'));
+    expect(await realGate(bytes)).toBe(bytes);
+  });
+
+  it.each([
+    ['an outside image', 'word/_rels/document.xml.rels', 'image'],
+    ['an outside template', 'word/_rels/settings.xml.rels', 'attachedTemplate'],
+    ['an outside frame', 'word/_rels/document.xml.rels', 'frame'],
+  ])('stops the export for %s', async (_name, rels, type) => {
+    const files = await built('Text.\n');
+    const entry = `<Relationship Id="rId999" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="https://evil.example/x" TargetMode="External"/>`;
+    files[rels] ??= strToU8('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>');
+    edit(files, rels, (xml) => xml.replace('</Relationships>', `${entry}</Relationships>`));
+    await expect(realGate(zipSync(files))).rejects.toThrow(OUTSIDE_CONTENT);
+  });
+
+  it.each([
+    ['INCLUDEPICTURE', ' INCLUDEPICTURE "https://evil.example/x.png" '],
+    ['an unsafe HYPERLINK', ' HYPERLINK "\\\\evil-field\\x" '],
+  ])('stops the export for a field: %s', async (_name, instruction) => {
+    const files = await built('Text.\n');
+    edit(files, 'word/document.xml', (xml) =>
+      xml.replace('<w:body>', `<w:body><w:p><w:r><w:instrText>${instruction}</w:instrText></w:r></w:p>`),
+    );
+    await expect(realGate(zipSync(files))).rejects.toThrow(OUTSIDE_CONTENT);
+  });
+
+  it('runs on every build, and its result is the file', async () => {
+    const marker = new Uint8Array([1, 2, 3]);
+    vi.mocked(gateDocx).mockResolvedValueOnce(marker);
+    expect(await buildDocx(doc('Text.\n'))).toBe(marker);
+  });
+
+  it('stops exportDocx before anything is written', async () => {
+    vi.mocked(save).mockResolvedValue('/out/doc.docx');
+    vi.mocked(gateDocx).mockRejectedValueOnce(new Error(OUTSIDE_CONTENT));
+    await expect(exportDocx(doc('Text.\n'))).rejects.toThrow(OUTSIDE_CONTENT);
+    expect(writeBinaryFile).not.toHaveBeenCalled();
   });
 });
 
