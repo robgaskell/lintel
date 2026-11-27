@@ -1,6 +1,6 @@
 fn main() {
     // Listing the app's commands puts them under the capability system, so only the
-    // windows granted them can call them; the Settings window is not (Ruling 160).
+    // windows granted them can call them. Settings gets update_settings only (Rulings 160, 271).
     let manifest = tauri_build::AppManifest::new().commands(&[
         "normalize_path",
         "paths_exist",
@@ -18,6 +18,7 @@ fn main() {
         "frontend_ready",
         "watch_path",
         "unwatch_path",
+        "update_settings",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);
     if is_windows_msvc() {

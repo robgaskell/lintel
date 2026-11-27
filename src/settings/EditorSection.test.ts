@@ -7,6 +7,7 @@ import EditorSection from './EditorSection.svelte';
 // The real updateSettings on in-memory fakes, watched, so nested patches merge as they do live.
 vi.mock('@tauri-apps/plugin-store', () => import('../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../test/fakes').then((f) => f.eventModule));
+vi.mock('@tauri-apps/api/core', () => import('../test/fakes').then((f) => f.coreModule));
 vi.mock('../lib/settings/settings.svelte', async (importOriginal) => {
   const real = await importOriginal<typeof import('../lib/settings/settings.svelte')>();
   return { ...real, updateSettings: vi.fn(real.updateSettings) };

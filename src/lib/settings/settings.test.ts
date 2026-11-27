@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeTextFile } from '../ipc';
 import * as fakes from '../../test/fakes';
-import { calls, events, fakeStore, loads, resetFakes } from '../../test/fakes';
+import { calls, eventModule, events, fakeStore, loads, resetFakes } from '../../test/fakes';
 import {
   DEFAULT_SETTINGS,
   isFontFamily,
@@ -13,6 +13,7 @@ import {
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
+vi.mock('@tauri-apps/api/core', () => import('../../test/fakes').then((f) => f.coreModule));
 vi.mock('@tauri-apps/api/path', () => ({
   appDataDir: async () => '/data/com.robgaskell.lintel',
   join: async (...parts: string[]) => parts.join('/'),
@@ -149,7 +150,7 @@ describe('loadSettings', () => {
     store().data.set('version', 1);
     store().data.set('lint', { enabled: false, rules: { MD013: false } });
 
-    expect((await loadSettings()).lint).toEqual({ enabled: false, rules: { MD013: false } });
+    expect((await loadSettings()).lint).toEqual({ enabled: false, rules: { 'line-length': false } });
   });
 
   it('ignores a stored value of the wrong type', async () => {
@@ -248,6 +249,7 @@ describe('two windows (Ruling 140)', () => {
     vi.resetModules();
     vi.doMock('@tauri-apps/plugin-store', () => fakes.storeModule);
     vi.doMock('@tauri-apps/api/event', () => fakes.eventModule);
+    vi.doMock('@tauri-apps/api/core', () => fakes.coreModule);
     const instance = await import('./settings.svelte');
     await instance.loadSettings();
     return instance;
@@ -278,6 +280,29 @@ describe('two windows (Ruling 140)', () => {
     await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(2));
     expect(seen).toHaveBeenLastCalledWith(expect.objectContaining({ fontSize: 20, remoteImages: 'block' }));
     expect(settingsWindow.settings).toMatchObject({ fontSize: 20, remoteImages: 'block' });
+  });
+
+  it('keeps both of two rule changes made in two windows at once (Rulings 169, 271)', async () => {
+    const settingsWindow = await otherWindow();
+
+    await Promise.all([
+      updateSettings({ lint: { rules: { 'ul-style': false } } }),
+      settingsWindow.updateSettings({ lint: { rules: { 'line-length': false } } }),
+    ]);
+
+    expect(await store().get('lint')).toEqual({
+      enabled: true,
+      rules: { default: true, 'ul-style': false, 'line-length': false },
+    });
+  });
+
+  it('takes the stored settings back from a save, other windows\' changes included', async () => {
+    const settingsWindow = await otherWindow();
+    await settingsWindow.updateSettings({ theme: 'dark' });
+
+    await updateSettings({ fontSize: 20 });
+
+    expect(settings).toMatchObject({ theme: 'dark', fontSize: 20 });
   });
 });
 
@@ -315,6 +340,15 @@ describe('nested settings (Ruling 159)', () => {
     });
   });
 
+  it('deletes a rule key patched with null (Ruling 270)', async () => {
+    store().data.set('lint', { enabled: true, rules: { default: true, MD004: false } });
+
+    await updateSettings({ lint: { rules: { 'ul-style': false, MD004: null } } });
+
+    expect(await store().get('lint')).toEqual({ enabled: true, rules: { default: true, 'ul-style': false } });
+    expect(settings.lint.rules).toEqual({ default: true, 'ul-style': false });
+  });
+
   it('patches lint and updates the same way', async () => {
     store().data.set('lint', { enabled: true, rules: { default: true, MD013: false } });
 
@@ -350,7 +384,50 @@ describe('after a failed load (Ruling 159)', () => {
   });
 });
 
+describe('lint rules (Ruling 270)', () => {
+  it('loads a rule named by its ID or in another case under its first alias', async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: true, rules: { default: true, MD004: false, 'Line-Length': { line_length: 100 }, 'single-h1': false } });
+
+    expect((await loadSettings()).lint.rules).toEqual({
+      default: true,
+      'ul-style': false,
+      'line-length': { line_length: 100 },
+      'single-title': false,
+    });
+  });
+
+  it('prefers the first alias when the rule is named twice', async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: true, rules: { 'ul-style': false, MD004: true } });
+
+    expect((await loadSettings()).lint.rules).toEqual({ 'ul-style': false });
+  });
+
+  it('keeps keys that name no rule, such as tags, and drops values of the wrong type', async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: true, rules: { default: true, headings: false, MD013: 7 } });
+
+    expect((await loadSettings()).lint.rules).toEqual({ default: true, headings: false });
+  });
+});
+
 describe('onSettingsChanged', () => {
+  it('reads changes as loadSettings does, so another window cannot hand it a bad value', async () => {
+    const seen = vi.fn();
+    onSettingsChanged(seen);
+    await Promise.resolve();
+
+    await eventModule.emit('lintel://settings-changed', {
+      fontSize: 'huge',
+      lint: { enabled: true, rules: { MD004: false } },
+    });
+
+    await vi.waitFor(() => expect(seen).toHaveBeenCalled());
+    expect(settings.fontSize).toBe(16);
+    expect(settings.lint.rules).toEqual({ 'ul-style': false });
+  });
+
   it('reports a listener that could not be registered', async () => {
     events.failNextListen = new Error('event plugin down');
     const onError = vi.fn();

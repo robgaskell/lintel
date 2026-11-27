@@ -4,6 +4,7 @@ mod open_queue;
 mod os_integration;
 mod remote;
 mod session;
+mod settings;
 mod startup;
 mod watch;
 mod windows;
@@ -40,6 +41,7 @@ pub fn run() {
         .manage(windows::PathRegistry::default())
         .manage(windows::FocusOrder::default())
         .manage(Mutex::new(OpenQueue::default()))
+        .manage(settings::SettingsLock::default())
         .on_window_event(windows::on_doc_window_event)
         .setup(|app| {
             app.manage(watch::Watcher::for_app(app.handle().clone()));
@@ -63,7 +65,8 @@ pub fn run() {
             appearance::set_window_appearance,
             open_queue::frontend_ready,
             watch::watch_path,
-            watch::unwatch_path
+            watch::unwatch_path,
+            settings::update_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lintel")
@@ -370,7 +373,8 @@ mod tests {
             .iter()
             .map(|p| p.as_str().expect("plain permission ids only"))
             .collect();
-        for id in &granted {
+        // Writing settings is the one app command it may call (Ruling 271).
+        for id in granted.iter().filter(|id| **id != "allow-update-settings") {
             let plugin = id.split(':').next().unwrap();
             assert!(
                 matches!(plugin, "core" | "store"),
@@ -395,6 +399,19 @@ mod tests {
             assert!(granted.contains(&serde_json::json!(
                 "core:webview:allow-set-webview-background-color"
             )));
+        }
+    }
+
+    #[test]
+    fn every_window_writes_settings_through_the_one_command() {
+        assert!(include_str!("../build.rs").contains("\"update_settings\""));
+        for capability in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/settings.json"),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(capability).unwrap();
+            let granted = value["permissions"].as_array().unwrap();
+            assert!(granted.contains(&serde_json::json!("allow-update-settings")));
         }
     }
 

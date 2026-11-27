@@ -29,6 +29,7 @@
     "allow-frontend-ready",
     "allow-watch-path",
     "allow-unwatch-path",
+    "allow-update-settings",
     "clipboard-manager:allow-write-text",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },

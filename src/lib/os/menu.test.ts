@@ -89,6 +89,7 @@ const thisWindow = vi.hoisted(() => ({ label: 'main', isFocused: vi.fn(async () 
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => thisWindow }));
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
+vi.mock('@tauri-apps/api/core', () => import('../../test/fakes').then((f) => f.coreModule));
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
 vi.mock('./recent', () => ({
   getRecent: vi.fn(),

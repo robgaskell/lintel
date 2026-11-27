@@ -1,8 +1,10 @@
-import { emit, listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { appDataDir, join } from '@tauri-apps/api/path';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import type { ViewMode } from '../docs/store.svelte';
 import { writeTextFile } from '../ipc';
+import { normaliseRules } from '../lint/ruleNames';
 
 export type ThemeChoice = 'light' | 'dark' | 'system';
 export type RemoteImagesChoice = 'ask' | 'load' | 'block';
@@ -65,10 +67,13 @@ const CHANGED = 'lintel://settings-changed';
 /** The settings in force. Holds the defaults until `loadSettings` resolves. */
 export const settings: Settings = $state(structuredClone(DEFAULT_SETTINGS) as Settings);
 
-/** A change to apply: top-level values replace, objects such as `palettes` are merged by key. */
+/**
+ * A change to apply: top-level values replace, objects such as `palettes` are merged by key.
+ * A lint rule set to `null` is deleted, so each rule keeps one key (Ruling 270).
+ */
 export type SettingsPatch = {
-  [K in keyof Settings]?: Settings[K] extends object ? DeepPartial<Settings[K]> : Settings[K];
-};
+  [K in Exclude<keyof Settings, 'lint'>]?: Settings[K] extends object ? DeepPartial<Settings[K]> : Settings[K];
+} & { lint?: { enabled?: boolean; rules?: Record<string, boolean | object | null> } };
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
 // Set when this window could not read settings.json; saving then would mislabel the file.
@@ -93,11 +98,10 @@ export function loadSettings(): Promise<Settings> {
 }
 
 /**
- * Saves the patched keys to settings.json, then tells every window. Only the patched
- * top-level keys are written and sent, so a stale copy in another window cannot undo
- * them (Ruling 140). An object value is merged key by key into the value stored at
- * write time, so edits to different colours never undo each other (Ruling 159). Missing
- * keys load as their defaults. Rejects, saving nothing, if this window's load failed.
+ * Saves the patched keys to settings.json, then tells every window. Rust's
+ * `update_settings` merges each patch into the stored value under one lock, so changes
+ * from two windows never undo each other (Rulings 140, 159, 271). Rejects, saving
+ * nothing, if this window's load failed.
  */
 export function updateSettings(patch: SettingsPatch): Promise<void> {
   return oneAtATime(async () => {
@@ -106,17 +110,11 @@ export function updateSettings(patch: SettingsPatch): Promise<void> {
         'Settings could not be loaded, so this change was not saved. Restart Lintel to try again.',
       );
     }
-    const store = await settingsStore();
-    const changes: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(patch)) {
-      if (value === undefined) continue;
-      changes[key] = isRecord(value) ? merge(await storedValue(store, key), value) : value;
-    }
-    changes.version = 1;
-    for (const [key, value] of Object.entries(changes)) await store.set(key, value);
-    await store.save();
-    Object.assign(settings, changes);
-    await emit(CHANGED, changes);
+    const defaults = Object.fromEntries(
+      Object.keys(patch).map((key) => [key, (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]]),
+    );
+    const stored = await invoke<Record<string, unknown>>('update_settings', { patch, defaults });
+    Object.assign(settings, readSettings(new Map(Object.entries(stored))));
   });
 }
 
@@ -129,9 +127,14 @@ export function onSettingsChanged(
   onError: (err: unknown) => void = (err) => console.error('Could not watch settings:', err),
 ): () => void {
   let active = true;
-  const unlisten = listen<Partial<Settings>>(CHANGED, ({ payload }) => {
+  const unlisten = listen<Record<string, unknown>>(CHANGED, ({ payload }) => {
     if (!active) return;
-    Object.assign(settings, payload);
+    for (const [key, value] of Object.entries(payload)) {
+      const read = (READERS as Record<string, Reader<unknown>>)[key];
+      if (!read) continue;
+      const fallback = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
+      (settings as unknown as Record<string, unknown>)[key] = read(value) ?? structuredClone(fallback);
+    }
     cb($state.snapshot(settings) as Settings);
   });
   unlisten.catch(onError);
@@ -144,36 +147,27 @@ export function onSettingsChanged(
 async function readStore(): Promise<Settings> {
   const store = await settingsStore();
   const stored = new Map(await store.entries<unknown>());
-  const next = structuredClone(DEFAULT_SETTINGS) as Settings;
+  let next = structuredClone(DEFAULT_SETTINGS) as Settings;
   if (stored.size > 0 && stored.get('version') !== 1) {
     Object.assign(settings, next);
     await keepBackup(Object.fromEntries(stored));
     await store.clear();
     await store.save();
   } else {
-    for (const [key, read] of Object.entries(READERS)) {
-      const value = read(stored.get(key));
-      if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
-    }
+    next = readSettings(stored);
   }
   Object.assign(settings, next);
   return structuredClone(next);
 }
 
-// The stored value as `loadSettings` would read it, or the default.
-async function storedValue(store: Store, key: string): Promise<unknown> {
-  const read = (READERS as Record<string, Reader<unknown>>)[key];
-  const value = read?.(await store.get(key));
-  return value ?? structuredClone((DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]);
-}
-
-function merge(base: unknown, patch: Record<string, unknown>): Record<string, unknown> {
-  const merged: Record<string, unknown> = isRecord(base) ? { ...base } : {};
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    merged[key] = isRecord(value) ? merge(merged[key], value) : value;
+// Each stored field as its reader takes it, or the default.
+function readSettings(stored: Map<string, unknown>): Settings {
+  const next = structuredClone(DEFAULT_SETTINGS) as Settings;
+  for (const [key, read] of Object.entries(READERS)) {
+    const value = read(stored.get(key));
+    if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
   }
-  return merged;
+  return next;
 }
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -218,7 +212,7 @@ const READERS: { [K in Exclude<keyof Settings, 'version'>]: Reader<Settings[K]> 
   recentLimit: intIn(0, 20),
   lint: (value) =>
     isRecord(value) && typeof value.enabled === 'boolean' && isRecord(value.rules)
-      ? { enabled: value.enabled, rules: value.rules as Record<string, boolean | object> }
+      ? { enabled: value.enabled, rules: normaliseRules(value.rules) }
       : undefined,
   updates: (value) =>
     isRecord(value) && typeof value.autoCheck === 'boolean'

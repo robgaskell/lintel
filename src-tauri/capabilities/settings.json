@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings",
-  "description": "Permissions for the Settings window: settings and its own window only, no files, dialogs, links or app commands (Ruling 160)",
+  "description": "Permissions for the Settings window: settings and its own window only, no files, dialogs, links or app commands but update_settings (Rulings 160, 271)",
   "windows": ["settings"],
   "permissions": [
     "core:event:default",
@@ -12,6 +12,7 @@
     "core:window:allow-set-background-color",
     "core:webview:allow-set-webview-background-color",
     "core:window:allow-set-theme",
-    "store:default"
+    "store:default",
+    "allow-update-settings"
   ]
 }

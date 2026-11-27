@@ -106,3 +106,54 @@ export const eventModule = {
     return () => handlers.get(event)?.delete(handler);
   },
 };
+
+/**
+ * The Rust `update_settings` command on the fake store: merges each patched key into the
+ * stored value (missing parts from `defaults`, `null` deletes), saves, then emits the changes.
+ */
+export const coreModule = {
+  invoke: async (command: string, args: Record<string, unknown> = {}) => {
+    if (command !== 'update_settings') throw new Error(`No fake for command ${command}`);
+    const store = fakeStore('settings.json');
+    const patch = viaJson(args.patch) as Record<string, unknown>;
+    const defaults = viaJson(args.defaults) as Record<string, unknown>;
+    const changes: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      const merged = mergePatch(withDefaults(store.data.get(key), defaults[key]), value);
+      if (merged === undefined) await store.delete(key);
+      else await store.set(key, merged);
+      changes[key] = store.data.get(key) ?? null;
+    }
+    await store.set('version', 1);
+    changes.version = 1;
+    await store.save();
+    await eventModule.emit('lintel://settings-changed', changes);
+    return Object.fromEntries(store.data);
+  },
+};
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mergePatch(base: unknown, patch: unknown): unknown {
+  if (patch === null) return undefined;
+  if (!isObject(patch)) return patch;
+  const merged: Record<string, unknown> = isObject(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    const next = mergePatch(merged[key], value);
+    if (next === undefined) delete merged[key];
+    else merged[key] = next;
+  }
+  return merged;
+}
+
+function withDefaults(stored: unknown, fallback: unknown): unknown {
+  if (isObject(stored) && isObject(fallback)) {
+    const filled: Record<string, unknown> = { ...stored };
+    for (const [key, value] of Object.entries(fallback)) filled[key] = withDefaults(stored[key], value);
+    return filled;
+  }
+  if (stored !== undefined && isObject(fallback)) return fallback;
+  return stored ?? fallback;
+}
