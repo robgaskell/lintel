@@ -20,6 +20,7 @@ fn main() {
         "watch_path",
         "unwatch_path",
         "find_lint_config",
+        "copy_notices",
         "update_settings",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);

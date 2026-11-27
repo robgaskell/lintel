@@ -10,6 +10,11 @@ export function readTextFile(path: string): Promise<ReadResult> {
   return invoke<ReadResult>('read_text_file', { path });
 }
 
+/** A fresh read-only copy of the bundled third-party notices, in the cache folder (Ruling 332). */
+export function copyNotices(): Promise<string> {
+  return invoke<string>('copy_notices');
+}
+
 /** Resolves to the sha-256 hex of the bytes written. */
 export function writeTextFile(path: string, text: string): Promise<string> {
   return invoke<string>('write_text_file', { path, text });

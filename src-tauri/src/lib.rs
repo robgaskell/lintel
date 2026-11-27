@@ -1,6 +1,7 @@
 mod appearance;
 mod files;
 mod lint_config;
+mod notices;
 mod open_queue;
 mod os_integration;
 mod remote;
@@ -70,6 +71,7 @@ pub fn run() {
             watch::watch_path,
             watch::unwatch_path,
             lint_config::find_lint_config,
+            notices::copy_notices,
             settings::update_settings
         ])
         .build(tauri::generate_context!())
@@ -407,22 +409,20 @@ mod tests {
     }
 
     #[test]
-    fn the_opener_may_open_only_the_bundled_notices() {
+    fn the_opener_may_open_only_the_cached_copy_of_the_notices() {
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let open_path: Vec<&serde_json::Value> = main["permissions"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|p| {
-                p.as_str().or(p["identifier"].as_str()) == Some("opener:allow-open-path")
-            })
+            .filter(|p| p.as_str().or(p["identifier"].as_str()) == Some("opener:allow-open-path"))
             .collect();
         assert_eq!(
             open_path,
             [&serde_json::json!({
                 "identifier": "opener:allow-open-path",
-                "allow": [{ "path": "$RESOURCE/THIRD_PARTY_NOTICES.md" }]
+                "allow": [{ "path": "$APPCACHE/THIRD_PARTY_NOTICES.md" }]
             })]
         );
         let conf: serde_json::Value =

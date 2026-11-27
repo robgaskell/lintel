@@ -11,8 +11,8 @@ import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settin
 import { printDoc } from '../export/print';
 import { exportHtml } from '../export/html';
 import { exportDocx } from '../export/docx';
-import { resolveResource } from '@tauri-apps/api/path';
 import { openPath } from '@tauri-apps/plugin-opener';
+import { copyNotices } from '../ipc';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -24,8 +24,8 @@ vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
 vi.mock('../export/print', () => ({ printDoc: vi.fn(async () => {}) }));
 vi.mock('../export/html', () => ({ exportHtml: vi.fn(async () => {}) }));
 vi.mock('../export/docx', () => ({ exportDocx: vi.fn(async () => {}) }));
-vi.mock('@tauri-apps/api/path', () => ({
-  resolveResource: vi.fn(async (name: string) => `/Applications/Lintel.app/Contents/Resources/${name}`),
+vi.mock('../ipc', () => ({
+  copyNotices: vi.fn(async () => '/Users/me/Library/Caches/com.robgaskell.lintel/THIRD_PARTY_NOTICES.md'),
 }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn(async () => {}) }));
 vi.mock('../../settings/settingsWindow', () => ({
@@ -283,13 +283,28 @@ describe('makeMenuHandlers', () => {
     expect(openSettingsWindow).toHaveBeenNthCalledWith(2, 'files');
   });
 
-  it('opens the bundled third-party notices in the system viewer (Ruling 328)', async () => {
+  it('opens a read-only copy of the notices, never the bundled file (Rulings 328, 332)', async () => {
     makeMenuHandlers(deps()).openNotices();
 
     await vi.waitFor(() =>
-      expect(openPath).toHaveBeenCalledWith('/Applications/Lintel.app/Contents/Resources/THIRD_PARTY_NOTICES.md'),
+      expect(openPath).toHaveBeenCalledWith('/Users/me/Library/Caches/com.robgaskell.lintel/THIRD_PARTY_NOTICES.md'),
     );
-    expect(resolveResource).toHaveBeenCalledWith('THIRD_PARTY_NOTICES.md');
+    expect(copyNotices).toHaveBeenCalledOnce();
+    expect(openPath).toHaveBeenCalledOnce();
+  });
+
+  it('opens nothing when the copy cannot be made, and says why', async () => {
+    vi.mocked(copyNotices).mockRejectedValueOnce('Could not open the third-party notices: disk full');
+
+    makeMenuHandlers(deps()).openNotices();
+
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith('Could not open the third-party notices: disk full', {
+        title: 'Lintel',
+        kind: 'error',
+      }),
+    );
+    expect(openPath).not.toHaveBeenCalled();
   });
 
   it('shows a failure to open the notices in a dialog', async () => {

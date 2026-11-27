@@ -1,4 +1,3 @@
-import { resolveResource } from '@tauri-apps/api/path';
 import { message, open } from '@tauri-apps/plugin-dialog';
 import { openPath } from '@tauri-apps/plugin-opener';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
@@ -6,6 +5,7 @@ import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import { exportDocx } from '../export/docx';
 import { exportHtml } from '../export/html';
 import { printDoc } from '../export/print';
+import { copyNotices } from '../ipc';
 import type { Workspace } from '../layout/workspace';
 import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
@@ -187,12 +187,11 @@ async function chooseFiles() {
   if (paths) await openPaths(paths);
 }
 
-/** The file bundled as a Tauri resource; the capability lets the opener open only this one. */
-export const NOTICES_FILE = 'THIRD_PARTY_NOTICES.md';
-
-// Shown in the system's viewer for .md files, so Lintel needs no read-only tab (Ruling 328).
+// Opens a read-only copy in the cache folder, never the bundled file: a viewer (Lintel
+// included, when it is the .md default) cannot save over the copy, and the app bundle is
+// never written (Ruling 332).
 async function openNotices() {
-  await openPath(await resolveResource(NOTICES_FILE));
+  await openPath(await copyNotices());
 }
 
 // Menu actions are fire-and-forget, so errors are shown here.
