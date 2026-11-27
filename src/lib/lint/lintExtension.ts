@@ -108,7 +108,9 @@ export function lintExtension(
       tooltipFilter: () => null as unknown as Diagnostic[],
     }),
     lintLines,
+    // The card goes once the text or the problems change, so it never offers a stale fix.
     hoverTooltip((view, pos, side) => lintCard(view, pos, side), {
+      hideOnChange: true,
       hideOn: (tr) => tr.effects.some((e) => e.is(setDiagnosticsEffect)),
     }),
   ];
