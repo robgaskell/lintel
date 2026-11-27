@@ -1,12 +1,15 @@
 //! Finds the markdownlint config file that applies to a document (spec end state 21).
 
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
-use std::sync::mpsc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
+use tauri::State;
 
 use crate::files;
 
@@ -45,16 +48,85 @@ impl FindError {
             timed_out: true,
         }
     }
+
+    fn crashed() -> Self {
+        Self {
+            path: None,
+            message: "Looking for a lint config failed unexpectedly.".to_owned(),
+            timed_out: false,
+        }
+    }
 }
 
-/// Off the async workers and within paths_exist's time budget, since a stat on a mount
-/// whose server is gone can block for minutes.
+type Finder = fn(&Path) -> Result<Option<LintConfigResult>, FindError>;
+
+/// How the command searches, and the doc folders whose search is still running. A stat on
+/// a mount whose server is gone can block for minutes, so each folder has at most one
+/// search at a time (Ruling 310).
+pub struct Searches {
+    finder: Finder,
+    running: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+impl Default for Searches {
+    fn default() -> Self {
+        Self {
+            finder: find,
+            running: Arc::default(),
+        }
+    }
+}
+
+/// Off the async workers and within paths_exist's time budget. A search of a folder that
+/// is still being searched answers "timed out" at once.
 #[tauri::command]
-pub async fn find_lint_config(doc_path: String) -> Result<Option<LintConfigResult>, FindError> {
-    let search = move || find(Path::new(&doc_path));
+pub async fn find_lint_config(
+    searches: State<'_, Searches>,
+    doc_path: String,
+) -> Result<Option<LintConfigResult>, FindError> {
+    let folder = Path::new(&doc_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let Some(running) = Running::start(&searches.running, folder) else {
+        return Err(FindError::timed_out());
+    };
+    let finder = searches.finder;
+    let search = move || {
+        let _running = running;
+        finder(Path::new(&doc_path))
+    };
     tauri::async_runtime::spawn_blocking(move || within(files::CHECK_BUDGET, search))
         .await
-        .unwrap_or_else(|_| Err(FindError::timed_out()))
+        .unwrap_or_else(|_| Err(FindError::crashed()))
+}
+
+/// A folder's place in the running set, given up when the search ends, even by a panic.
+struct Running {
+    set: Arc<Mutex<HashSet<PathBuf>>>,
+    folder: PathBuf,
+}
+
+impl Running {
+    fn start(set: &Arc<Mutex<HashSet<PathBuf>>>, folder: PathBuf) -> Option<Self> {
+        let started = lock(set).insert(folder.clone());
+        started.then(|| Self {
+            set: Arc::clone(set),
+            folder,
+        })
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        lock(&self.set).remove(&self.folder);
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Runs `search` on its own thread. Past `budget` it is left to finish on its own.
@@ -66,9 +138,12 @@ fn within<T: Send + 'static>(
     thread::spawn(move || {
         let _ = send.send(search());
     });
-    answer
-        .recv_timeout(budget)
-        .unwrap_or_else(|_| Err(FindError::timed_out()))
+    match answer.recv_timeout(budget) {
+        Ok(found) => found,
+        Err(RecvTimeoutError::Timeout) => Err(FindError::timed_out()),
+        // The search panicked, so its sender went without an answer.
+        Err(RecvTimeoutError::Disconnected) => Err(FindError::crashed()),
+    }
 }
 
 /// Searches from the document's folder up, stopping after the first folder that holds
@@ -327,14 +402,106 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
+    mod the_command {
+        use super::*;
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Instant;
+        use tauri::async_runtime::block_on;
+        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::Manager;
+
+        const SLOW: Duration = Duration::from_secs(3);
+
+        fn app(finder: Finder) -> tauri::App<MockRuntime> {
+            mock_builder()
+                .manage(Searches {
+                    finder,
+                    running: Arc::default(),
+                })
+                .build(mock_context(noop_assets()))
+                .unwrap()
+        }
+
+        fn search(
+            app: &tauri::App<MockRuntime>,
+            doc: &str,
+        ) -> Result<Option<LintConfigResult>, FindError> {
+            block_on(find_lint_config(app.state(), doc.to_owned()))
+        }
+
+        #[test]
+        fn answers_with_the_config_found() {
+            let repo = Repo::new();
+            let config = repo.file(".markdownlint.json", "{}");
+            let doc = path_str(repo.doc("doc.md"));
+
+            let answer = search(&app(find), &doc).unwrap();
+
+            assert_eq!(answer.map(|r| r.path), Some(path_str(config)));
+        }
+
+        #[test]
+        fn a_search_that_blocks_times_out_within_the_budget() {
+            fn blocking(_: &Path) -> Result<Option<LintConfigResult>, FindError> {
+                thread::sleep(SLOW);
+                Ok(None)
+            }
+            let started = Instant::now();
+
+            let answer = search(&app(blocking), "/blocked/doc.md");
+
+            assert_eq!(answer, Err(FindError::timed_out()));
+            assert!(started.elapsed() < files::CHECK_BUDGET + Duration::from_millis(500));
+        }
+
+        #[test]
+        fn a_folder_still_being_searched_answers_timed_out_at_once() {
+            static CALLS: AtomicUsize = AtomicUsize::new(0);
+            fn counted(_: &Path) -> Result<Option<LintConfigResult>, FindError> {
+                // Only the first search is slow.
+                if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                    thread::sleep(files::CHECK_BUDGET + Duration::from_millis(500));
+                }
+                Ok(None)
+            }
+            let app = app(counted);
+            assert_eq!(search(&app, "/slow/a.md"), Err(FindError::timed_out()));
+
+            let started = Instant::now();
+            let again = search(&app, "/slow/b.md");
+
+            assert_eq!(again, Err(FindError::timed_out()));
+            assert!(started.elapsed() < Duration::from_millis(200));
+            assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+            // Once the first search ends, the folder can be searched again.
+            thread::sleep(Duration::from_millis(1000));
+            assert_eq!(search(&app, "/slow/a.md"), Ok(None));
+            assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        }
+
+        #[test]
+        fn a_search_that_panics_is_an_error_and_frees_its_folder() {
+            fn panics(_: &Path) -> Result<Option<LintConfigResult>, FindError> {
+                panic!("a search bug");
+            }
+            let app = app(panics);
+
+            assert_eq!(search(&app, "/x/doc.md"), Err(FindError::crashed()));
+            assert_eq!(search(&app, "/x/doc.md"), Err(FindError::crashed()));
+        }
+    }
+
     #[test]
-    fn a_quick_search_answers_within_the_budget() {
-        let repo = Repo::new();
-        let config = repo.file(".markdownlint.json", "{}");
-        let doc = path_str(repo.doc("doc.md"));
+    fn a_find_error_reaches_the_window_in_camel_case() {
+        let value = serde_json::to_value(FindError::timed_out()).unwrap();
 
-        let answer = tauri::async_runtime::block_on(find_lint_config(doc)).unwrap();
-
-        assert_eq!(answer.map(|r| r.path), Some(path_str(config)));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "path": null,
+                "message": "Looking for a lint config took too long.",
+                "timedOut": true,
+            })
+        );
     }
 }

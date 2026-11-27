@@ -43,6 +43,7 @@ pub fn run() {
         .manage(windows::FocusOrder::default())
         .manage(Mutex::new(OpenQueue::default()))
         .manage(settings::SettingsLock::default())
+        .manage(lint_config::Searches::default())
         .on_window_event(windows::on_doc_window_event)
         .setup(|app| {
             app.manage(watch::Watcher::for_app(app.handle().clone()));
