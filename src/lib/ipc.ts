@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { emit, listen } from '@tauri-apps/api/event';
 
 export interface ReadResult {
   text: string;
@@ -90,4 +91,51 @@ export function handoffStatus(since: number): Promise<HandoffStatus> {
 /** Marks this window ready for files opened from outside; resolves to those sent before any was. */
 export function frontendReady(): Promise<string[]> {
   return invoke<string[]>('frontend_ready');
+}
+
+// Settings has no app commands (Ruling 160), so it asks Rust for these by event (Ruling 245).
+export const OS_ACTION = 'lintel://os-action';
+export const OS_ACTION_RESULT = 'lintel://os-action-result';
+const OS_ACTION_TIMEOUT_MS = 30_000;
+
+export interface OsActionEvent {
+  action: 'install-cli' | 'make-default';
+  requestId: string;
+}
+
+export interface OsActionResultEvent {
+  requestId: string;
+  ok: boolean;
+  message: string;
+}
+
+/** Installs the `lintel` command. Resolves to a message naming its path, with a PATH hint if needed. */
+export function installCli(): Promise<string> {
+  return runOsAction('install-cli');
+}
+
+/** Makes Lintel the default for Markdown files; on Windows it opens Default apps instead. */
+export async function makeDefaultHandler(): Promise<void> {
+  await runOsAction('make-default');
+}
+
+async function runOsAction(action: OsActionEvent['action']): Promise<string> {
+  const requestId = crypto.randomUUID();
+  let resolve: (message: string) => void = () => {};
+  let reject: (err: Error) => void = () => {};
+  const answer = new Promise<string>((res, rej) => ((resolve = res), (reject = rej)));
+  // Listens before asking, so a quick answer cannot be missed.
+  const stop = await listen<OsActionResultEvent>(OS_ACTION_RESULT, ({ payload }) => {
+    if (payload.requestId !== requestId) return;
+    if (payload.ok) resolve(payload.message);
+    else reject(new Error(payload.message));
+  });
+  const timer = setTimeout(() => reject(new Error('Lintel did not answer. Try again.')), OS_ACTION_TIMEOUT_MS);
+  try {
+    await emit(OS_ACTION, { action, requestId } satisfies OsActionEvent);
+    return await answer;
+  } finally {
+    clearTimeout(timer);
+    stop();
+  }
 }
