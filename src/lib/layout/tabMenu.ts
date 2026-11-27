@@ -6,15 +6,13 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { docs, type DocState } from '../docs/store.svelte';
 import { currentPlatform, type Platform } from '../os/platform';
-import { openDocInNewWindow, TOO_LARGE_TO_MOVE, tooLargeToMove } from '../os/windows';
+import { openDocInNewWindow, tooLargeToMove } from '../os/windows';
 import type { Workspace } from './workspace';
 
 export interface TabMenuItem {
   id: string;
   label: string;
   enabled: boolean;
-  /** Why the item is off. Native menus cannot show it yet (Tauri 2.12 has no item tooltips). */
-  tooltip?: string;
 }
 
 type TabActions = Pick<
@@ -41,11 +39,11 @@ export function tabMenuItems(doc: DocState, platform: Platform, aloneInGroup: bo
     // Off for a lone tab, as a doc is never shown in two places (spec: Split on a lone tab).
     { id: 'tab-split-right', label: 'Split Right', enabled: !aloneInGroup },
     { id: 'tab-split-down', label: 'Split Down', enabled: !aloneInGroup },
+    // Native menus show no tooltips, so the label gives the reason (Ruling 196).
     {
       id: 'tab-new-window',
-      label: 'Open in New Window',
+      label: tooLarge ? 'Open in New Window (too large)' : 'Open in New Window',
       enabled: !tooLarge,
-      ...(tooLarge ? { tooltip: TOO_LARGE_TO_MOVE } : {}),
     },
     { id: 'tab-pin', label: doc.pinned ? 'Unpin Tab' : 'Pin Tab', enabled: true },
     { id: 'tab-reveal', label: REVEAL_LABEL[platform], enabled: onDisk },

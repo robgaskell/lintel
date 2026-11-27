@@ -1,7 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { message } from '@tauri-apps/plugin-dialog';
 import { claimPath, normalizePath, readTextFile, releasePath, type ReadResult } from '../ipc';
-import { createDoc, findByPath } from '../docs/store.svelte';
+import { createDoc, findByPath, setTabShower } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { settings } from '../settings/settings.svelte';
 import { recordRecent } from './recent';
@@ -16,8 +16,18 @@ export const largeFileNotices: Set<string> = new SvelteSet<string>();
 // Spec: above 2 MB a tab opens in Edit only (1 MB = 1,000,000 bytes, Ruling 78).
 const LARGE_FILE_BYTES = 2_000_000;
 
+// An owner that does not answer in time is taken to show the file.
+const REVEAL_ANSWER_MS = 1000;
+const revealWaits = new Map<string, (shown: boolean) => void>();
+
+/** Passes on the owner's answer to a reveal this window asked for (Ruling 199). */
+export function revealAnswered(path: string, shown: boolean): void {
+  revealWaits.get(path)?.(shown);
+}
+
 export function setWorkspace(target: DocOpener): void {
   workspace = target;
+  setTabShower((id) => target.activate(id));
 }
 
 /**
@@ -39,8 +49,7 @@ export async function openPaths(paths: string[]): Promise<void> {
         void recordRecent(path);
         continue;
       }
-      // Rust has already shown the file in the window that owns it.
-      if ((await claimPath(path)) !== null) {
+      if (!(await claimHere(path))) {
         void recordRecent(path);
         continue;
       }
@@ -65,6 +74,27 @@ export async function openPaths(paths: string[]): Promise<void> {
     }
     // Not awaited: a slow store must not hold up the next file (Ruling 71).
     void recordRecent(path);
+  }
+}
+
+/**
+ * Claims `path` for this window. False when another window shows the file: Rust has shown
+ * it there. A window that had the claim but no tab lets go, and then this one claims it.
+ */
+async function claimHere(path: string): Promise<boolean> {
+  // Waiting starts before the claim, as the answer can arrive before the claim returns.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answer = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), REVEAL_ANSWER_MS);
+    revealWaits.set(path, resolve);
+  });
+  try {
+    if ((await claimPath(path)) === null) return true;
+    if (await answer) return false;
+    return (await claimPath(path)) === null;
+  } finally {
+    clearTimeout(timer);
+    revealWaits.delete(path);
   }
 }
 

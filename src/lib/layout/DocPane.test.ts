@@ -3,7 +3,7 @@ import { flushSync } from 'svelte';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { EditorView } from '@codemirror/view';
 import { fakePreviewLayout } from '../../test/layout';
-import { cursors, setStartLine } from '../docs/cursor.svelte';
+import { cursors, setStartCursor } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
@@ -60,18 +60,27 @@ function pane(mode: ViewMode, raw = '# Title\n') {
 }
 
 describe('a doc moved from another window', () => {
-  it('starts with the cursor on the line it had there (Ruling 186)', () => {
+  it('starts with the cursor where it was there, line and column (Rulings 186, 201)', () => {
     const doc = createDoc({ path: '/notes/a.md', raw: 'one\ntwo\nthree\nfour\n', hash: 'h', mode: 'edit' });
-    setStartLine(doc.id, 3);
+    setStartCursor(doc.id, { line: 3, col: 4 });
 
     render(DocPane, { doc });
 
-    expect(cursors.get(doc.id)).toEqual({ line: 3, col: 1 });
+    expect(cursors.get(doc.id)).toEqual({ line: 3, col: 4 });
+  });
+
+  it('keeps the cursor inside a line that is shorter than its column', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'one\nab\n', hash: 'h', mode: 'edit' });
+    setStartCursor(doc.id, { line: 2, col: 9 });
+
+    render(DocPane, { doc });
+
+    expect(cursors.get(doc.id)).toEqual({ line: 2, col: 3 });
   });
 
   it('uses the line once; the next editor for the doc starts at the top', () => {
     const doc = createDoc({ path: '/notes/a.md', raw: 'one\ntwo\nthree\n', hash: 'h', mode: 'edit' });
-    setStartLine(doc.id, 2);
+    setStartCursor(doc.id, { line: 2, col: 1 });
     render(DocPane, { doc }).unmount();
 
     render(DocPane, { doc });

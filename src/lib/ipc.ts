@@ -57,3 +57,8 @@ export function releasePath(path: string): Promise<void> {
 export function setWindowAppearance(theme: 'light' | 'dark' | null): Promise<void> {
   return invoke<void>('set_window_appearance', { theme });
 }
+
+/** Gives `path` to the window `toLabel` in one step, whoever held it (Ruling 197). */
+export function transferPath(path: string, toLabel: string): Promise<void> {
+  return invoke<void>('transfer_path', { path, toLabel });
+}

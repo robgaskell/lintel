@@ -12,6 +12,8 @@ import {
   isDirty,
   removeDoc,
   saveDoc,
+  saveSettled,
+  setTabShower,
   saveDocAs,
   untitledCounter,
 } from './store.svelte';
@@ -22,6 +24,7 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -573,6 +576,60 @@ describe('the path registry (Ruling 185)', () => {
     expect(claimPath).toHaveBeenCalledWith('/tmp/new.md');
     expect(claimPath).toHaveBeenCalledWith('/private/tmp/new.md');
     expect(releasePath).toHaveBeenCalledWith('/tmp/new.md');
+  });
+});
+
+describe('Save As onto a file open in another tab of this window (Ruling 199)', () => {
+  it('is refused with the same message, and that tab is shown', async () => {
+    const show = vi.fn();
+    setTabShower(show);
+    const a = createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h', mode: 'edit' });
+    const b = createDoc({ path: '/notes/b.md', raw: 'b', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/a.md');
+
+    expect(await saveDocAs(b.id)).toBe(false);
+
+    expect(write).not.toHaveBeenCalled();
+    expect(b.path).toBe('/notes/b.md');
+    expect(show).toHaveBeenCalledWith(a.id);
+    expect(messageDialog).toHaveBeenCalledWith(
+      expect.stringContaining('a.md is open in another window'),
+      expect.objectContaining({ kind: 'error' }),
+    );
+  });
+});
+
+describe('saveSettled (Ruling 197)', () => {
+  it("waits for the doc's running save to finish", async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    let finish: (hash: string) => void = () => {};
+    write.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    doc.text = 'one';
+    void saveDoc(doc.id);
+    let settled = false;
+    const waiting = saveSettled(doc.id).then(() => (settled = true));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    finish('h1');
+    await waiting;
+    expect(doc.savedText).toBe('one');
+    expect(doc.diskHash).toBe('h1');
+  });
+
+  it('resolves at once when no save is running', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    await saveSettled(doc.id);
+  });
+});
+
+describe('removeDoc for a hand-over (Ruling 197)', () => {
+  it('keeps the claim when asked, so it can be transferred', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    removeDoc(doc.id, { keepClaim: true });
+    expect(docs.has(doc.id)).toBe(false);
+    expect(releasePath).not.toHaveBeenCalled();
   });
 });
 

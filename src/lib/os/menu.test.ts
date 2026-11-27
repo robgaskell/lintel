@@ -85,7 +85,8 @@ vi.mock('@tauri-apps/api/menu', () => ({
 }));
 
 vi.mock('../../settings/settingsWindow', () => ({ focusedSettingsWindow: vi.fn(async () => null) }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: 'main' }) }));
+const thisWindow = vi.hoisted(() => ({ label: 'main', isFocused: vi.fn(async () => true) }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => thisWindow }));
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
@@ -112,6 +113,9 @@ beforeEach(async () => {
   vi.mocked(MenuItem.new).mockClear();
   vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   outline.visible = true;
+  thisWindow.label = 'main';
+  thisWindow.isFocused.mockReset();
+  thisWindow.isFocused.mockResolvedValue(true);
   // A test may leave the menu with another window.
   takeAppMenu();
 });
@@ -691,6 +695,68 @@ describe('syncAppMenu', () => {
       await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
       for (const cb of recentList.changed) cb();
       await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(3));
+      stop();
+    });
+
+    async function installedCount(): Promise<number> {
+      let count = 0;
+      for (const result of vi.mocked(Menu.new).mock.results) {
+        const menu = (await result.value) as unknown as { setAsAppMenu: ReturnType<typeof vi.fn> };
+        count += menu.setAsAppMenu.mock.calls.length;
+      }
+      return count;
+    }
+
+    it('gives up a rebuild once this window has lost focus, leaving the shown menu (Ruling 198)', async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+      await settle();
+      thisWindow.isFocused.mockResolvedValue(false);
+
+      for (const cb of recentList.changed) cb();
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
+      await settle();
+
+      expect(await installedCount()).toBe(1);
+      const unused = (await vi.mocked(Menu.new).mock.results[1].value) as unknown as {
+        close: ReturnType<typeof vi.fn>;
+      };
+      expect(unused.close).toHaveBeenCalled();
+
+      thisWindow.isFocused.mockResolvedValue(true);
+      takeAppMenu();
+      await vi.waitFor(async () => expect(await installedCount()).toBe(2));
+      stop();
+    });
+
+    it('takes the menu at once when Rust hands it over, focused or not (Ruling 198)', async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+      await settle();
+      await otherWindowTakesTheMenu();
+      thisWindow.isFocused.mockResolvedValue(false);
+
+      await eventModule.emit('lintel://menu-claim');
+
+      await vi.waitFor(async () => expect(await installedCount()).toBe(2));
+      stop();
+    });
+
+    it("builds the main window's first menu while it is still hidden, but not a new window's", async () => {
+      thisWindow.isFocused.mockResolvedValue(false);
+      let stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(async () => expect(await installedCount()).toBe(1));
+      stop();
+      await settle();
+
+      thisWindow.label = 'w-1';
+      await otherWindowTakesTheMenu();
+      takeAppMenu();
+      vi.mocked(Menu.new).mockClear();
+      stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() => expect(Menu.new).toHaveBeenCalled());
+      await settle();
+      expect(await installedCount()).toBe(0);
       stop();
     });
 

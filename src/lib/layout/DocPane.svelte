@@ -9,7 +9,7 @@
   import Editor from '../editor/Editor.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
-  import { takeStartLine, trackCursor } from '../docs/cursor.svelte';
+  import { takeStartCursor, trackCursor } from '../docs/cursor.svelte';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { largeFileNotices } from '../os/open';
@@ -40,9 +40,9 @@
 
   function onReady(editor: EditorView) {
     view = editor;
-    const startLine = takeStartLine(doc.id);
-    if (startLine !== undefined) {
-      const at = lineStart(editor, startLine);
+    const start = takeStartCursor(doc.id);
+    if (start !== undefined) {
+      const at = cursorAt(editor, start.line, start.col);
       editor.dispatch({
         selection: { anchor: at },
         effects: EditorView.scrollIntoView(at, { y: 'center' }),
@@ -92,6 +92,12 @@
     view.dispatch({
       effects: EditorView.scrollIntoView(lineStart(view, line), { y: 'start', yMargin: 0 }),
     });
+  }
+
+  function cursorAt(editor: EditorView, line: number, col: number): number {
+    const from = lineStart(editor, line);
+    const length = editor.state.doc.lineAt(from).length;
+    return from + Math.min(Math.max(0, col - 1), length);
   }
 
   // Headings can lag the text by a debounce, so the line may no longer exist.

@@ -61,12 +61,19 @@ export function adoptDoc(state: DocState): DocState {
 
 /**
  * Every way a doc leaves this window ends here, so its path is released for other windows
- * (Ruling 185). It does not prompt.
+ * (Ruling 185). It does not prompt. `keepClaim` is for a hand-over, which moves the claim.
  */
-export function removeDoc(id: string): void {
+export function removeDoc(id: string, { keepClaim = false } = {}): void {
   const path = docs.get(id)?.path ?? null;
   docs.delete(id);
-  if (path !== null) void release(path);
+  if (path !== null && !keepClaim) void release(path);
+}
+
+let showTab: (id: string) => void = () => {};
+
+/** How Save As brings forward the tab that already has the chosen file. */
+export function setTabShower(show: (id: string) => void): void {
+  showTab = show;
 }
 
 export function isDirty(doc: DocState): boolean {
@@ -111,6 +118,13 @@ export async function confirmCloseAll(
     if (!(await mayClose(doc))) return false;
   }
   return true;
+}
+
+/** Resolves once no save of `id` is running, including one started while waiting. */
+export async function saveSettled(id: string): Promise<void> {
+  for (let running = inFlight.get(id); running; running = inFlight.get(id)) {
+    await running.catch(() => {});
+  }
 }
 
 /** Resolves once every save running now has finished, whatever its outcome. */
@@ -160,12 +174,15 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   const oldPath = doc.path;
   // A file that does not exist yet keeps the spelling chosen until it is written.
   const chosen = await normalizedOrAsGiven(path);
+  // A file is never open in two places (spec), so Save As must not write over it.
+  const otherTab = findByPath(chosen);
+  if (otherTab && otherTab !== doc) {
+    showTab(otherTab.id);
+    await refuseOpenElsewhere(chosen);
+    return false;
+  }
   if (chosen !== oldPath && (await claimPath(chosen)) !== null) {
-    // A file is never open in two places (spec), so Save As must not write over it.
-    const text =
-      `${baseName(chosen)} is open in another window. ` +
-      'Close it there first, or choose another name.';
-    await message(text, { title: 'Lintel', kind: 'error' });
+    await refuseOpenElsewhere(chosen);
     return false;
   }
   try {
@@ -184,6 +201,12 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   // Every Save As route passes here (Ruling 49). Not awaited: a slow store must not delay a save.
   void recordRecent(doc.path);
   return true;
+}
+
+async function refuseOpenElsewhere(path: string): Promise<void> {
+  const text =
+    `${baseName(path)} is open in another window. ` + 'Close it there first, or choose another name.';
+  await message(text, { title: 'Lintel', kind: 'error' });
 }
 
 async function writeTo(doc: DocState, path: string): Promise<void> {

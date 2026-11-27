@@ -26,6 +26,7 @@ vi.mock('../ipc', async () => {
     }),
     claimPath: vi.fn(async () => null),
     releasePath: vi.fn(async () => {}),
+    transferPath: vi.fn(async () => {}),
   };
 });
 

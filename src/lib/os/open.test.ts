@@ -3,7 +3,7 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { claimPath, normalizePath, readTextFile, releasePath } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
 import { settings } from '../settings/settings.svelte';
-import { largeFileNotices, newUntitled, openPaths, setWorkspace } from './open';
+import { largeFileNotices, newUntitled, openPaths, revealAnswered, setWorkspace } from './open';
 import { recordRecent } from './recent';
 
 vi.mock('../ipc', () => ({
@@ -12,6 +12,7 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -44,7 +45,49 @@ beforeEach(() => {
   setWorkspace(workspace);
 });
 
+// The next claim finds the file in w-1, whose window answers whether it shows it.
+function ownedElsewhere(shown: boolean | null) {
+  vi.mocked(claimPath).mockImplementationOnce(async (path) => {
+    if (shown !== null) setTimeout(() => revealAnswered(path, shown), 0);
+    return 'w-1';
+  });
+}
+
 describe('openPaths and the path registry', () => {
+  it('opens the file here when its owner has no tab for it, after the owner lets go (Ruling 199)', async () => {
+    ownedElsewhere(false);
+
+    await openPaths(['/a.md']);
+
+    expect(claimPath).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledWith('/a.md');
+    expect(docs.size).toBe(1);
+  });
+
+  it('opens nothing when the file is claimed again before this window can', async () => {
+    ownedElsewhere(false);
+    vi.mocked(claimPath).mockResolvedValueOnce('w-2');
+
+    await openPaths(['/a.md']);
+
+    expect(read).not.toHaveBeenCalled();
+    expect(docs.size).toBe(0);
+  });
+
+  it('stops waiting for an answer after a second and opens nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      ownedElsewhere(null);
+      const opening = openPaths(['/a.md']);
+      await vi.advanceTimersByTimeAsync(1000);
+      await opening;
+      expect(claimPath).toHaveBeenCalledOnce();
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('claims the normalised path before reading the file', async () => {
     normalize.mockImplementation(async (path) => `/real${path}`);
 
@@ -55,7 +98,7 @@ describe('openPaths and the path registry', () => {
   });
 
   it('does not read a file another window owns, and opens nothing here', async () => {
-    vi.mocked(claimPath).mockResolvedValueOnce('w-1');
+    ownedElsewhere(true);
 
     await openPaths(['/a.md', '/b.md']);
 

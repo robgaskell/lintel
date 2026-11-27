@@ -1,18 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { message } from '@tauri-apps/plugin-dialog';
-import { takeStartLine } from '../docs/cursor.svelte';
-import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
-import { claimPath, releasePath } from '../ipc';
+import { takeStartCursor } from '../docs/cursor.svelte';
+import { createDoc, docs, removeDoc, saveDoc, untitledCounter, type DocState } from '../docs/store.svelte';
+import { claimPath, readTextFile, releasePath, transferPath, writeTextFile } from '../ipc';
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
-import { largeFileNotices, setWorkspace } from './open';
+import { applyTheme } from '../theme/theme';
+import { largeFileNotices, openPaths, setWorkspace } from './open';
 import {
   ADOPT_DOC,
   createAppWindow,
+  DOC_ADOPTED,
   listenForAdoption,
   listenForReveal,
   openDocInNewWindow,
+  REVEAL_ANSWER,
   REVEAL_DOC,
   whenAdopted,
   WINDOW_READY,
@@ -24,8 +27,10 @@ type Listener = { event: string; handler: (e: { payload: unknown }) => void; opt
 const fake = vi.hoisted(() => ({
   listeners: [] as Listener[],
   created: [] as { label: string; options: Record<string, unknown>; destroy: ReturnType<typeof vi.fn> }[],
-  // What the next window does once created: announce itself ready, or stay silent.
+  // What the new window does: announce itself ready, and confirm it took the doc.
   announce: true,
+  acknowledge: true,
+  frame: true,
   win: {
     label: 'main',
     isMinimized: vi.fn(async () => true),
@@ -33,6 +38,11 @@ const fake = vi.hoisted(() => ({
     show: vi.fn(async () => {}),
     setFocus: vi.fn(async () => {}),
     setTheme: vi.fn(async () => {}),
+    scaleFactor: vi.fn(async () => 2),
+    innerSize: vi.fn(),
+    outerSize: vi.fn(),
+    outerPosition: vi.fn(),
+    currentMonitor: vi.fn(),
   },
 }));
 
@@ -52,7 +62,7 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => fake.listeners.splice(fake.listeners.indexOf(listener), 1);
   }),
   emit: vi.fn(async () => {}),
-  emitTo: vi.fn(async () => {}),
+  emitTo: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   WebviewWindow: vi.fn(function (this: Record<string, unknown>, label: string, options: Record<string, unknown>) {
@@ -70,13 +80,18 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
     };
   }),
 }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => fake.win }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => fake.win,
+  currentMonitor: () => fake.win.currentMonitor(),
+}));
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => {}),
+  setWindowAppearance: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('./recent', () => ({ recordRecent: vi.fn() }));
@@ -93,6 +108,19 @@ function adoptEvent(): AdoptDocEvent {
   return call[2] as AdoptDocEvent;
 }
 
+// This window: 1000x700 logical inside a 1000x728 frame at 100,50, on a 1440x900 screen.
+function placeThisWindow(x = 100, y = 50) {
+  fake.win.innerSize.mockResolvedValue(new PhysicalSize(2000, 1400));
+  fake.win.outerSize.mockResolvedValue(new PhysicalSize(2000, 1456));
+  fake.win.outerPosition.mockResolvedValue(new PhysicalPosition(x * 2, y * 2));
+  fake.win.currentMonitor.mockResolvedValue({
+    scaleFactor: 2,
+    workArea: { position: new PhysicalPosition(0, 50), size: new PhysicalSize(2880, 1700) },
+  });
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
@@ -100,42 +128,75 @@ beforeEach(() => {
   fake.listeners.length = 0;
   fake.created.length = 0;
   fake.announce = true;
+  fake.acknowledge = true;
+  fake.win.label = 'main';
   vi.mocked(emit).mockClear();
   vi.mocked(emitTo).mockReset();
-  vi.mocked(emitTo).mockResolvedValue();
+  vi.mocked(emitTo).mockImplementation(async (label, event, payload) => {
+    const sent = payload as AdoptDocEvent;
+    if (event === ADOPT_DOC && fake.acknowledge) {
+      setTimeout(() => deliver(DOC_ADOPTED, { label, docId: sent.doc.id }), 0);
+    }
+  });
   vi.mocked(listen).mockClear();
   vi.mocked(claimPath).mockReset();
   vi.mocked(claimPath).mockResolvedValue(null);
   vi.mocked(releasePath).mockReset();
   vi.mocked(releasePath).mockResolvedValue();
+  vi.mocked(transferPath).mockReset();
+  vi.mocked(transferPath).mockResolvedValue();
+  vi.mocked(writeTextFile).mockReset();
   vi.mocked(message).mockReset();
   workspace.openDoc.mockReset();
   workspace.activate.mockReset();
   workspace.closeDoc.mockClear();
   for (const fn of Object.values(fake.win)) if (typeof fn === 'function') fn.mockClear();
+  placeThisWindow();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   setWorkspace(workspace);
 });
 
 describe('createAppWindow', () => {
-  it('opens index.html at 1200x800, hidden, in the theme and background of the app (Ruling 184)', async () => {
+  it('opens index.html hidden, in the theme and exact background of the app (Ruling 184)', async () => {
     settings.theme = 'dark';
     settings.palettes.dark.background = '#101418';
+    applyTheme(settings);
 
     const win = await createAppWindow('w-1');
 
     expect(win.label).toBe('w-1');
     expect(fake.created[0]).toMatchObject({
       label: 'w-1',
-      options: { url: '/', width: 1200, height: 800, visible: false, theme: 'dark' },
+      options: { url: '/', visible: false, theme: 'dark', backgroundColor: '#101418' },
     });
-    expect(typeof fake.created[0].options.backgroundColor).toBe('string');
   });
 
   it('leaves the theme to the OS when the app follows it', async () => {
     settings.theme = 'system';
     await createAppWindow('w-1');
     expect(fake.created[0].options.theme).toBeUndefined();
+  });
+
+  it("opens at this window's size, 28 px right of and below it (Ruling 201)", async () => {
+    await createAppWindow('w-1');
+    expect(fake.created[0].options).toMatchObject({ x: 128, y: 78, width: 1000, height: 700 });
+  });
+
+  it('starts the cascade again at the edge of the screen, so the window stays on it', async () => {
+    placeThisWindow(430, 220);
+    await createAppWindow('w-1');
+    expect(fake.created[0].options).toMatchObject({ x: 0, y: 25, width: 1000, height: 700 });
+  });
+
+  it("opens at 1200x800 where the OS likes when this window's frame cannot be read", async () => {
+    fake.win.innerSize.mockRejectedValueOnce(new Error('no frame'));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await createAppWindow('w-1');
+
+    expect(fake.created[0].options).toMatchObject({ width: 1200, height: 800 });
+    expect(fake.created[0].options.x).toBeUndefined();
+    logged.mockRestore();
   });
 });
 
@@ -156,18 +217,20 @@ describe('openDocInNewWindow', () => {
     expect(sent).toMatchObject({ id: doc.id, path: '/notes/a.md', title: 'a.md', mode: 'split', diskHash: 'h0' });
   });
 
-  it('releases the path before handing the doc over', async () => {
+  it('moves the claim to the new window in one step, before handing the doc over (Ruling 197)', async () => {
     const doc = fileDoc();
 
     await openDocInNewWindow(doc.id);
 
-    expect(releasePath).toHaveBeenCalledWith('/notes/a.md');
-    expect(vi.mocked(releasePath).mock.invocationCallOrder[0]).toBeLessThan(
+    const label = fake.created[0].label;
+    expect(transferPath).toHaveBeenCalledWith('/notes/a.md', label);
+    expect(vi.mocked(transferPath).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(emitTo).mock.invocationCallOrder[0],
     );
+    expect(releasePath).not.toHaveBeenCalled();
   });
 
-  it('removes the doc here without asking, once it is handed over', async () => {
+  it('removes the doc here without asking, before anything else can run', async () => {
     const doc = fileDoc();
     doc.text = 'dirty';
 
@@ -175,8 +238,8 @@ describe('openDocInNewWindow', () => {
 
     expect(docs.has(doc.id)).toBe(false);
     expect(workspace.closeDoc).toHaveBeenCalledWith(doc.id);
-    expect(vi.mocked(emitTo).mock.invocationCallOrder[0]).toBeLessThan(
-      workspace.closeDoc.mock.invocationCallOrder[0],
+    expect(workspace.closeDoc.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(transferPath).mock.invocationCallOrder[0],
     );
     expect(message).not.toHaveBeenCalled();
   });
@@ -188,7 +251,7 @@ describe('openDocInNewWindow', () => {
     const moving = openDocInNewWindow(doc.id);
     await vi.waitFor(() => expect(fake.created).toHaveLength(1));
     deliver(WINDOW_READY, { label: 'w-other' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     expect(emitTo).not.toHaveBeenCalled();
 
     deliver(WINDOW_READY, { label: fake.created[0].label });
@@ -196,22 +259,57 @@ describe('openDocInNewWindow', () => {
     expect(emitTo).toHaveBeenCalledOnce();
   });
 
-  it('carries the large-file notice and the cursor line (Ruling 186)', async () => {
+  it('waits for a save of the doc that is running, and sends what it saved (Ruling 197)', async () => {
+    const doc = fileDoc('# saved\n');
+    doc.text = '# saving\n';
+    let finish: (hash: string) => void = () => {};
+    vi.mocked(writeTextFile).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    void saveDoc(doc.id);
+
+    const moving = openDocInNewWindow(doc.id);
+    await vi.waitFor(() => expect(fake.created).toHaveLength(1));
+    await tick();
+    await tick();
+    expect(emitTo).not.toHaveBeenCalled();
+    expect(docs.has(doc.id)).toBe(true);
+
+    finish('h1');
+    await moving;
+    expect(adoptEvent().doc).toMatchObject({ text: '# saving\n', savedText: '# saving\n', diskHash: 'h1' });
+  });
+
+  it('closes the new window and sends nothing when the tab closed while it started (Ruling 200)', async () => {
+    fake.announce = false;
+    const doc = fileDoc();
+
+    const moving = openDocInNewWindow(doc.id);
+    await vi.waitFor(() => expect(fake.created).toHaveLength(1));
+    removeDoc(doc.id);
+    deliver(WINDOW_READY, { label: fake.created[0].label });
+    await moving;
+
+    expect(emitTo).not.toHaveBeenCalled();
+    expect(fake.created[0].destroy).toHaveBeenCalled();
+    expect(docs.has(doc.id)).toBe(false);
+    expect(workspace.openDoc).not.toHaveBeenCalled();
+  });
+
+  it('carries the large-file notice and the cursor (Rulings 186, 201)', async () => {
     const doc = fileDoc();
     largeFileNotices.add(doc.id);
 
     await openDocInNewWindow(doc.id);
 
-    expect(adoptEvent()).toMatchObject({ largeFileNotice: true, cursorLine: null });
+    expect(adoptEvent()).toMatchObject({ largeFileNotice: true, cursor: null });
   });
 
-  it('releases nothing for an untitled doc', async () => {
+  it('moves no claim for an untitled doc', async () => {
     const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
     doc.text = 'draft';
 
     await openDocInNewWindow(doc.id);
 
-    expect(releasePath).not.toHaveBeenCalled();
+    expect(transferPath).not.toHaveBeenCalled();
     expect(adoptEvent().doc.text).toBe('draft');
   });
 
@@ -225,16 +323,41 @@ describe('openDocInNewWindow', () => {
     expect(docs.has(doc.id)).toBe(true);
   });
 
-  it('keeps the doc and closes the window when the hand-over fails', async () => {
+  it('brings the doc back, claim and all, and closes the window when the hand-over fails', async () => {
     const doc = fileDoc();
+    doc.text = 'dirty';
     vi.mocked(emitTo).mockRejectedValueOnce(new Error('gone'));
 
     await expect(openDocInNewWindow(doc.id)).rejects.toThrow('gone');
 
-    expect(docs.has(doc.id)).toBe(true);
-    expect(claimPath).toHaveBeenCalledWith('/notes/a.md');
+    const back = docs.get(doc.id);
+    expect(back).toMatchObject({ text: 'dirty', savedText: '# a\n' });
+    expect(workspace.openDoc).toHaveBeenCalledWith(back);
+    expect(transferPath).toHaveBeenLastCalledWith('/notes/a.md', 'main');
     expect(fake.created[0].destroy).toHaveBeenCalled();
-    expect(workspace.closeDoc).not.toHaveBeenCalled();
+  });
+
+  it('brings the doc back when the new window never confirms it took it (Ruling 197)', async () => {
+    vi.useFakeTimers();
+    try {
+      fake.acknowledge = false;
+      const doc = fileDoc();
+      largeFileNotices.add(doc.id);
+      const moving = openDocInNewWindow(doc.id);
+      const failed = expect(moving).rejects.toThrow('The new window did not start.');
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(fake.created[0].destroy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_100);
+      await failed;
+
+      expect(fake.created[0].destroy).toHaveBeenCalled();
+      expect(docs.has(doc.id)).toBe(true);
+      expect(largeFileNotices.has(doc.id)).toBe(true);
+      expect(transferPath).toHaveBeenLastCalledWith('/notes/a.md', 'main');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('gives up and closes the window when it never says it is ready', async () => {
@@ -250,10 +373,77 @@ describe('openDocInNewWindow', () => {
 
       expect(fake.created[0].destroy).toHaveBeenCalled();
       expect(docs.has(doc.id)).toBe(true);
-      expect(releasePath).not.toHaveBeenCalled();
+      expect(transferPath).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// Before any adoption: a new window that has taken nothing in yet behaves differently.
+describe('listenForReveal', () => {
+  async function listening() {
+    listenForReveal(workspace);
+    await vi.waitFor(() => expect(fake.listeners).toHaveLength(2));
+  }
+
+  function answers() {
+    return vi.mocked(emit).mock.calls.filter(([event]) => event === REVEAL_ANSWER).map(([, p]) => p);
+  }
+
+  it('shows the tab for the path, brings this window forward and says so', async () => {
+    const doc = fileDoc();
+    await listening();
+    expect(listen).toHaveBeenCalledWith(REVEAL_DOC, expect.any(Function), {
+      target: { kind: 'WebviewWindow', label: 'main' },
+    });
+
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
+
+    expect(workspace.activate).toHaveBeenCalledWith(doc.id);
+    await vi.waitFor(() => expect(fake.win.setFocus).toHaveBeenCalled());
+    expect(fake.win.unminimize).toHaveBeenCalled();
+    expect(fake.win.show).toHaveBeenCalled();
+    expect(answers()).toEqual([{ path: '/notes/a.md', shown: true }]);
+  });
+
+  it('lets go of a stale claim and says so, so the asking window opens the file (Ruling 199)', async () => {
+    fileDoc();
+    await listening();
+
+    deliver(REVEAL_DOC, { path: '/notes/other.md' }, 'main');
+
+    await vi.waitFor(() => expect(answers()).toEqual([{ path: '/notes/other.md', shown: false }]));
+    expect(releasePath).toHaveBeenCalledWith('/notes/other.md');
+    expect(vi.mocked(releasePath).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(emit).mock.invocationCallOrder[0],
+    );
+    expect(workspace.activate).not.toHaveBeenCalled();
+    expect(fake.win.setFocus).not.toHaveBeenCalled();
+  });
+
+  it('keeps the claim of a doc it has not taken in yet', async () => {
+    fake.win.label = 'w-1';
+    await listening();
+
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'w-1');
+
+    await vi.waitFor(() => expect(answers()).toEqual([{ path: '/notes/a.md', shown: true }]));
+    expect(releasePath).not.toHaveBeenCalled();
+  });
+
+  it('passes an answer on to an open in this window that waits for it (Ruling 199)', async () => {
+    await listening();
+    vi.mocked(readTextFile).mockResolvedValue({ text: '# a\n', hash: 'h' });
+    vi.mocked(claimPath).mockResolvedValueOnce('w-1');
+
+    const opening = openPaths(['/notes/a.md']);
+    await vi.waitFor(() => expect(claimPath).toHaveBeenCalledOnce());
+    deliver(REVEAL_ANSWER, { path: '/notes/a.md', shown: false });
+    await opening;
+
+    expect(claimPath).toHaveBeenCalledTimes(2);
+    expect(workspace.openDoc).toHaveBeenCalledOnce();
   });
 });
 
@@ -274,7 +464,7 @@ describe('listenForAdoption', () => {
       lintConfigPath: null,
     },
     largeFileNotice: true,
-    cursorLine: 12,
+    cursor: { line: 12, col: 5 },
   };
 
   it('listens in this window only, then announces it is ready with its label', async () => {
@@ -287,13 +477,13 @@ describe('listenForAdoption', () => {
     expect(vi.mocked(listen).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(emit).mock.invocationCallOrder[0]);
   });
 
-  it("claims the doc's path, then opens the doc as it was", async () => {
+  it("claims the doc's path, opens the doc as it was, then confirms it took it", async () => {
     listenForAdoption();
     await vi.waitFor(() => expect(emit).toHaveBeenCalled());
 
     deliver(ADOPT_DOC, handedOver, 'main');
 
-    await vi.waitFor(() => expect(workspace.openDoc).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(DOC_ADOPTED, { label: 'main', docId: 'moved-1' }));
     expect(claimPath).toHaveBeenCalledWith('/notes/a.md');
     expect(vi.mocked(claimPath).mock.invocationCallOrder[0]).toBeLessThan(
       workspace.openDoc.mock.invocationCallOrder[0],
@@ -301,8 +491,11 @@ describe('listenForAdoption', () => {
     const doc = docs.get('moved-1');
     expect(doc).toMatchObject({ text: 'edited', savedText: 'saved', diskHash: 'h1' });
     expect(workspace.openDoc).toHaveBeenCalledWith(doc);
+    expect(workspace.openDoc.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(emit).mock.invocationCallOrder.at(-1)!,
+    );
     expect(largeFileNotices.has('moved-1')).toBe(true);
-    expect(takeStartLine('moved-1')).toBe(12);
+    expect(takeStartCursor('moved-1')).toEqual({ line: 12, col: 5 });
     await whenAdopted();
   });
 
@@ -328,35 +521,5 @@ describe('listenForAdoption', () => {
 
     expect(fake.listeners).toHaveLength(0);
     expect(docs.size).toBe(0);
-  });
-});
-
-describe('listenForReveal', () => {
-  it('shows the tab for the path and brings this window forward', async () => {
-    const doc = fileDoc();
-    listenForReveal(workspace);
-    await vi.waitFor(() => expect(fake.listeners).toHaveLength(1));
-    expect(listen).toHaveBeenCalledWith(REVEAL_DOC, expect.any(Function), {
-      target: { kind: 'WebviewWindow', label: 'main' },
-    });
-
-    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
-
-    expect(workspace.activate).toHaveBeenCalledWith(doc.id);
-    await vi.waitFor(() => expect(fake.win.setFocus).toHaveBeenCalled());
-    expect(fake.win.unminimize).toHaveBeenCalled();
-    expect(fake.win.show).toHaveBeenCalled();
-  });
-
-  it('does nothing for a path this window does not have open', async () => {
-    fileDoc();
-    listenForReveal(workspace);
-    await vi.waitFor(() => expect(fake.listeners).toHaveLength(1));
-
-    deliver(REVEAL_DOC, { path: '/notes/other.md' }, 'main');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(workspace.activate).not.toHaveBeenCalled();
-    expect(fake.win.setFocus).not.toHaveBeenCalled();
   });
 });

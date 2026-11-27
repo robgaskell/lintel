@@ -57,6 +57,7 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({ label: 'main', setTheme: async () => {} }),
@@ -150,7 +151,6 @@ describe('tabMenuItems', () => {
   it('enables every item, Open in New Window included, on a file in a shared group (Ruling 189)', () => {
     const items = tabMenuItems(fileDoc('a.md'), 'macos', false);
     for (const item of items) expect(item.enabled).toBe(true);
-    expect(items.every((item) => item.tooltip === undefined)).toBe(true);
   });
 
   it('enables Open in New Window for an untitled doc and a lone tab', () => {
@@ -158,16 +158,16 @@ describe('tabMenuItems', () => {
     expect(item?.enabled).toBe(true);
   });
 
-  it('disables Open in New Window above 10,000,000 bytes, with the reason (Ruling 187)', () => {
+  it('disables Open in New Window above 10,000,000 bytes, saying why in its label (Rulings 187, 196)', () => {
     const doc = untitled();
     const item = () => tabMenuItems(doc, 'macos', false).find((i) => i.id === 'tab-new-window');
 
     doc.text = 'x'.repeat(10_000_000);
-    expect(item()).toMatchObject({ enabled: true });
+    expect(item()).toMatchObject({ enabled: true, label: 'Open in New Window' });
 
     // Two bytes each in UTF-8, so 5,000,001 of them are just over the limit.
     doc.text = 'é'.repeat(5_000_001);
-    expect(item()).toMatchObject({ enabled: false, tooltip: 'Too large to move to a new window' });
+    expect(item()).toMatchObject({ enabled: false, label: 'Open in New Window (too large)' });
   });
 
   it('disables Split Right and Split Down on a tab alone in its group', () => {

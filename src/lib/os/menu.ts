@@ -80,6 +80,8 @@ const COALESCE_MS = 100;
  * shared, so the last document window focused owns it, and only that one rebuilds it (Ruling 188).
  */
 const MENU_OWNER = 'lintel://menu-owner';
+/** Sent by Rust to the document window that takes the menu once its owner closes (Ruling 198). */
+const MENU_CLAIM = 'lintel://menu-claim';
 let holdsMenu = true;
 let rebuildOwned: (() => void) | null = null;
 
@@ -100,10 +102,11 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
   let limit = settings.recentLimit;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const rebuildNow = () => {
+  // `force` installs the menu even while this window is not focused.
+  const rebuildNow = (force = false) => {
     if (!holdsMenu) return;
     const request = ++latest;
-    void rebuild(h, () => request === latest && holdsMenu).catch(onError);
+    void rebuild(h, () => request === latest && holdsMenu, force).catch(onError);
   };
   const rebuildSoon = () => {
     timer ??= setTimeout(() => {
@@ -119,36 +122,46 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
     rebuildSoon();
   }, onError);
   const label = getCurrentWindow().label;
-  let stopOwner = () => {};
+  const unlisteners: (() => void)[] = [];
   let stopped = false;
+  const keep = (unlisten: () => void) => (stopped ? unlisten() : unlisteners.push(unlisten));
   listen<string>(MENU_OWNER, ({ payload }) => {
     if (payload !== label) holdsMenu = false;
   })
-    .then((unlisten) => (stopped ? unlisten() : (stopOwner = unlisten)))
+    .then(keep)
     .catch(onError);
-  rebuildOwned = rebuildNow;
-  rebuildNow();
+  // Settings, or no window, may have focus now, so this one builds without waiting for it.
+  const claimed = () => {
+    holdsMenu = true;
+    rebuildNow(true);
+  };
+  listen(MENU_CLAIM, claimed, { target: { kind: 'WebviewWindow', label } })
+    .then(keep)
+    .catch(onError);
+  rebuildOwned = () => rebuildNow();
+  // The main window is still hidden, so unfocused, when it builds its first menu at launch.
+  rebuildNow(label === 'main');
   return () => {
     stopped = true;
     if (timer) clearTimeout(timer);
     stopRecent();
     stopSettings();
-    stopOwner();
-    if (rebuildOwned === rebuildNow) rebuildOwned = null;
+    for (const unlisten of unlisteners) unlisten();
+    rebuildOwned = null;
   };
 }
 
 /** `isLatest` turns false once a newer rebuild starts; this one then stops. */
-async function rebuild(h: MenuHandlers, isLatest: () => boolean): Promise<void> {
+async function rebuild(h: MenuHandlers, isLatest: () => boolean, force: boolean): Promise<void> {
   const limit = settings.recentLimit;
   // Null hides Open Recent.
-  if (limit <= 0) return buildAppMenu(h, null);
+  if (limit <= 0) return buildAppMenu(h, null, { force });
   const known = await knownRecent(limit).catch((err) => {
     console.error('Could not read the Open Recent list:', err);
     return [];
   });
   if (!isLatest()) return;
-  await buildAppMenu(h, known);
+  await buildAppMenu(h, known, { force });
 
   let checked: string[];
   try {
@@ -158,7 +171,7 @@ async function rebuild(h: MenuHandlers, isLatest: () => boolean): Promise<void> 
     return;
   }
   if (!isLatest() || sameList(known, checked)) return;
-  await buildAppMenu(h, checked);
+  await buildAppMenu(h, checked, { force });
 }
 
 function sameList(a: string[], b: string[]): boolean {
@@ -167,16 +180,21 @@ function sameList(a: string[], b: string[]): boolean {
 
 /**
  * Builds the native menu bar and replaces the current one; call again to rebuild.
- * `recent` null leaves Open Recent out; an empty list shows it disabled.
+ * `recent` null leaves Open Recent out; an empty list shows it disabled. Unless `force`,
+ * a window that is no longer focused gives up and leaves the shown menu (Ruling 198).
  */
-export function buildAppMenu(h: MenuHandlers, recent: string[] | null): Promise<void> {
+export function buildAppMenu(
+  h: MenuHandlers,
+  recent: string[] | null,
+  { force = false } = {},
+): Promise<void> {
   // One at a time, so a slow build cannot overwrite a newer one.
-  const run = installing.then(() => install(h, recent));
+  const run = installing.then(() => install(h, recent, force));
   installing = run.catch(() => {});
   return run;
 }
 
-async function install(h: MenuHandlers, recent: string[] | null): Promise<void> {
+async function install(h: MenuHandlers, recent: string[] | null, force: boolean): Promise<void> {
   const checked = outline.visible;
   const splittable = splitEnabled;
   const label = getCurrentWindow().label;
@@ -189,6 +207,12 @@ async function install(h: MenuHandlers, recent: string[] | null): Promise<void> 
     if (item) splits.push(item);
   }
   const menu = await Menu.new({ items: entries });
+  // Focus can move while the menu is built; the window that has it then builds its own.
+  if (!force && !(await getCurrentWindow().isFocused())) {
+    holdsMenu = false;
+    await Promise.all([menu, check, ...splits].map((unused) => unused?.close()));
+    return;
+  }
   const previous = await menu.setAsAppMenu();
   holdsMenu = true;
   emit(MENU_OWNER, label).catch((err) => console.error('Could not announce the menu owner:', err));
