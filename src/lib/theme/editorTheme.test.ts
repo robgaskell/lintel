@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
+import { forceParsing } from '@codemirror/language';
 import { editorExtensions } from '../editor/setup';
 import { lintExtension, renderLintCard } from '../lint/lintExtension';
 import type { LintIssue } from '../lint/lint';
@@ -75,6 +76,8 @@ function spanWithText(v: EditorView, text: string): HTMLElement {
 describe('editorTheme (Rulings 92, 130)', () => {
   it('colours markdown marks, links and comments from tokens', () => {
     const v = mount('# Title\n\n[a link](https://x.y)\n\n<!-- note -->\n');
+    // Under load the first parse can stop early and leave the marks unstyled (Ruling 344).
+    expect(forceParsing(v, v.state.doc.length, 5000)).toBe(true);
 
     expect(getComputedStyle(spanWithText(v, '#')).color).toBe(rgb(TOKENS['--muted']));
     expect(getComputedStyle(spanWithText(v, 'https://x.y')).color).toBe(rgb(TOKENS['--link']));
