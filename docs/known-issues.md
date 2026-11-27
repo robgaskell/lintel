@@ -12,6 +12,12 @@ After Lintel has updated itself, uninstalling it may leave `.md` and `.markdown`
 linked to Lintel's file type, which the uninstaller has removed. If they then open with
 nothing, choose their app again in **Windows Settings > Apps > Default apps**.
 
+## Linux: one file can open in two tabs on a case-insensitive drive
+
+On Linux, a drive that ignores letter case, such as a USB stick formatted as FAT or exFAT,
+lets one file be opened as `Notes.md` and as `notes.md`. Lintel then opens it in two tabs,
+and saving one can overwrite edits made in the other. Open each file with one spelling.
+
 ## Saving breaks hard links
 
 Lintel saves by writing a new file and moving it over the old one, so a failed save never
@@ -98,8 +104,9 @@ wry issue #1300.
 File > Print and Export as PDF on Linux use WebKitGTK's print dialog, which has not been
 tried yet. The release smoke test checks it.
 
-### Windows: Ctrl+P may print the app instead of the document
+### Windows: Ctrl+P prints a blank page
 
-On Windows, the WebView2 browser engine has its own Ctrl+P shortcut, and Tauri 2.12.7 gives
-no way to turn it off. Ctrl+P may open WebView2's print dialog for the app window rather
-than for the document. Use File > Print instead.
+On Windows, the WebView2 browser engine has its own Ctrl+P shortcut, and Lintel does not
+turn off WebView2's own print shortcut yet. Ctrl+P prints a blank page; use File > Print.
+Straight after File > Print, Ctrl+P can print that same document again, until you edit it
+or switch tabs.

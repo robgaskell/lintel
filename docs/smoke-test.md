@@ -10,6 +10,7 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 - [ ] Windows, `.exe` installer: uninstall Lintel. `.md` files still open with Notepad, and **Open with** no longer lists Lintel.
 - [ ] Windows and Linux: `lintel missing.md notes.bin` from a terminal shows no dialog. The window's status bar says "Could not open 2 files: missing.md, notes.bin", and hovering over it shows why.
 - [ ] Windows and Linux: `lintel <folder>` opens nothing and shows no message.
+- [ ] Windows: open `Notes.md`, then run `lintel notes.md` (the same file in different letter case) from a terminal. Lintel shows one tab for it, not two.
 
 ## Command-line tool and default app (M5.2)
 
@@ -18,6 +19,11 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 
 ## Printing (M7.1)
 
+- [ ] Windows, before any File > Print since Lintel started: open a document and press Ctrl+P. As docs/known-issues.md says, Ctrl+P prints a blank page; use File > Print. Note whether it prints a blank page, the document, or something else.
 - [ ] Windows and Linux: File > Print opens a dialog and prints a page. Note any failure in docs/known-issues.md.
 - [ ] Windows and Linux: File > Export as PDF shows a hint, then the print dialog. The hint names the dialog's PDF option (Windows: "Microsoft Print to PDF"; Linux: "Print to File", then PDF), and choosing it saves a PDF. Note any other wording.
-- [ ] Windows: press Ctrl+P with a document open. Note whether Lintel's print of the document opens or WebView2's print of the app window, and correct the Ctrl+P entry in docs/known-issues.md to match. If a printed page shows `tauri.localhost`, check that turning off headers and footers removes it.
+- [ ] Windows: if a printed page shows `tauri.localhost`, check that turning off headers and footers removes it.
+
+## Unsaved edits (M7.1)
+
+- [ ] Windows: type in a document without saving, then press F5 and then Ctrl+R. The window does not reload, and the unsaved edits are still there.
