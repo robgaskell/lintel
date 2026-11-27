@@ -7,7 +7,7 @@ mod windows;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tauri::menu::Menu;
-use tauri::{Manager, RunEvent, Runtime, Url, Window, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, Runtime, Url, Window, WindowEvent};
 
 /// Label of the Settings window that the frontend opens (settingsWindow.ts).
 const SETTINGS: &str = "settings";
@@ -31,11 +31,17 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(windows::PathRegistry::default())
+        .manage(windows::FocusOrder::default())
         .on_window_event(|window, event| {
-            if let WindowEvent::Destroyed = event {
-                window
-                    .state::<windows::PathRegistry>()
-                    .drop_window(window.label());
+            let app = window.app_handle();
+            let open = || app.webview_windows().into_keys().collect();
+            let registry = window.state::<windows::PathRegistry>();
+            let focus = window.state::<windows::FocusOrder>();
+            let label = window.label();
+            if let Some(owner) = windows::on_window_event(&registry, &focus, label, event, open) {
+                if let Err(err) = app.emit_to(owner.as_str(), windows::MENU_CLAIM, ()) {
+                    eprintln!("Could not hand the menu to {owner}: {err}");
+                }
             }
         })
         .setup(|app| {
@@ -55,6 +61,7 @@ pub fn run() {
             remote::fetch_remote_image,
             windows::claim_path,
             windows::release_path,
+            windows::transfer_path,
             appearance::set_window_appearance
         ])
         .run(tauri::generate_context!())
