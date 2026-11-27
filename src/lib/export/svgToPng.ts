@@ -9,11 +9,11 @@ export interface Size {
 }
 
 /**
- * Draws `svg` on a canvas at `scale` times its viewBox size and returns PNG bytes.
+ * Draws `svg` on a canvas at `scale` times its size (see svgSize) and returns PNG bytes.
  * Loaded from a data: URI: a blob: URL taints the canvas when the SVG has foreignObject (Ruling 315).
  */
 export async function svgToPng(svg: string, scale: number): Promise<Uint8Array> {
-  const size = svgSize(svg);
+  const size = await svgSize(svg);
   if (size === null) throw new Error('The image has no size.');
   const sized = withSize(svg, size);
   const src = `data:image/svg+xml;base64,${bytesToBase64(new TextEncoder().encode(sized))}`;
@@ -21,21 +21,18 @@ export async function svgToPng(svg: string, scale: number): Promise<Uint8Array> 
 }
 
 /**
- * The SVG's size in CSS pixels, as Word reads it: numeric width and height, a missing one
- * taken from the viewBox's aspect, else the viewBox. Mermaid sets width="100%", so its size
- * is the viewBox (Rulings 316, 326). Null when there is no finite, non-zero size.
+ * The SVG's size in CSS pixels, read by image-size as remark-docx reads it for the picture's
+ * size in Word, so the PNG is drawn at exactly that size (Ruling 330). Null when it has no
+ * finite, non-zero size. Mermaid sets width="100%", so its size is the viewBox.
  */
-export function svgSize(svg: string): Size | null {
-  const tag = rootTag(svg);
-  if (tag === null) return null;
-  const box = viewBox(attribute(tag, 'viewBox'));
-  const width = pixels(attribute(tag, 'width'));
-  const height = pixels(attribute(tag, 'height'));
-  if (width && height) return { width, height };
-  if (box === null) return null;
-  if (width) return { width, height: (width * box.height) / box.width };
-  if (height) return { width: (height * box.width) / box.height, height };
-  return box;
+export async function svgSize(svg: string): Promise<Size | null> {
+  const { imageSize } = await import('image-size');
+  try {
+    const { type, width, height } = imageSize(new TextEncoder().encode(svg));
+    return type === 'svg' && isSize(width) && isSize(height) ? { width, height } : null;
+  } catch {
+    return null; // image-size could not read it, so neither can remark-docx
+  }
 }
 
 /** A data: URI image (such as webp) as PNG bytes at the given size. */
@@ -60,36 +57,17 @@ async function drawPng(src: string, size: Size, scale: number): Promise<Uint8Arr
   return dataUriToBytes(png);
 }
 
-function rootTag(svg: string): string | null {
-  return /<svg\b[^>]*>/i.exec(svg)?.[0] ?? null;
-}
+// image-size's own pattern, so the tag changed is the one it read.
+const ROOT_TAG = /<svg\s([^>"']|"[^"]*"|'[^']*')*>/;
 
-function attribute(tag: string, name: string): string | undefined {
-  const match = new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i').exec(tag);
-  return match ? (match[2] ?? match[3]) : undefined;
-}
-
-function pixels(value: string | undefined): number | null {
-  const match = /^\s*([\d.]+)\s*(px)?\s*$/i.exec(value ?? '');
-  return positive(match ? Number(match[1]) : NaN);
-}
-
-function viewBox(value: string | undefined): Size | null {
-  const parts = value?.trim().split(/[\s,]+/).map(Number) ?? [];
-  if (parts.length !== 4 || !parts.every(Number.isFinite)) return null;
-  const width = positive(parts[2]!);
-  const height = positive(parts[3]!);
-  return width && height ? { width, height } : null;
-}
-
-function positive(n: number): number | null {
-  return Number.isFinite(n) && n > 0 ? n : null;
+function isSize(n: number | undefined): n is number {
+  return n !== undefined && Number.isFinite(n) && n > 0;
 }
 
 // Fixed width and height, and no max-width, so the image draws at `size`; the viewBox and
 // preserveAspectRatio stay, so the drawing keeps its aspect.
 function withSize(svg: string, size: Size): string {
-  const tag = rootTag(svg)!;
+  const tag = ROOT_TAG.exec(svg)![0];
   const sized = tag
     .replace(/\s(width|height)\s*=\s*("[^"]*"|'[^']*')/gi, '')
     .replace(/max-width\s*:\s*[^;"']*;?\s*/gi, '')

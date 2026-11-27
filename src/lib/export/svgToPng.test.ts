@@ -47,33 +47,45 @@ function decodedSvg(src: string): string {
 }
 
 describe('svgSize', () => {
-  it('reads the viewBox, not the 100% width (Ruling 316)', () => {
-    expect(svgSize(MERMAID_SVG)).toEqual({ width: 431, height: 234 });
+  it('reads the viewBox, not the 100% width (Ruling 316)', async () => {
+    expect(await svgSize(MERMAID_SVG)).toEqual({ width: 431, height: 234 });
   });
 
-  it('falls back to numeric width and height', () => {
-    expect(svgSize('<svg width="120" height="40px"></svg>')).toEqual({ width: 120, height: 40 });
+  it('falls back to numeric width and height', async () => {
+    expect(await svgSize('<svg width="120" height="40px"></svg>')).toEqual({ width: 120, height: 40 });
   });
 
-  it('is null with no size at all', () => {
-    expect(svgSize('<svg width="100%"></svg>')).toBeNull();
+  it('is null with no size at all', async () => {
+    expect(await svgSize('<svg width="100%"></svg>')).toBeNull();
   });
 
-  it('prefers a numeric width and height to the viewBox, as Word does (Ruling 326)', () => {
-    expect(svgSize('<svg width="512" height="256" viewBox="0 0 24 24"></svg>')).toEqual({ width: 512, height: 256 });
+  it('prefers a numeric width and height to the viewBox, as Word does (Ruling 326)', async () => {
+    expect(await svgSize('<svg width="512" height="256" viewBox="0 0 24 24"></svg>')).toEqual({ width: 512, height: 256 });
   });
 
-  it('takes a missing width or height from the viewBox\'s aspect', () => {
-    expect(svgSize('<svg width="100" viewBox="0 0 50 25"></svg>')).toEqual({ width: 100, height: 50 });
-    expect(svgSize('<svg height="100%" viewBox="0 0 50 25"></svg>')).toEqual({ width: 50, height: 25 });
+  it('takes a missing width or height from the viewBox\'s aspect', async () => {
+    expect(await svgSize('<svg width="100" viewBox="0 0 50 25"></svg>')).toEqual({ width: 100, height: 50 });
+    expect(await svgSize('<svg height="100%" viewBox="0 0 50 25"></svg>')).toEqual({ width: 50, height: 25 });
   });
 
   it.each([
     ['an infinite viewBox', '<svg viewBox="0 0 1e400 1e400"></svg>'],
     ['a zero viewBox', '<svg viewBox="0 0 0 10"></svg>'],
     ['a zero width', '<svg width="0" height="10"></svg>'],
-  ])('is null for %s (Ruling 326)', (_name, svg) => {
-    expect(svgSize(svg)).toBeNull();
+    ['no svg element', '<p>not an image</p>'],
+  ])('is null for %s (Ruling 326)', async (_name, svg) => {
+    expect(await svgSize(svg)).toBeNull();
+  });
+
+  // Word sizes the picture with image-size, so the PNG must be drawn at the same size (Ruling 330).
+  it.each([
+    ['centimetres', '<svg width="5cm" height="2cm" viewBox="0 0 10 4"></svg>', { width: 189, height: 76 }],
+    ['points', '<svg width="72pt" height="36pt"></svg>', { width: 96, height: 48 }],
+    ['ems', '<svg width="10em" height="5em"></svg>', { width: 160, height: 80 }],
+    ['an exponent', '<svg width="5.12e2" height="2.56e2" viewBox="0 0 24 24"></svg>', { width: 512, height: 256 }],
+    ['spaced values', '<svg width=" 512 " height=" 256 " viewBox="0 0 24 12"></svg>', { width: 24, height: 12 }],
+  ])('reads %s as Word does', async (_name, svg, size) => {
+    expect(await svgSize(svg)).toEqual(size);
   });
 });
 
@@ -116,6 +128,12 @@ describe('svgToPng', () => {
     expect(svg).toContain('viewBox="0 0 24 24"');
     expect(svg).toContain('preserveAspectRatio="xMinYMin meet"');
     expect([canvas!.width, canvas!.height]).toEqual([1024, 512]);
+  });
+
+  it('draws at Word\'s size for units Word converts (Ruling 330)', async () => {
+    await svgToPng('<svg width="5cm" height="2cm" viewBox="0 0 10 4"></svg>', 2);
+    expect(decodedSvg(FakeImage.last!.src)).toMatch(/^<svg [^>]*width="189" height="76"/);
+    expect([canvas!.width, canvas!.height]).toEqual([378, 152]);
   });
 
   it('caps the canvas at 8192 px on its long side (Ruling 326)', async () => {
