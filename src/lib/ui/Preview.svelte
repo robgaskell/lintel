@@ -15,6 +15,7 @@
   import { settings, updateSettings } from '../settings/settings.svelte';
   import { resolvedTheme } from '../theme/theme';
   import '../theme/hljs.css';
+  import '../render/article.css';
   import FrontMatterCard from './FrontMatterCard.svelte';
   import RemoteImagesBanner from './RemoteImagesBanner.svelte';
   import { openPaths } from '../os/open';
@@ -294,7 +295,7 @@
   <!-- Links inside handle the keyboard: Enter on a focused link fires click. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
   <div
-    class="preview"
+    class="preview article"
     class:reading
     class:print
     bind:this={scroller}
@@ -314,6 +315,7 @@
 </div>
 
 <style>
+  /* The article's look is in article.css; this is the scroller and the print root. */
   .preview-frame {
     display: flex;
     flex-direction: column;
@@ -326,31 +328,10 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    color-scheme: var(--scheme);
     contain: paint;
     overflow-anchor: none;
     box-sizing: border-box;
-    background: var(--editor-bg);
-    color: var(--preview-text);
-    font-family: var(--font-read);
-    font-size: var(--size-read);
-    line-height: 1.6;
     outline: none;
-  }
-
-  .page {
-    padding: 22px 32px 48px;
-  }
-
-  .reading .page {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 32px 24px 48px;
-    line-height: 1.65;
-  }
-
-  .content {
-    overflow-wrap: break-word;
   }
 
   /* The print root grows to its content, and the page margins replace the padding. */
@@ -379,166 +360,5 @@
 
   .print .content :global(table) {
     display: table;
-  }
-
-  .content > :global(:first-child) {
-    margin-top: 0;
-  }
-
-  .content :global(:is(h1, h2, h3, h4, h5, h6)) {
-    margin: 24px 0 8px;
-    line-height: 1.25;
-    font-weight: 700;
-  }
-
-  /* Split and Read keep the artboards' ratios: 26/19/16 px on 15 px, 30/21 px on 16 px. */
-  .content :global(h1) {
-    font-size: 1.73em;
-  }
-
-  .reading .content :global(h1) {
-    font-size: 1.875em;
-  }
-
-  .content :global(h2) {
-    font-size: 1.27em;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--preview-rule);
-  }
-
-  .reading .content :global(h2) {
-    font-size: 1.3125em;
-    padding-bottom: 6px;
-  }
-
-  .content :global(h3) {
-    font-size: 1.07em;
-  }
-
-  .content :global(:is(p, ul, ol, pre, table, blockquote, details, figure)) {
-    margin: 0 0 16px;
-  }
-
-  .content :global(:is(ul, ol)) {
-    padding-left: 22px;
-  }
-
-  .content :global(.contains-task-list) {
-    padding-left: 0;
-    list-style: none;
-  }
-
-  .content :global(.task-list-item-checkbox) {
-    margin: 0 8px 0 0;
-    accent-color: var(--accent);
-  }
-
-  .content :global(a) {
-    color: var(--preview-link);
-    text-decoration: none;
-    cursor: pointer;
-  }
-
-  .content :global(a:hover) {
-    text-decoration: underline;
-  }
-
-  .content :global(code) {
-    font-family: var(--font-edit);
-    font-size: 0.87em;
-    background: var(--preview-code-bg);
-    padding: 1px 5px;
-    border-radius: 4px;
-  }
-
-  .content :global(pre) {
-    padding: 12px 14px;
-    background: var(--preview-code-bg);
-    border: 1px solid var(--preview-code-border);
-    border-radius: 6px;
-    overflow-x: auto;
-    font-family: var(--font-edit);
-    font-size: 0.87em;
-    line-height: 1.5;
-  }
-
-  .content :global(pre code) {
-    padding: 0;
-    background: none;
-    font-size: inherit;
-  }
-
-  .content :global(blockquote) {
-    padding: 4px 16px;
-    border-left: 3px solid var(--preview-quote-border);
-    color: var(--preview-quote-text);
-  }
-
-  .content :global(table) {
-    border-collapse: collapse;
-    font-size: 0.93em;
-    display: block;
-    overflow-x: auto;
-  }
-
-  .content :global(:is(th, td)) {
-    padding: 6px 12px;
-    border: 1px solid var(--preview-table-border);
-    text-align: left;
-  }
-
-  .content :global(th) {
-    background: var(--preview-table-head);
-  }
-
-  .content :global(hr) {
-    border: 0;
-    border-top: 1px solid var(--preview-rule);
-    margin: 24px 0;
-  }
-
-  .content :global(img) {
-    max-width: 100%;
-  }
-
-  .content :global(.image-alt) {
-    display: inline-block;
-    padding: 2px 8px;
-    border: 1px dashed var(--border);
-    border-radius: 4px;
-    color: var(--muted-strong);
-    font-size: 13px;
-  }
-
-  .content :global(:is(.mermaid-diagram, .mermaid-error)) {
-    margin: 0 0 24px;
-    padding: 20px;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 8px;
-  }
-
-  .content :global(.mermaid-diagram) {
-    display: flex;
-    justify-content: center;
-    overflow-x: auto;
-  }
-
-  .content :global(.mermaid-diagram svg) {
-    height: auto;
-  }
-
-  .content :global(.mermaid-error) {
-    padding: 12px 16px;
-    font-size: 13px;
-  }
-
-  .content :global(.mermaid-error pre) {
-    margin: 8px 0 0;
-    max-height: 200px;
-    overflow: auto;
-    background: none;
-    border: 0;
-    padding: 0;
   }
 </style>

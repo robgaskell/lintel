@@ -1,0 +1,66 @@
+/*
+ * The palette variables and the surfaces derived from them are set on <html> by the theme
+ * engine (src/lib/theme/theme.ts). Everything below maps onto them, except the syntax
+ * colours and a shadow, which have a fixed set per theme (Rulings 129, 148). The print
+ * root takes the light set, mapped onto its own light palette (Ruling 293).
+ */
+:root,
+.print-root {
+  --editor-bg: var(--bg);
+  --editor-text: var(--text);
+  --preview-text: var(--text);
+  --preview-link: var(--link);
+  --preview-code-bg: var(--code-bg);
+  --toolbar-border: var(--border);
+  --toolbar-divider: var(--border);
+  --toolbar-icon: var(--text);
+  --toolbar-hover: var(--hover);
+  --mode-bg: var(--inset);
+  --mode-text: var(--muted-strong);
+  --mode-selected-bg: var(--accent-tint);
+  --tab-strip: var(--chrome);
+  --tab-close: var(--muted);
+  --tab-close-hover-bg: var(--hover);
+  /* Live reload's tab marks: the green and red that each theme already has. */
+  --tab-updated: var(--preview-code-string);
+  --tab-deleted: var(--editor-code);
+  --preview-code-border: var(--border);
+  --preview-quote-border: var(--border);
+  --preview-quote-text: var(--muted-strong);
+  --preview-rule: var(--border);
+  --preview-table-border: var(--border);
+  --preview-table-head: var(--chrome);
+  --card-bg: var(--chrome);
+  --card-border: var(--border);
+  --card-label: var(--muted);
+  --pill-bg: var(--inset);
+  --outline-bg: var(--chrome);
+  --outline-label: var(--muted);
+  --outline-text-2: var(--muted-strong);
+  --outline-text-3: var(--muted);
+  --outline-active: var(--accent-tint);
+
+  --editor-code: #b42318;
+  --preview-code-keyword: #1d4ed8;
+  --preview-code-string: #15803d;
+  --preview-code-title: #9a3412;
+  --preview-code-comment: #6b6b67;
+  --lint-warning: #b45309;
+  --lint-active: var(--search-match);
+  --lint-card-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  --mode-selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  color-scheme: light;
+}
+
+/* Keyed on the resolved theme, not the OS, so a forced Light or Dark holds (Ruling 131). */
+:root[data-theme='dark'] {
+  --editor-code: #ff9e8a;
+  --preview-code-keyword: #8ab4ff;
+  --preview-code-string: #86c99a;
+  --preview-code-title: #f0b37e;
+  --preview-code-comment: #9a9a95;
+  --lint-warning: #f0b37e;
+  --lint-card-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --mode-selected-shadow: none;
+  color-scheme: dark;
+}

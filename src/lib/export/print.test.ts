@@ -109,7 +109,7 @@ describe('printDoc', () => {
     const { readFileSync } = (await import(/* @vite-ignore */ 'node:fs' as string)) as {
       readFileSync(path: string, encoding: 'utf8'): string;
     };
-    const css = readFileSync('src/app.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const css = readFileSync('src/lib/theme/tokens.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
       selectors: selector.split(',').map((s) => s.trim()),
       body,

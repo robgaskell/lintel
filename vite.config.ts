@@ -15,5 +15,7 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],
     setupFiles: ['src/test/setup.ts'],
+    // ?inline CSS imports hold their text, as in the build (the HTML export inlines them).
+    css: true,
   },
 });

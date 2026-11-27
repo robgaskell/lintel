@@ -46,7 +46,8 @@ const root = document.documentElement;
 const { readFileSync } = (await import(/* @vite-ignore */ 'node:fs' as string)) as {
   readFileSync(path: string, encoding: 'utf8'): string;
 };
-const appCss = readFileSync('src/app.css', 'utf8');
+// The token block is imported by app.css; read here as one sheet.
+const appCss = readFileSync('src/lib/theme/tokens.css', 'utf8') + readFileSync('src/app.css', 'utf8').replace(/@import[^;]*;/g, '');
 const toolbarSource = readFileSync('src/lib/ui/Toolbar.svelte', 'utf8');
 const source = (path: string) => readFileSync(path, 'utf8');
 const SEPIA: Palette = { background: '#F4ECD8', text: '#3B3024', accent: '#0F766E', link: '#0F766E', codeBackground: '#EDE4D1' };
@@ -239,7 +240,7 @@ describe('scroll containers (Ruling 154)', () => {
     expect(cssVariables(settingsWith({}), 'dark')['--scheme']).toBe('dark');
     expect(cssVariables(settingsWith({}), 'light')['--scheme']).toBe('light');
     const rules: [string, RegExp][] = [
-      ['src/lib/ui/Preview.svelte', /\.preview \{[^}]*color-scheme: var\(--scheme\)/],
+      ['src/lib/render/article.css', /\.article \{[^}]*color-scheme: var\(--scheme\)/],
       ['src/lib/ui/Outline.svelte', /\.outline \{[^}]*color-scheme: var\(--scheme\)/],
       ['src/settings/SettingsApp.svelte', /\n  nav \{[^}]*color-scheme: var\(--scheme\)/],
       ['src/settings/SettingsApp.svelte', /\n  main \{[^}]*color-scheme: var\(--scheme\)/],

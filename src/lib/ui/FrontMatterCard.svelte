@@ -1,4 +1,5 @@
 <script lang="ts">
+  // Styled by article.css, which the HTML export inlines too (Ruling 306).
   import { stringify } from 'yaml';
 
   let { data, error }: { data: Record<string, unknown> | null; error: string | null } = $props();
@@ -52,68 +53,3 @@
   </section>
 {/if}
 
-<style>
-  .front-matter {
-    margin-bottom: 28px;
-    padding: 14px 16px;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 8px;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .fm-title {
-    margin-bottom: 8px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--card-label);
-  }
-
-  .fm-grid {
-    display: grid;
-    grid-template-columns: 110px minmax(0, 1fr);
-    row-gap: 6px;
-    column-gap: 12px;
-  }
-
-  .fm-key {
-    color: var(--card-label);
-    overflow-wrap: anywhere;
-  }
-
-  .fm-value {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .fm-code,
-  .fm-yaml {
-    font-family: var(--font-edit);
-  }
-
-  .fm-pills {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .fm-pill {
-    padding: 0 8px;
-    border-radius: 999px;
-    background: var(--pill-bg);
-    font-size: 12px;
-  }
-
-  .fm-yaml {
-    margin: 0;
-    font-size: 12px;
-    white-space: pre-wrap;
-  }
-
-  .fm-error {
-    color: var(--card-label);
-  }
-</style>

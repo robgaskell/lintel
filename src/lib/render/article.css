@@ -1,0 +1,252 @@
+/*
+ * How a rendered document looks: the preview, Read mode, print and the HTML export
+ * (Ruling 306). Everything sits under .article, the preview's scroller.
+ */
+.article {
+  color-scheme: var(--scheme);
+  background: var(--editor-bg);
+  color: var(--preview-text);
+  font-family: var(--font-read);
+  font-size: var(--size-read);
+  line-height: 1.6;
+}
+
+.article .page {
+  padding: 22px 32px 48px;
+}
+
+.article.reading .page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+  line-height: 1.65;
+}
+
+.article .content {
+  overflow-wrap: break-word;
+}
+
+.article .content > :first-child {
+  margin-top: 0;
+}
+
+.article .content :is(h1, h2, h3, h4, h5, h6) {
+  margin: 24px 0 8px;
+  line-height: 1.25;
+  font-weight: 700;
+}
+
+/* Split and Read keep the artboards' ratios: 26/19/16 px on 15 px, 30/21 px on 16 px. */
+.article .content h1 {
+  font-size: 1.73em;
+}
+
+.article.reading .content h1 {
+  font-size: 1.875em;
+}
+
+.article .content h2 {
+  font-size: 1.27em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--preview-rule);
+}
+
+.article.reading .content h2 {
+  font-size: 1.3125em;
+  padding-bottom: 6px;
+}
+
+.article .content h3 {
+  font-size: 1.07em;
+}
+
+.article .content :is(p, ul, ol, pre, table, blockquote, details, figure) {
+  margin: 0 0 16px;
+}
+
+.article .content :is(ul, ol) {
+  padding-left: 22px;
+}
+
+.article .content .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.article .content .task-list-item-checkbox {
+  margin: 0 8px 0 0;
+  accent-color: var(--accent);
+}
+
+.article .content a {
+  color: var(--preview-link);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.article .content a:hover {
+  text-decoration: underline;
+}
+
+.article .content code {
+  font-family: var(--font-edit);
+  font-size: 0.87em;
+  background: var(--preview-code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.article .content pre {
+  padding: 12px 14px;
+  background: var(--preview-code-bg);
+  border: 1px solid var(--preview-code-border);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: var(--font-edit);
+  font-size: 0.87em;
+  line-height: 1.5;
+}
+
+.article .content pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.article .content blockquote {
+  padding: 4px 16px;
+  border-left: 3px solid var(--preview-quote-border);
+  color: var(--preview-quote-text);
+}
+
+.article .content table {
+  border-collapse: collapse;
+  font-size: 0.93em;
+  display: block;
+  overflow-x: auto;
+}
+
+.article .content :is(th, td) {
+  padding: 6px 12px;
+  border: 1px solid var(--preview-table-border);
+  text-align: left;
+}
+
+.article .content th {
+  background: var(--preview-table-head);
+}
+
+.article .content hr {
+  border: 0;
+  border-top: 1px solid var(--preview-rule);
+  margin: 24px 0;
+}
+
+.article .content img {
+  max-width: 100%;
+}
+
+.article .content .image-alt {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.article .content :is(.mermaid-diagram, .mermaid-error) {
+  margin: 0 0 24px;
+  padding: 20px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+}
+
+.article .content .mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.article .content .mermaid-diagram svg {
+  height: auto;
+}
+
+.article .content .mermaid-error {
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+.article .content .mermaid-error pre {
+  margin: 8px 0 0;
+  max-height: 200px;
+  overflow: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+/* The front matter card (FrontMatterCard.svelte). */
+.article .front-matter {
+  margin-bottom: 28px;
+  padding: 14px 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.article .fm-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--card-label);
+}
+
+.article .fm-grid {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  row-gap: 6px;
+  column-gap: 12px;
+}
+
+.article .fm-key {
+  color: var(--card-label);
+  overflow-wrap: anywhere;
+}
+
+.article .fm-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.article :is(.fm-code, .fm-yaml) {
+  font-family: var(--font-edit);
+}
+
+.article .fm-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.article .fm-pill {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  font-size: 12px;
+}
+
+.article .fm-yaml {
+  margin: 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.article .fm-error {
+  color: var(--card-label);
+}
