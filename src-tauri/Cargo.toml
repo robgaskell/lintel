@@ -43,3 +43,5 @@ objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSAppearance", "NSResponder", "NSWindow"] }
 # NSUserDefaults, to turn off AppKit's own window restoration (Ruling 218); already built.
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }
+# CFStrings for LaunchServices' default-handler call (Ruling 249); already built.
+core-foundation = "=0.10.1"

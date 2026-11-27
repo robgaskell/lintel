@@ -1,6 +1,7 @@
 mod appearance;
 mod files;
 mod open_queue;
+mod os_integration;
 mod remote;
 mod session;
 mod startup;
@@ -102,6 +103,7 @@ fn setup_app<R: Runtime>(
     if let Some(window) = app.get_webview_window("main") {
         startup::prepare_main_window(&window);
     }
+    os_integration::listen_for_os_actions(app.handle());
     let cwd = cwd.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
     open_queue::open_from_outside(app.handle(), open_queue::paths_from_args(args, &cwd));
 }
