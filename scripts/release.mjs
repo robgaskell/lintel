@@ -131,7 +131,8 @@ export function checkRelease({ dir, version, pubkey }) {
   return problems;
 }
 
-const SIGNER_BINARY = '@tauri-apps/cli-linux-x64-gnu';
+// Ruling 348: the install holds these two packages and nothing else.
+const SIGNER_PACKAGES = ['@tauri-apps/cli', '@tauri-apps/cli-linux-x64-gnu'];
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 /**
@@ -144,12 +145,16 @@ export function checkSigner({ dir, lock, version }) {
   const names = Object.keys(installed)
     .filter((path) => path.startsWith('node_modules/'))
     .map((path) => path.slice('node_modules/'.length));
-  for (const name of ['@tauri-apps/cli', SIGNER_BINARY]) {
+  for (const name of SIGNER_PACKAGES) {
     if (!names.includes(name)) problems.push(`no ${name} installed`);
   }
   for (const name of names) {
     const { version: got, integrity } = installed[`node_modules/${name}`];
     const id = `${name}@${got}`;
+    if (!SIGNER_PACKAGES.includes(name)) {
+      problems.push(`${id} is not one of the signer's packages`);
+      continue;
+    }
     const locked = lock.match(new RegExp(`\\n  '${escapeRegExp(id)}':\\n    resolution: \\{integrity: (sha512-[^}]+)\\}`));
     if (!locked) problems.push(`${id} is not in pnpm-lock.yaml`);
     else if (got !== version) problems.push(`${id} is not version ${version}`);

@@ -190,12 +190,12 @@ const CLI_VERSION = JSON.parse(readFileSync(fileURLToPath(new URL('../package.js
 const lockIntegrity = (name) => LOCK.match(new RegExp(`'${name}@${CLI_VERSION}':\\n    resolution: \\{integrity: (sha512-[^}]+)\\}`))[1];
 
 /** An npm install folder as npm leaves it, with these packages and integrities. */
-function signerInstall(packages) {
+function signerInstall(packages, versions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'signer-'));
   temps.push(dir);
   mkdirSync(join(dir, 'node_modules'));
   const entries = Object.fromEntries(
-    Object.entries(packages).map(([name, integrity]) => [`node_modules/${name}`, { version: CLI_VERSION, integrity }]),
+    Object.entries(packages).map(([name, integrity]) => [`node_modules/${name}`, { version: versions[name] ?? CLI_VERSION, integrity }]),
   );
   writeFileSync(join(dir, 'node_modules', '.package-lock.json'), JSON.stringify({ packages: entries }));
   return dir;
@@ -215,11 +215,34 @@ test('checkSigner rejects a signer package whose integrity differs from pnpm-loc
   assert.match(checkSigner({ dir, lock: LOCK, version: CLI_VERSION }).join('\n'), /@tauri-apps\/cli-linux-x64-gnu@.* integrity sha512-AAAA is not pnpm-lock\.yaml's/);
 });
 
-test('checkSigner rejects a package that is not in pnpm-lock.yaml and a missing native binary', () => {
+test('checkSigner rejects an unnamed package and reports the missing native binary', () => {
   const dir = signerInstall({ '@tauri-apps/cli': lockIntegrity('@tauri-apps/cli'), 'left-pad': 'sha512-BBBB' });
   const problems = checkSigner({ dir, lock: LOCK, version: CLI_VERSION }).join('\n');
-  assert.match(problems, /left-pad@.* is not in pnpm-lock\.yaml/);
+  assert.match(problems, /left-pad@.* is not one of the signer's packages/);
   assert.match(problems, /no @tauri-apps\/cli-linux-x64-gnu/);
+});
+
+test('checkSigner rejects a signer package at a version pnpm-lock.yaml does not have', () => {
+  const dir = signerInstall(lockedSigner(), { '@tauri-apps/cli': '0.0.1' });
+  assert.match(checkSigner({ dir, lock: LOCK, version: CLI_VERSION }).join('\n'), /@tauri-apps\/cli@0\.0\.1 is not in pnpm-lock\.yaml/);
+});
+
+test('checkSigner rejects a locked package that is not one of the two signer packages (R348)', () => {
+  const darwin = '@tauri-apps/cli-darwin-arm64';
+  const dir = signerInstall({ ...lockedSigner(), [darwin]: lockIntegrity(darwin) });
+  assert.match(
+    checkSigner({ dir, lock: LOCK, version: CLI_VERSION }).join('\n'),
+    /@tauri-apps\/cli-darwin-arm64@.* is not one of the signer's packages/,
+  );
+});
+
+test('the check-signer command exits 0 for the locked install and 1 for a tampered one (R348)', () => {
+  const good = spawnSync(process.execPath, [SCRIPT, 'check-signer', signerInstall(lockedSigner())], { encoding: 'utf8' });
+  assert.equal(good.status, 0, good.stderr);
+  const tampered = signerInstall({ ...lockedSigner(), '@tauri-apps/cli': 'sha512-CCCC' });
+  const bad = spawnSync(process.execPath, [SCRIPT, 'check-signer', tampered], { encoding: 'utf8' });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /release: @tauri-apps\/cli@.* integrity sha512-CCCC/);
 });
 
 // Ruling 342 (M1, M2, L1, L2, L4): the key and a write token never meet build code.
@@ -359,6 +382,14 @@ test('the sign job builds nothing and checks the bundles and the signer before s
   const manifest = stepIndex('sign', /node scripts\/release\.mjs manifest release/);
   const check = stepIndex('sign', /^node scripts\/release\.mjs check release/m);
   assert.ok(signer < manifest && manifest < check, 'latest.json written then checked');
+});
+
+test('the sign job installs the signer with --ignore-scripts, then runs check-signer on it unchanged (R348)', () => {
+  const install = runOf('sign', /npm install/);
+  const installs = install.run.split('\n').filter((line) => /\bnpm (install|i|ci)\b|npx|pnpm/.test(line));
+  assert.deepEqual(installs, ['npm install --ignore-scripts --no-audit --no-fund "@tauri-apps/cli@$version"']);
+  assert.equal(steps('sign').filter((s) => /\bnpm (install|i|ci)\b|npx/.test(s.run ?? '')).length, 1);
+  assert.equal(runOf('sign', /check-signer/).run, 'node scripts/release.mjs check-signer "$RUNNER_TEMP/signer"');
 });
 
 test('a manual run uploads only latest.json and the verification report, never signed files', () => {
