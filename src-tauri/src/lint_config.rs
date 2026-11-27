@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,10 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::files;
+
+// 1 MB = 1,000,000 bytes, as for the large-file guard (Ruling 357).
+const MAX_CONFIG_BYTES: u64 = 1_000_000;
+const TOO_LARGE: &str = "Lintel does not read lint config files over 1 MB.";
 
 /// Checked in this order in each folder. `.cjs` and `.mjs` configs are code, so never read.
 const CONFIG_FILES: [(&str, &str); 4] = [
@@ -176,7 +181,13 @@ fn read(path: &Path, format: &'static str) -> Result<LintConfigResult, FindError
         message,
         timed_out: false,
     };
-    let bytes = fs::read(&path).map_err(|e| fail(format!("Could not read the file: {e}")))?;
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| file.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|e| fail(format!("Could not read the file: {e}")))?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(fail(TOO_LARGE.to_owned()));
+    }
     let hash = files::sha256_hex(&bytes);
     let text = String::from_utf8(bytes)
         .map_err(|_| fail("Lintel reads lint config files in UTF-8 only.".to_owned()))?;
@@ -357,6 +368,29 @@ mod tests {
         let roundabout = repo.0.join("a/./../a/doc.md");
 
         assert_eq!(found(&roundabout), Some(path_str(config)));
+    }
+
+    // Ruling 357: a huge file is not a config, and reading it all could stall the search.
+    #[test]
+    fn a_config_over_1_mb_is_an_error_and_one_of_1_mb_is_read() {
+        let repo = Repo::new();
+        let config = repo.0.join(".markdownlint.json");
+        let doc = repo.doc("doc.md");
+        let padded = |len: usize| format!("{{{}}}", " ".repeat(len - 2));
+
+        fs::write(&config, padded(1_000_000)).unwrap();
+        assert_eq!(find(&doc).unwrap().unwrap().text.len(), 1_000_000);
+
+        fs::write(&config, padded(1_000_001)).unwrap();
+        let err = find(&doc).unwrap_err();
+        assert_eq!(
+            err,
+            FindError {
+                path: Some(path_str(config)),
+                message: "Lintel does not read lint config files over 1 MB.".to_owned(),
+                timed_out: false,
+            }
+        );
     }
 
     #[test]
