@@ -25,6 +25,7 @@ import {
   saveSettled,
   setTabShower,
   saveDocAs,
+  setDocHooks,
   setWatchFailureReporter,
   untitledCounter,
 } from './store.svelte';
@@ -68,6 +69,42 @@ beforeEach(() => {
   vi.mocked(releasePath).mockResolvedValue();
   vi.mocked(watchPath).mockClear();
   vi.mocked(unwatchPath).mockClear();
+});
+
+describe('doc hooks (Ruling 284)', () => {
+  it('hear each arrival, departure and save, with the path before a Save As', async () => {
+    const heard: string[] = [];
+    setDocHooks({
+      placed: (doc) => heard.push(`placed ${doc.path}`),
+      removed: (id) => heard.push(`removed ${id === docs.get(id)?.id ? 'still open' : 'gone'}`),
+      saved: (doc, oldPath) => heard.push(`saved ${oldPath} as ${doc.path}`),
+    });
+    try {
+      vi.mocked(readTextFile).mockResolvedValue({ text: 'x', hash: 'h' });
+      write.mockResolvedValue('h2');
+      saveDialog.mockResolvedValue('/notes/b.md');
+
+      const a = createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h0', mode: 'edit' });
+      await restoreDoc({ id: 'r', path: '/notes/r.md', mode: 'edit', pinned: false });
+      a.text = 'changed';
+      await saveDoc(a.id);
+      await saveDocAs(a.id);
+      const moved = { ...a };
+      removeDoc(a.id, { keepClaim: true });
+      adoptDoc(moved);
+
+      expect(heard).toEqual([
+        'placed /notes/a.md',
+        'placed /notes/r.md',
+        'saved /notes/a.md as /notes/a.md',
+        'saved /notes/a.md as /notes/b.md',
+        'removed gone',
+        'placed /notes/b.md',
+      ]);
+    } finally {
+      setDocHooks(null);
+    }
+  });
 });
 
 describe('createDoc', () => {

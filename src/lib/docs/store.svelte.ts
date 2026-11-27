@@ -121,7 +121,23 @@ export function adoptDoc(state: DocState): DocState {
 function place(doc: DocState): DocState {
   docs.set(doc.id, doc);
   if (doc.path !== null) void watch(doc.path, doc.diskHash);
+  hooks?.placed(doc);
   return doc;
+}
+
+/** Lets another module follow each doc through this window, as the lint config does (Ruling 284). */
+export interface DocHooks {
+  /** Opened, restored, handed over, or back from a failed hand-over. */
+  placed(doc: DocState): void;
+  removed(id: string): void;
+  /** After a Save or Save As wrote the doc; `oldPath` is its path before. */
+  saved(doc: DocState, oldPath: string | null): void;
+}
+
+let hooks: DocHooks | null = null;
+
+export function setDocHooks(next: DocHooks | null): void {
+  hooks = next;
 }
 
 // A doc keeps its id across windows, so a doc back from a failed hand-over needs this.
@@ -146,6 +162,7 @@ function arrivalOf(id: string): number {
 export function removeDoc(id: string, { keepClaim = false } = {}): void {
   const path = docs.get(id)?.path ?? null;
   docs.delete(id);
+  hooks?.removed(id);
   if (path === null) return;
   // A hand-over unwatches too; Rust keeps the watch once the new window has taken it.
   void unwatch(path);
@@ -268,6 +285,7 @@ async function runSave(doc: DocState): Promise<boolean> {
   // A clean save must not touch the file, so its bytes stay identical.
   if (!isDirty(doc) && doc.external !== 'deleted') return true;
   await writeTo(doc, doc.path);
+  hooks?.saved(doc, doc.path);
   return true;
 }
 
@@ -316,6 +334,7 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   }
   // Every Save As route passes here (Ruling 49). Not awaited: a slow store must not delay a save.
   void recordRecent(doc.path);
+  hooks?.saved(doc, oldPath);
   return true;
 }
 

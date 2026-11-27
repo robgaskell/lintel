@@ -25,6 +25,12 @@ beforeEach(async () => {
 });
 
 describe('LintSection', () => {
+  it('says that a .markdownlint file in a folder overrides these rules (Ruling 287)', () => {
+    const { getByText } = render(LintSection);
+
+    expect(getByText("Documents in a folder with a .markdownlint file use that file's rules instead.")).toBeTruthy();
+  });
+
   it('turns linting off and on', async () => {
     const { getByRole } = render(LintSection);
     const toggle = getByRole('switch', { name: 'Lint documents with markdownlint' }) as HTMLInputElement;

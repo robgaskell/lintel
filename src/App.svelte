@@ -13,7 +13,8 @@
   import { docs, setWatchFailureReporter } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
-  import { followLintSettings, lintIssues, settingsLintConfig } from './lib/lint/lintState.svelte';
+  import { configStatus, currentConfig, followDocConfigs, refreshAllConfigs } from './lib/lint/config';
+  import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
   import { Workspace } from './lib/layout/workspace';
   import {
     setOutlineChecked,
@@ -55,6 +56,7 @@
   const cursor = $derived(activeId === null ? undefined : cursors.get(activeId));
   // null or missing: not linted, so the status bar shows no count.
   const issues = $derived(activeId === null ? null : (lintIssues.get(activeId) ?? null));
+  const lintConfigStatus = $derived(configStatus(active));
 
   function fixAllActive() {
     const view = activeId === null ? null : viewFor(activeId);
@@ -62,7 +64,7 @@
     if (!view || !list) return;
     // Loaded already: there are issues only once markdownlint has run. The config lets a
     // result from before the latest typing be redone now (Ruling 281).
-    const config = settingsLintConfig();
+    const config = currentConfig(active);
     void import('./lib/lint/lint').then(({ fixAll }) => fixAll(view, list, config));
   }
 
@@ -137,6 +139,8 @@
     // Before any doc arrives: watching a file that changed since it was read reports it at once.
     setReloadNoticeShower((text) => showNotice(text));
     setWatchFailureReporter(reportLiveReloadOff);
+    // Before any doc arrives, so each one's lint config is looked up (Ruling 284).
+    const stopConfigs = followDocConfigs();
     const fileEvents = listenForFileEvents(label);
     // Last: it tells the window that opened this one that it can hand a doc over.
     const stopAdoption = listenForAdoption(fileEvents.ready);
@@ -224,6 +228,8 @@
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused) return;
       takeAppMenu();
+      // A config file made nearer to a doc while this window was in the background.
+      refreshAllConfigs();
       setOutlineChecked(outline.visible).catch((err) =>
         console.error('Could not tick View > Show Outline:', err),
       );
@@ -236,6 +242,7 @@
       stopTheme();
       stopEditorFont();
       stopLint();
+      stopConfigs();
       stopActive();
       stopUpdates();
       fileEvents.stop();
@@ -277,6 +284,7 @@
       lintCount={issues?.length ?? null}
       lintFixable={issues?.some((i) => i.fixable) ?? false}
       onFixAll={fixAllActive}
+      {lintConfigStatus}
       {notice}
       {noticeDetails}
       update="none"

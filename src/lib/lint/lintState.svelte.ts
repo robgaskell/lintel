@@ -2,17 +2,16 @@ import { StateEffect } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { SvelteMap } from 'svelte/reactivity';
 import { allViews } from '../editor/views';
+import { docs } from '../docs/store.svelte';
 import { onSettingsChanged, settings, type Settings } from '../settings/settings.svelte';
+import { configSource, currentConfig } from './config';
 import type { LintIssue } from './lint';
 import { lintExtension, relint } from './lintExtension';
 
+export { settingsLintConfig } from './config';
+
 /** Each open doc's latest lint issues, by doc id, for the status bar; null when not linted. */
 export const lintIssues: ReadonlyMap<string, LintIssue[] | null> = new SvelteMap<string, LintIssue[] | null>();
-
-/** The markdownlint config from Settings, or null while linting is off (Ruling 268). */
-export function settingsLintConfig(): object | null {
-  return settings.lint.enabled ? JSON.parse(JSON.stringify(settings.lint.rules)) : null;
-}
 
 /**
  * Lints `view`, the editor of `docId`, and keeps `lintIssues` up to date. Returns the undo.
@@ -27,7 +26,12 @@ export function attachLint(docId: string, view: EditorView): () => void {
     reporters.set(docId, token);
     map.set(docId, issues);
   };
-  view.dispatch({ effects: StateEffect.appendConfig.of(lintExtension(settingsLintConfig, report)) });
+  const extension = lintExtension(
+    () => currentConfig(docs.get(docId)),
+    report,
+    () => configSource(docs.get(docId)),
+  );
+  view.dispatch({ effects: StateEffect.appendConfig.of(extension) });
   return () => {
     stopped = true;
     // A remounted pane may already lint the same doc.

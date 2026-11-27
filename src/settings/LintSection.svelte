@@ -20,6 +20,7 @@
 
 <div class="field">
   <span class="field-label" id="lint-rules-label">Rules</span>
+  <p class="hint note">Documents in a folder with a .markdownlint file use that file's rules instead.</p>
   <ul class="rules" aria-labelledby="lint-rules-label">
     {#each LINT_RULES as rule (rule.id)}
       <li>
@@ -64,6 +65,10 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .note {
+    margin: 0 0 10px;
   }
 
   .rules .hint {

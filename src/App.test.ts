@@ -5,6 +5,7 @@ import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
 import { registerView } from './lib/editor/views';
+import { findLintConfig } from './lib/ipc';
 import { fixAll, type LintIssue } from './lib/lint/lint';
 import { lintIssues } from './lib/lint/lintState.svelte';
 import { outline } from './lib/layout/outline.svelte';
@@ -106,6 +107,12 @@ vi.mock('./lib/os/recent', () => ({
   recentMayHaveChanged: vi.fn(),
   recordRecent: vi.fn(),
   clearRecent: vi.fn(),
+}));
+vi.mock('./lib/ipc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/ipc')>()),
+  findLintConfig: vi.fn(async () => null),
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
 }));
 // Fix all reaches markdownlint only through this module; the lint source is stubbed (Ruling 275).
 vi.mock('./lib/lint/lint', () => ({ fixAll: vi.fn() }));
@@ -244,6 +251,58 @@ describe('App lint count (M6.1)', () => {
 
     await vi.waitFor(() => expect(fixAll).toHaveBeenCalledWith(view, issues, { default: true }));
     stop();
+  });
+
+  const repoConfig = (text: string) => ({ path: '/repo/.markdownlint.json', format: 'json' as const, text, hash: 'c' });
+
+  it("lints a stale Fix all again with the doc's config file (Ruling 282)", async () => {
+    vi.mocked(findLintConfig).mockResolvedValue(repoConfig('{ "MD004": { "style": "asterisk" } }'));
+    const a = createDoc({ path: '/repo/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    const view = { dispatch: vi.fn() } as unknown as Parameters<typeof registerView>[1];
+    const stop = registerView(a.id, view);
+    fake.active = a.id;
+    const { getByRole } = render(App);
+    await vi.waitFor(() => expect(a.lintConfigPath).toBe('/repo/.markdownlint.json'));
+    const issues = [issue(true)];
+    setIssues(a.id, issues);
+
+    await fireEvent.click(getByRole('button', { name: 'Fix all' }));
+
+    await vi.waitFor(() => expect(fixAll).toHaveBeenCalledWith(view, issues, { MD004: { style: 'asterisk' } }));
+    stop();
+  });
+
+  it('shows a broken config file in the status bar, with the error on hover (Ruling 287)', async () => {
+    vi.mocked(findLintConfig).mockResolvedValue(repoConfig('{ "MD004": }'));
+    const a = createDoc({ path: '/repo/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { findByText } = render(App);
+
+    const status = await findByText('Lint config error: .markdownlint.json');
+    expect(status.title).toBe('Value expected on line 1.');
+  });
+
+  it('looks for config files again when the window gains focus (Ruling 284)', async () => {
+    const a = createDoc({ path: '/repo/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    render(App);
+    await vi.waitFor(() => expect(fake.focusHandler).not.toBeNull());
+    vi.mocked(findLintConfig).mockClear();
+
+    fake.focusHandler!({ payload: false });
+    expect(findLintConfig).not.toHaveBeenCalled();
+    fake.focusHandler!({ payload: true });
+
+    expect(findLintConfig).toHaveBeenCalledExactlyOnceWith('/repo/a.md');
+  });
+
+  it("looks up the config of each doc that arrives after the window opened", async () => {
+    render(App);
+    vi.mocked(findLintConfig).mockClear();
+
+    createDoc({ path: '/repo/new.md', raw: 'x', hash: 'h', mode: 'edit' });
+
+    expect(findLintConfig).toHaveBeenCalledExactlyOnceWith('/repo/new.md');
   });
 });
 

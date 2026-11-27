@@ -2,15 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { eventModule, resetFakes } from '../../test/fakes';
+import { docs, type DocState } from '../docs/store.svelte';
 import { registerView } from '../editor/views';
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
 import type { LintIssue } from './lint';
 import { lintExtension, relint } from './lintExtension';
 import { attachLint, followLintSettings, lintIssues, settingsLintConfig } from './lintState.svelte';
+import { configSource, currentConfig } from './config';
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 vi.mock('./lintExtension', () => ({ lintExtension: vi.fn(() => []), relint: vi.fn() }));
+vi.mock('./config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./config')>()),
+  currentConfig: vi.fn(() => ({ MD004: false })),
+  configSource: vi.fn(() => '.markdownlint.json'),
+}));
 
 const views: EditorView[] = [];
 const cleanups: (() => void)[] = [];
@@ -48,6 +55,18 @@ describe('attachLint', () => {
     expect(lintIssues.get('a')).toBe(issues);
     lastReporter()(null);
     expect(lintIssues.get('a')).toBeNull();
+  });
+
+  it("lints with the doc's current config and names its file (Rulings 282, 287)", () => {
+    const doc = { id: 'a', lintConfigPath: '/repo/.markdownlint.json' } as DocState;
+    docs.set('a', doc);
+    cleanups.push(attachLint('a', editor()), () => docs.delete('a'));
+    const [getConfig, , getSource] = vi.mocked(lintExtension).mock.lastCall!;
+
+    expect(getConfig()).toEqual({ MD004: false });
+    expect(getSource!()).toBe('.markdownlint.json');
+    expect(currentConfig).toHaveBeenLastCalledWith(doc);
+    expect(configSource).toHaveBeenLastCalledWith(doc);
   });
 
   it('forgets them when the editor goes, unless a newer editor for the doc has reported', () => {

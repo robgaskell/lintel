@@ -10,6 +10,7 @@ type Props = {
   lintCount: number | null;
   lintFixable: boolean;
   onFixAll?: () => void;
+  lintConfigStatus?: { text: string; details: string | null } | null;
   notice: string | null;
   update: 'none' | 'ready';
   onUpdate?: () => void;
@@ -33,6 +34,25 @@ function bar(overrides: Partial<Props> = {}) {
 }
 
 describe('StatusBar', () => {
+  it('shows a broken lint config in the lint area, with the error on hover (Ruling 287)', () => {
+    const { getByText } = bar({
+      lintCount: 2,
+      lintConfigStatus: { text: 'Lint config error: .markdownlint.json', details: 'Comma expected on line 3.' },
+      notice: 'a.md reloaded from disk',
+    });
+
+    const status = getByText('Lint config error: .markdownlint.json');
+    expect(status.title).toBe('Comma expected on line 3.');
+    expect(status.closest('.group')!.classList.contains('right')).toBe(false);
+    expect(getByText('a.md reloaded from disk')).toBeTruthy();
+  });
+
+  it('shows no lint config status when there is none', () => {
+    const { container } = bar({ lintCount: 0 });
+
+    expect(container.querySelector('.lint-config')).toBeNull();
+  });
+
   it('shows cursor, word count and save state', () => {
     const { getByText, text } = bar();
 

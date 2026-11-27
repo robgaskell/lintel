@@ -51,9 +51,9 @@ export function releasePath(path: string): Promise<void> {
   return invoke<void>('release_path', { path });
 }
 
-/** Sent by Rust to the window that watches a file whose bytes changed on disk. */
+/** Sent by Rust to each window that watches a file whose bytes changed on disk. */
 export const FILE_CHANGED = 'lintel://file-changed';
-/** Sent by Rust to the window that watches a file that is gone from disk. */
+/** Sent by Rust to each window that watches a file that is gone from disk. */
 export const FILE_REMOVED = 'lintel://file-removed';
 
 export interface FileChangedEvent {
@@ -66,16 +66,28 @@ export interface FileRemovedEvent {
 }
 
 /**
- * Watches `path` for this window, taking it over from any other. `knownHash` is the hash of
- * the text this window has; a file that already differs is reported at once.
+ * Adds a watch of `path` for this window; each needs its own unwatchPath (Ruling 283).
+ * `knownHash` is the hash of the text this window has; a file that differs is reported at once.
  */
 export function watchPath(path: string, knownHash: string): Promise<void> {
   return invoke<void>('watch_path', { path, knownHash });
 }
 
-/** Stops this window's watch on `path`; a watch another window has taken over stays. */
+/** Removes one of this window's watches of `path`; other windows' watches stay. */
 export function unwatchPath(path: string): Promise<void> {
   return invoke<void>('unwatch_path', { path });
+}
+
+export interface LintConfigResult {
+  path: string;
+  format: 'json' | 'jsonc' | 'yaml';
+  text: string;
+  hash: string;
+}
+
+/** The nearest markdownlint config file at or above the doc's folder, or null (Ruling 285). */
+export function findLintConfig(docPath: string): Promise<LintConfigResult | null> {
+  return invoke<LintConfigResult | null>('find_lint_config', { docPath });
 }
 
 /**

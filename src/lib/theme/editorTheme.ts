@@ -80,6 +80,7 @@ const view = EditorView.theme({
   },
   '.cm-lintCard-rule': { color: 'var(--lint-warning)', fontWeight: '700' },
   '.cm-lintCard-message': { margin: '0' },
+  '.cm-lintCard-source': { margin: '4px 0 0', color: 'var(--muted-strong)' },
   '.cm-lintCard-actions': { display: 'flex', gap: '8px', marginTop: '8px' },
   '.cm-lintCard-actions button': {
     height: '26px',

@@ -37,8 +37,8 @@ function editor(doc: string, extensions = lintExtension(() => CONFIG, () => {}))
 }
 
 // Runs the lint source once and puts its diagnostics in the editor, as the linter does.
-async function lintNow(v: EditorView, onIssues = vi.fn()): Promise<Diagnostic[]> {
-  const diagnostics = await lintSource(() => CONFIG, onIssues)(v);
+async function lintNow(v: EditorView, onIssues = vi.fn(), source: string | null = null): Promise<Diagnostic[]> {
+  const diagnostics = await lintSource(() => CONFIG, onIssues, () => source)(v);
   v.dispatch(setDiagnostics(v.state, diagnostics));
   return diagnostics;
 }
@@ -225,6 +225,37 @@ describe('hover card (Ruling 273)', () => {
     v.dispatch(setDiagnostics(v.state, []));
 
     expect(hasHoverTooltips(v.state)).toBe(false);
+  });
+
+  it('says the rule comes from Lintel settings when no config file is in force (Ruling 287)', () => {
+    const card = renderLintCard([issue()], { fix: vi.fn(), turnOff: vi.fn() });
+
+    expect(card.querySelector('.cm-lintCard-source')!.textContent).toBe('Rule from Lintel settings');
+  });
+
+  it('names the config file that set the rule, and offers no Turn off (Ruling 287)', () => {
+    const card = renderLintCard([issue()], { fix: vi.fn(), turnOff: vi.fn() }, '.markdownlint.json');
+
+    expect(card.querySelector('.cm-lintCard-source')!.textContent).toBe('Rule set by .markdownlint.json');
+    expect([...card.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Fix']);
+  });
+
+  it('leaves out the empty button row for an unfixable issue from a config file', () => {
+    const card = renderLintCard([issue({ fixable: false })], { fix: vi.fn(), turnOff: vi.fn() }, '.markdownlint.yaml');
+
+    expect(card.querySelector('.cm-lintCard-actions')).toBeNull();
+    expect(card.querySelector('.cm-lintCard-message')).not.toBeNull();
+  });
+
+  it('shows the config source the problems were linted with', async () => {
+    const v = editor(TEXT);
+    await lintNow(v, vi.fn(), '.markdownlint.json');
+
+    activateHover(v, 9, 1);
+
+    const sources = [...document.querySelectorAll('.cm-lintCard-source')].map((el) => el.textContent);
+    expect(sources).toEqual(['Rule set by .markdownlint.json', 'Rule set by .markdownlint.json']);
+    expect(document.querySelector('.cm-lintCard-off')).toBeNull();
   });
 
   it('Turn off this rule writes its alias to the settings', async () => {

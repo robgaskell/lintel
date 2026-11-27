@@ -41,18 +41,23 @@ function loadLint(): Promise<LintModule> {
 
 // The issue behind each diagnostic, for the hover card.
 const issueOf = new WeakMap<Diagnostic, LintIssue>();
+// The config file each issue's rules came from; null for Settings.
+const sourceOf = new WeakMap<LintIssue, string | null>();
 
 /**
  * Lints the editor's text with the config `getConfig` returns, or not at all when it
  * returns null (linting off). `onIssues` hears each result; null means "not linted".
+ * `getSource` names the config file in force, or null for the rules in Settings.
  */
 export function lintSource(
   getConfig: () => object | null,
   onIssues: (issues: LintIssue[] | null) => void,
+  getSource: () => string | null = () => null,
 ): (view: EditorView) => Promise<Diagnostic[]> {
   return async (view) => {
     const doc = view.state.doc;
     const config = getConfig();
+    const source = getSource();
     if (!config || tooBig(doc)) {
       onIssues(null);
       return [];
@@ -70,6 +75,7 @@ export function lintSource(
     }
     onIssues(issues);
     return issues.map((issue) => {
+      sourceOf.set(issue, source);
       const diagnostic: Diagnostic = { from: issue.from, to: issue.to, severity: 'warning', message: issue.message };
       issueOf.set(diagnostic, issue);
       return diagnostic;
@@ -99,9 +105,10 @@ export function relint(view: EditorView): void {
 export function lintExtension(
   getConfig: () => object | null,
   onIssues: (issues: LintIssue[] | null) => void,
+  getSource?: () => string | null,
 ): Extension {
   return [
-    linter(lintSource(getConfig, onIssues), {
+    linter(lintSource(getConfig, onIssues, getSource), {
       delay: LINT_DELAY_MS,
       needsRefresh: (update) => update.transactions.some((tr) => tr.effects.some((e) => e.is(refreshLint))),
       // null, not [], drops the linter's own tooltip; the card below replaces it.
@@ -166,7 +173,7 @@ function lintCard(view: EditorView, pos: number, side: -1 | 1): Tooltip | null {
     pos: found.from,
     end: found.to,
     above: false,
-    create: () => ({ dom: renderLintCard(found.issues, cardActions(view)) }),
+    create: () => ({ dom: renderLintCard(found.issues, cardActions(view), sourceOf.get(found.issues[0]) ?? null) }),
   };
 }
 
@@ -191,19 +198,24 @@ export function cardActions(view: EditorView): CardActions {
   };
 }
 
-/** The hover card: for each issue, its rule, message, and Fix (when fixable) and Turn off this rule. */
-export function renderLintCard(issues: LintIssue[], actions: CardActions): HTMLElement {
+/**
+ * The hover card: for each issue, its rule, message, where the rule came from, Fix (when
+ * fixable) and Turn off this rule. Turn off writes to Settings, so it is left out while a
+ * config file sets the rules (`source`, Ruling 287).
+ */
+export function renderLintCard(issues: LintIssue[], actions: CardActions, source: string | null = null): HTMLElement {
   const card = element('div', 'cm-lintCard');
   for (const issue of issues) {
     const row = element('div', 'cm-lintCard-issue');
     row.append(
       element('strong', 'cm-lintCard-rule', `${issue.rule} ${issue.alias}`),
       element('p', 'cm-lintCard-message', issue.message),
+      element('p', 'cm-lintCard-source', source === null ? 'Rule from Lintel settings' : `Rule set by ${source}`),
     );
     const buttons = element('div', 'cm-lintCard-actions');
     if (issue.fixable) buttons.append(button('Fix', 'cm-lintCard-fix', () => actions.fix(issue)));
-    buttons.append(button('Turn off this rule', 'cm-lintCard-off', () => actions.turnOff(issue)));
-    row.append(buttons);
+    if (source === null) buttons.append(button('Turn off this rule', 'cm-lintCard-off', () => actions.turnOff(issue)));
+    if (buttons.childElementCount > 0) row.append(buttons);
     card.append(row);
   }
   return card;

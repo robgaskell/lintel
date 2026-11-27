@@ -9,6 +9,7 @@
     lintCount,
     lintFixable,
     onFixAll,
+    lintConfigStatus = null,
     notice,
     noticeDetails = null,
     update,
@@ -22,6 +23,7 @@
     lintCount: number | null;
     lintFixable: boolean;
     onFixAll?: () => void;
+    lintConfigStatus?: { text: string; details: string | null } | null; // details shown on hover
     notice: string | null;
     noticeDetails?: string | null; // shown on hover
     update: 'none' | 'ready';
@@ -54,6 +56,9 @@
       {#if lintFixable && onFixAll}
         <button type="button" class="link" onclick={onFixAll}>Fix all</button>
       {/if}
+    {/if}
+    {#if lintConfigStatus}
+      <span class="lint-config" title={lintConfigStatus.details}>{lintConfigStatus.text}</span>
     {/if}
   </span>
   <span class="group right">
@@ -106,6 +111,11 @@
   .lint {
     color: var(--lint-warning);
     font-weight: 600;
+  }
+
+  .lint-config {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .link {

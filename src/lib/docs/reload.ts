@@ -11,6 +11,7 @@ import {
   type FileRemovedEvent,
 } from '../ipc';
 import { activeDocId, viewFor } from '../editor/views';
+import { handleConfigFileEvent } from '../lint/config';
 import type { Workspace } from '../layout/workspace';
 import { docs, findByPath, isDirty, type DocState } from './store.svelte';
 import { detectLineEnding, toBuffer, type LineEnding } from './text';
@@ -152,12 +153,29 @@ export function followWorkspace(ws: Pick<Workspace, 'onActiveChange' | 'isVisibl
   };
 }
 
-/** Rust sends each change to the window that watches the file only. */
+/**
+ * Rust sends each change to the windows that watch the file only. The file may be an open
+ * doc, a lint config in use, or both.
+ */
 export function listenForFileEvents(label: string): { ready: Promise<void>; stop: () => void } {
   const options = { target: { kind: 'WebviewWindow' as const, label } };
   const listening = Promise.all([
-    listen<FileChangedEvent>(FILE_CHANGED, ({ payload }) => void handleFileChanged(payload), options),
-    listen<FileRemovedEvent>(FILE_REMOVED, ({ payload }) => void handleFileRemoved(payload), options),
+    listen<FileChangedEvent>(
+      FILE_CHANGED,
+      ({ payload }) => {
+        void handleFileChanged(payload);
+        handleConfigFileEvent(payload.path);
+      },
+      options,
+    ),
+    listen<FileRemovedEvent>(
+      FILE_REMOVED,
+      ({ payload }) => {
+        void handleFileRemoved(payload);
+        handleConfigFileEvent(payload.path);
+      },
+      options,
+    ),
   ]);
   return {
     // Settles either way: without the listeners, docs still open but never reload.

@@ -19,6 +19,7 @@ import {
   setReloadNoticeShower,
 } from './reload';
 import { createDoc, docs, isDirty, saveDoc, type DocState } from './store.svelte';
+import { handleConfigFileEvent } from '../lint/config';
 
 vi.mock('../ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../ipc')>()),
@@ -34,6 +35,10 @@ vi.mock('../ipc', async (importOriginal) => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('../os/recent', () => ({ recordRecent: vi.fn() }));
+vi.mock('../lint/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lint/config')>()),
+  handleConfigFileEvent: vi.fn(),
+}));
 
 const read = vi.mocked(readTextFile);
 const write = vi.mocked(writeTextFile);
@@ -419,5 +424,19 @@ describe('listenForFileEvents', () => {
     const removed = calls[1][1] as (e: { payload: { path: string } }) => void;
     removed({ payload: { path: '/notes/plan.md' } });
     await vi.waitFor(() => expect(doc.external).toBe('deleted'));
+  });
+
+  it('passes each change and removal on to the lint config too (Ruling 284)', async () => {
+    vi.mocked(listen).mockClear();
+    await listenForFileEvents('main').ready;
+    const [changed, removed] = vi.mocked(listen).mock.calls.map(([, handler]) => handler as (e: unknown) => void);
+
+    changed({ payload: { path: '/repo/.markdownlint.json', hash: 'h' } });
+    removed({ payload: { path: '/repo/.markdownlint.yaml' } });
+
+    expect(vi.mocked(handleConfigFileEvent).mock.calls).toEqual([
+      ['/repo/.markdownlint.json'],
+      ['/repo/.markdownlint.yaml'],
+    ]);
   });
 });
