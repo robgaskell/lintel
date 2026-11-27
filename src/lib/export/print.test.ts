@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync } from 'svelte';
 import { message } from '@tauri-apps/plugin-dialog';
 import type { DocState } from '../docs/store.svelte';
 import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
 import { currentPlatform } from '../os/platform';
 import { DEFAULT_SETTINGS, settings, type Settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
-import { dropPrintRootUnlessOpen, printDoc } from './print';
+import { dropStalePrintRoot, printDoc } from './print';
 
 vi.mock('../ipc', () => ({
   readImageAsDataUri: vi.fn(),
@@ -62,7 +63,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  dropPrintRootUnlessOpen(new Set());
+  dropStalePrintRoot(undefined);
   applyTheme(withTheme('light'));
 });
 
@@ -121,6 +122,31 @@ describe('printDoc', () => {
     expect(forRoot[0].body).toMatch(/color-scheme: light;/);
   });
 
+  it('makes every print override win whatever order the stylesheets load in (Ruling 301)', async () => {
+    const { readFileSync } = (await import(/* @vite-ignore */ 'node:fs' as string)) as {
+      readFileSync(path: string, encoding: 'utf8'): string;
+    };
+    const css = readFileSync('src/lib/export/print.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const media = css.indexOf('@media print');
+    expect(media).toBeGreaterThan(-1);
+    const screen = css.slice(0, media);
+    const printed = css.slice(media);
+    expect(screen).toMatch(/\.print-root \{\s*display: none;\s*\}/);
+    expect(screen).toMatch(/@page \{\s*margin: 18mm 16mm;\s*\}/);
+    const decls = [...printed.matchAll(/([a-z-]+):\s*([^;{}]+);/g)].map(([, name, value]) => `${name}: ${value.trim()}`);
+    for (const decl of decls) expect(decl, decl).toMatch(/!important$/);
+    for (const needed of [
+      /html,\s*body \{\s*height: auto !important;\s*overflow: visible !important;\s*background: none !important;/,
+      /body > :not\(\.print-root\) \{\s*display: none !important;/,
+      /\.print-root \{\s*display: block !important;/,
+      /break-inside: avoid !important;/,
+    ]) {
+      expect(printed).toMatch(needed);
+    }
+    const preview = readFileSync('src/lib/ui/Preview.svelte', 'utf8');
+    expect(preview).toMatch(/\.print \.content :global\(pre\) \{\s*white-space: pre-wrap;/);
+  });
+
   it('prints remote images only when the doc already shows them', async () => {
     await printDoc(doc('![Far](https://example.com/far.png)\n'), { pdfHint: false });
     expect(printed[0].root!.querySelector('img')).toBeNull();
@@ -147,15 +173,76 @@ describe('printDoc', () => {
     expect(printed[0].root!.isConnected).toBe(false);
   });
 
-  it('drops the root once its doc is no longer open', async () => {
+  it('keeps the root while its doc is the active tab with the same text (Ruling 302)', async () => {
     const printedDoc = doc('# Kept\n');
     await printDoc(printedDoc, { pdfHint: false });
 
-    dropPrintRootUnlessOpen(new Set([printedDoc.id, 'other']));
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Kept\n' });
     expect(document.querySelector('.print-root')).not.toBeNull();
+  });
 
-    dropPrintRootUnlessOpen(new Set(['other']));
+  it('drops the root when its text changes (Ruling 302)', async () => {
+    const printedDoc = doc('# Kept\n');
+    await printDoc(printedDoc, { pdfHint: false });
+
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Kept, edited\n' });
     expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('drops the root when another tab or none is active (Ruling 302)', async () => {
+    await printDoc(doc('# Kept\n'), { pdfHint: false });
+    dropStalePrintRoot({ id: 'other', text: '# Kept\n' });
+    expect(document.querySelector('.print-root')).toBeNull();
+
+    await printDoc(doc('# Kept\n'), { pdfHint: false });
+    dropStalePrintRoot(undefined);
+    expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('freezes the printed root: allowing remote images later fetches nothing (Ruling 302)', async () => {
+    await printDoc(doc('![Far](https://example.com/far.png)\n'), { pdfHint: false });
+
+    settings.remoteImages = 'load';
+    flushSync();
+    await later(null);
+    await later(null);
+
+    expect(fetchRemoteImage).not.toHaveBeenCalled();
+    expect(document.querySelector('.print-root .image-alt')!.textContent).toBe('Far');
+  });
+
+  it('prints only the later of two overlapping prints (Ruling 303)', async () => {
+    const first = printDoc(doc('# First\n\n![Chart](img/c.png)\n'), { pdfHint: false });
+    const second = printDoc(doc('# Second\n'), { pdfHint: false });
+    await Promise.all([first, second]);
+
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(printed[0].root!.querySelector('h1')!.textContent).toBe('Second');
+    expect(document.querySelectorAll('.print-root')).toHaveLength(1);
+  });
+
+  it('rejects when the print call rejects, so the menu shows the error (Ruling 303)', async () => {
+    print.mockImplementationOnce(() => Promise.reject(new Error('print is not allowed')) as never);
+    await expect(printDoc(doc('# A\n'), { pdfHint: false })).rejects.toThrow('print is not allowed');
+  });
+
+  it('sets up no resize observer for the print preview (Ruling 304)', async () => {
+    const Original = globalThis.ResizeObserver;
+    const made = vi.fn();
+    globalThis.ResizeObserver = class {
+      constructor() {
+        made();
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      await printDoc(doc('# A\n'), { pdfHint: false });
+    } finally {
+      globalThis.ResizeObserver = Original;
+    }
+    expect(made).not.toHaveBeenCalled();
   });
 
   it.each([

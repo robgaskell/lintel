@@ -6,6 +6,7 @@ import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
 import { ImageLoader } from '../render/imageLoader';
 import { openPaths } from '../os/open';
 import { renderMarkdown } from '../render/markdown';
+import { renderMermaidIn } from '../render/mermaid';
 import { DEFAULT_SETTINGS, settings, updateSettings, type Settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
 import { fakePreviewLayout } from '../../test/layout';
@@ -37,6 +38,11 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 // Real mermaid cannot lay out under jsdom.
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
 vi.mock('mermaid', () => ({ default: mermaid }));
+// Passed through, but counted.
+vi.mock('../render/mermaid', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../render/mermaid')>();
+  return { ...real, renderMermaidIn: vi.fn(real.renderMermaidIn) };
+});
 let mermaidTheme: string | undefined;
 
 const readImage = vi.mocked(readImageAsDataUri);
@@ -444,6 +450,13 @@ describe('Preview diagrams', () => {
   let restoreLayout: () => void;
   beforeEach(() => (restoreLayout = fakePreviewLayout()));
   afterEach(() => restoreLayout());
+
+  it('draws its diagrams once when it mounts, not again for the unchanged theme (Ruling 304)', async () => {
+    const { container } = show(diagram('Once'));
+    await vi.waitFor(() => expect(container.querySelector('.mermaid-diagram svg')).not.toBeNull());
+
+    expect(renderMermaidIn).toHaveBeenCalledTimes(1);
+  });
 
   it('draws nothing in a hidden tab until it is shown (Ruling 115)', async () => {
     restoreLayout(); // jsdom without the fake layout measures 0: hidden

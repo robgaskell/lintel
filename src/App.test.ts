@@ -5,7 +5,7 @@ import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
 import { registerView } from './lib/editor/views';
-import { dropPrintRootUnlessOpen } from './lib/export/print';
+import { dropStalePrintRoot } from './lib/export/print';
 import { findLintConfig } from './lib/ipc';
 import { fixAll, type LintIssue } from './lib/lint/lint';
 import { lintIssues } from './lib/lint/lintState.svelte';
@@ -117,7 +117,7 @@ vi.mock('./lib/ipc', async (importOriginal) => ({
 }));
 // Fix all reaches markdownlint only through this module; the lint source is stubbed (Ruling 275).
 vi.mock('./lib/lint/lint', () => ({ fixAll: vi.fn() }));
-vi.mock('./lib/export/print', () => ({ printDoc: vi.fn(), dropPrintRootUnlessOpen: vi.fn() }));
+vi.mock('./lib/export/print', () => ({ printDoc: vi.fn(), dropStalePrintRoot: vi.fn() }));
 vi.mock('./lib/lint/lintExtension', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/lint/lintExtension')>()),
   lintExtension: vi.fn(() => []),
@@ -669,14 +669,22 @@ describe('App live reload switched off (Ruling 265)', () => {
 });
 
 describe('App print root', () => {
-  it('drops the print root when its doc leaves the window (Ruling 294)', () => {
+  it('checks the print root against the active doc on a tab change or an edit (Ruling 302)', () => {
     const a = createDoc({ path: '/a.md', raw: 'a', hash: 'h', mode: 'read' });
     const b = createDoc({ path: '/b.md', raw: 'b', hash: 'h', mode: 'read' });
+    fake.active = a.id;
     render(App);
-    expect(dropPrintRootUnlessOpen).toHaveBeenLastCalledWith(new Set([a.id, b.id]));
+    expect(dropStalePrintRoot).toHaveBeenLastCalledWith({ id: a.id, text: 'a' });
 
-    docs.delete(a.id);
+    a.text = 'a, edited';
     flushSync();
-    expect(dropPrintRootUnlessOpen).toHaveBeenLastCalledWith(new Set([b.id]));
+    expect(dropStalePrintRoot).toHaveBeenLastCalledWith({ id: a.id, text: 'a, edited' });
+
+    setActive(b.id);
+    expect(dropStalePrintRoot).toHaveBeenLastCalledWith({ id: b.id, text: 'b' });
+
+    docs.delete(b.id);
+    setActive(null);
+    expect(dropStalePrintRoot).toHaveBeenLastCalledWith(undefined);
   });
 });

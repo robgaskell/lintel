@@ -187,6 +187,17 @@ describe('makeMenuHandlers', () => {
     expect(printDoc).toHaveBeenNthCalledWith(2, doc, { pdfHint: true });
   });
 
+  it('shows a failed print in an error dialog (Ruling 303)', async () => {
+    docs.set('doc-1', { id: 'doc-1', mode: 'split' } as DocState);
+    vi.mocked(printDoc).mockRejectedValueOnce(new Error('print is not allowed'));
+
+    makeMenuHandlers(deps()).print();
+
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith('Error: print is not allowed', { title: 'Lintel', kind: 'error' }),
+    );
+  });
+
   it('prints nothing with no doc open', async () => {
     const d = deps();
     vi.mocked(d.workspace.activeDocId).mockReturnValue(null);

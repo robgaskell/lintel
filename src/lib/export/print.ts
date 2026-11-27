@@ -15,43 +15,63 @@ const PDF_HINTS: Record<Platform, string> = {
   linux: 'In the print dialog, choose Print to File, then PDF.',
 };
 
-let shown: { docId: string; root: HTMLElement; preview: Record<string, unknown> } | null = null;
+let shown: { docId: string; text: string; root: HTMLElement } | null = null;
 
 /**
- * Prints the doc as the preview shows it, in the light palette. The print root stays in the
- * page after print returns, since macOS returns before its dialog even opens (Ruling 294).
+ * Prints the doc as the preview shows it, in the light palette. The root stays in the page
+ * after print returns, since macOS returns before its dialog even opens (Rulings 294, 302).
  */
 export async function printDoc(doc: DocState, opts: { pdfHint: boolean }): Promise<void> {
   if (opts.pdfHint) await message(PDF_HINTS[currentPlatform()], { title: 'Export as PDF', kind: 'info' });
-  const result = renderMarkdown(doc.text);
   dropPrintRoot();
   const root = document.createElement('div');
   root.className = 'print-root';
   for (const [name, value] of Object.entries(cssVariables(settings, 'light'))) root.style.setProperty(name, value);
   root.style.colorScheme = 'light';
-  // In the page before rendering: Mermaid skips a detached container.
   document.body.append(root);
-  const preview = mount(Preview, {
-    target: root,
-    props: { result, docId: doc.id, docPath: doc.path, reading: true, print: true },
-  });
-  shown = { docId: doc.id, root, preview };
-  flushSync();
-  await preview.drawn();
-  // A later print has replaced this one.
+  shown = { docId: doc.id, text: doc.text, root };
+  try {
+    await renderFrozen(doc, root);
+  } catch (err) {
+    if (shown?.root === root) dropPrintRoot();
+    throw err;
+  }
+  // Replaced by a later print, or dropped as stale.
   if (shown?.root !== root) return;
   // On macOS Tauri's override returns a promise, which rejects without core:webview:allow-print.
   await (window.print() as unknown);
 }
 
-/** `open` is the ids of the docs in this window. */
-export function dropPrintRootUnlessOpen(open: ReadonlySet<string>): void {
-  if (shown && !open.has(shown.docId)) dropPrintRoot();
+/**
+ * Renders the doc's preview in print mode into `host`, which must be in the page so Mermaid
+ * draws, then leaves only a static copy there: no effects, loaders or fetches. Returns its HTML.
+ */
+export async function renderFrozen(doc: Pick<DocState, 'id' | 'path' | 'text'>, host: HTMLElement): Promise<string> {
+  const result = renderMarkdown(doc.text);
+  const preview = mount(Preview, {
+    target: host,
+    props: { result, docId: doc.id, docPath: doc.path, reading: true, print: true },
+  });
+  let copy: Node[];
+  try {
+    flushSync();
+    await preview.drawn();
+    copy = [...host.childNodes].map((node) => node.cloneNode(true));
+  } finally {
+    await unmount(preview);
+  }
+  host.replaceChildren(...copy);
+  // A copied image decodes again; printing waits until it can be drawn.
+  await Promise.all([...host.querySelectorAll('img')].map((img) => img.decode?.().catch(() => {})));
+  return host.innerHTML;
+}
+
+/** Drops the print root unless `active`, this window's active doc, is the one printed as it was. */
+export function dropStalePrintRoot(active: { id: string; text: string } | undefined): void {
+  if (shown && (shown.docId !== active?.id || shown.text !== active.text)) dropPrintRoot();
 }
 
 function dropPrintRoot() {
-  if (!shown) return;
-  void unmount(shown.preview);
-  shown.root.remove();
+  shown?.root.remove();
   shown = null;
 }

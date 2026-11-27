@@ -1,4 +1,7 @@
-/* The print root is hidden on screen and is all that prints (Rulings 293, 294). */
+/*
+ * The print root is hidden on screen and is all that prints (Rulings 293, 294). The print
+ * rules are !important: app.css may load later with rules of the same weight (Ruling 301).
+ */
 .print-root {
   display: none;
 }
@@ -11,9 +14,9 @@
 @media print {
   html,
   body {
-    height: auto;
-    overflow: visible;
-    background: none;
+    height: auto !important;
+    overflow: visible !important;
+    background: none !important;
   }
 
   body > :not(.print-root) {
@@ -21,14 +24,14 @@
   }
 
   .print-root {
-    display: block;
+    display: block !important;
   }
 
   .print-root :is(pre, table, tr, blockquote, img, .mermaid-diagram, .mermaid-error, .front-matter) {
-    break-inside: avoid;
+    break-inside: avoid !important;
   }
 
   .print-root :is(h1, h2, h3, h4, h5, h6) {
-    break-after: avoid;
+    break-after: avoid !important;
   }
 }

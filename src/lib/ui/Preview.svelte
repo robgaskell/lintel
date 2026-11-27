@@ -228,11 +228,7 @@
     }
     img.removeAttribute('src');
     const loading = loader.load(key).then(
-      (uri) => {
-        img.src = uri;
-        // A print waits until the image can be drawn, not just until it has its src.
-        if (print) return img.decode?.().catch(() => {});
-      },
+      (uri) => (img.src = uri),
       (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
     );
     if (print) imagesLoading.push(loading);
