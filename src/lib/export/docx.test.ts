@@ -539,8 +539,19 @@ describe('the output gate (Ruling 335)', () => {
     expect(out.get('word/footnotes.xml')).not.toMatch(/<w:hyperlink /);
   });
 
-  it('returns the same bytes when there is nothing to remove', async () => {
-    const bytes = zipSync(await built('[web](https://web.example/)\n'));
+  it('returns the same bytes when there is nothing to remove, for a realistic document', async () => {
+    const text = [
+      '---\ntitle: Notes\n---\n',
+      '# Title\n\nSome *text* with [a link](https://web.example/a?b=1#c), [a section](#title) and a note[^1].\n',
+      `![picture](data:image/png;base64,${PNG_BASE64})\n\n[![linked](data:image/png;base64,${PNG_BASE64})](https://img.example/)\n`,
+      '| a | b |\n| - | - |\n| 1 | **2** |\n\n- [x] done\n- [ ] to do\n\n> quoted `code`\n',
+      '```js\nconst x = 1;\n```\n\n```mermaid\ngraph TD; A-->B\n```\n',
+      '<p>Raw <a href="https://raw.example/">link</a> <svg width="9" height="9"><rect width="9" height="9"/></svg></p>\n',
+      '[^1]: The note, with [its link](mailto:a@b.example).\n',
+    ].join('\n');
+    const files = await built(text);
+    expect(count(strFromU8(files['word/document.xml']!), /<w:drawing>/g)).toBe(4);
+    const bytes = zipSync(files);
     expect(await realGate(bytes)).toBe(bytes);
   });
 
@@ -603,6 +614,36 @@ function danglingRefs(files: Map<string, string>): string[] {
   return dangling;
 }
 
+// The verifier's hand-made packages (round 3), each made from a built file.
+type Files = Record<string, Uint8Array>;
+const get = (f: Files, n: string) => strFromU8(f[n]!);
+const set = (f: Files, n: string, s: string) => void (f[n] = strToU8(s));
+const addRel = (f: Files, n: string, entry: string) => {
+  f[n] ??= strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PKG_NS}"></Relationships>`);
+  set(f, n, get(f, n).replace(/<Relationships([^>]*?)\/>/, '<Relationships$1></Relationships>').replace('</Relationships>', `${entry}</Relationships>`));
+};
+const rel = (id: string, type: string, target: string, mode = ' TargetMode="External"') =>
+  `<Relationship Id="${id}" Type="${R_NS}/${type}" Target="${target}"${mode}/>`;
+const body = (f: Files, xml: string, part = 'word/document.xml') => set(f, part, get(f, part).replace(/<w:body>/, `<w:body>${xml}`));
+const fieldRuns = (...pieces: string[]) =>
+  `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>${pieces.map((p) => `<w:r><w:instrText xml:space="preserve">${p}</w:instrText></w:r>`).join('')}<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>r</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`;
+const field = (instruction: string) => (f: Files) => body(f, fieldRuns(instruction));
+const retarget = (from: string, to: string, n = DOCUMENT_RELS) => (f: Files) => set(f, n, get(f, n).replace(from, to));
+const okTo = (target: string, mode: string) => (f: Files) =>
+  set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace(/Target="https:\/\/ok\.example\/" TargetMode="External"/, `Target="${target}"${mode}`));
+const minPart = (inner: string, root = 'w:document') =>
+  `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${root} xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:body>${inner}</w:body></${root}>`;
+const internalImage = (target: string) => (f: Files) => {
+  set(f, 'word/document.xml', get(f, 'word/document.xml').replace(/r:embed="(rId[^"]*)"/, 'r:embed="rIdX"'));
+  addRel(f, DOCUMENT_RELS, rel('rIdX', 'image', target, ''));
+};
+
+async function attacked(attack: (f: Files) => void) {
+  const files = await built(`[safe](https://ok.example/) and [![i](data:image/png;base64,${PNG_BASE64})](https://img.example/) note[^1].\n\n[^1]: See [fn](https://fn.example/).\n`);
+  attack(files);
+  return zipSync(files);
+}
+
 describe('the output gate, round 4 (Ruling 339)', () => {
   it('writes each part it changes with one XML declaration, even where the browser adds its own', async () => {
     // WebKit and Chromium include the declaration; jsdom does not.
@@ -641,30 +682,6 @@ describe('the output gate, round 4 (Ruling 339)', () => {
     expect(out.get('word/document.xml')).not.toMatch(/<a:hlinkClick /);
     expect(count(out.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
   });
-
-  // The verifier's hand-made packages (round 3), each made from a built file.
-  type Files = Record<string, Uint8Array>;
-  const get = (f: Files, n: string) => strFromU8(f[n]!);
-  const set = (f: Files, n: string, s: string) => void (f[n] = strToU8(s));
-  const addRel = (f: Files, n: string, entry: string) => {
-    f[n] ??= strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PKG_NS}"></Relationships>`);
-    set(f, n, get(f, n).replace(/<Relationships([^>]*?)\/>/, '<Relationships$1></Relationships>').replace('</Relationships>', `${entry}</Relationships>`));
-  };
-  const rel = (id: string, type: string, target: string, mode = ' TargetMode="External"') =>
-    `<Relationship Id="${id}" Type="${R_NS}/${type}" Target="${target}"${mode}/>`;
-  const body = (f: Files, xml: string, part = 'word/document.xml') => set(f, part, get(f, part).replace(/<w:body>/, `<w:body>${xml}`));
-  const fieldRuns = (...pieces: string[]) =>
-    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>${pieces.map((p) => `<w:r><w:instrText xml:space="preserve">${p}</w:instrText></w:r>`).join('')}<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>r</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`;
-  const field = (instruction: string) => (f: Files) => body(f, fieldRuns(instruction));
-  const retarget = (from: string, to: string, n = DOCUMENT_RELS) => (f: Files) => set(f, n, get(f, n).replace(from, to));
-  const okTo = (target: string, mode: string) => (f: Files) =>
-    set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace(/Target="https:\/\/ok\.example\/" TargetMode="External"/, `Target="${target}"${mode}`));
-  const minPart = (inner: string, root = 'w:document') =>
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${root} xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:body>${inner}</w:body></${root}>`;
-  const internalImage = (target: string) => (f: Files) => {
-    set(f, 'word/document.xml', get(f, 'word/document.xml').replace(/r:embed="(rId[^"]*)"/, 'r:embed="rIdX"'));
-    addRel(f, DOCUMENT_RELS, rel('rIdX', 'image', target, ''));
-  };
 
   const passed: [string, (f: Files) => void][] = [
     ['A00 nothing to do', () => {}],
@@ -741,12 +758,6 @@ describe('the output gate, round 4 (Ruling 339)', () => {
     ['A50 an outside thumbnail', (f) => addRel(f, '_rels/.rels', rel('rIdP', 'metadata/thumbnail', 'http://evil-a50/t.png'))],
   ];
 
-  async function attacked(attack: (f: Files) => void) {
-    const files = await built(`[safe](https://ok.example/) and [![i](data:image/png;base64,${PNG_BASE64})](https://img.example/) note[^1].\n\n[^1]: See [fn](https://fn.example/).\n`);
-    attack(files);
-    return zipSync(files);
-  }
-
   it.each(passed)('passes %s with no outside link and nothing broken', async (_name, attack) => {
     const out = unzip(await realGate(await attacked(attack)));
     for (const [name, text] of out) {
@@ -762,6 +773,59 @@ describe('the output gate, round 4 (Ruling 339)', () => {
   });
 });
 
+describe('the output gate, round 5 (Ruling 340)', () => {
+  const settings = (xml: string) => (f: Files) => set(f, 'word/settings.xml', get(f, 'word/settings.xml').replace(/(<w:settings[^>]*>)/, `$1${xml}`));
+
+  const stopped: [string, (f: Files) => void][] = [
+    ['C01 a VML fill src', (f) => body(f, '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" style="width:9pt;height:9pt"><v:fill src="http://evil-c01/x.png" type="frame"/></v:shape></w:pict></w:r></w:p>')],
+    ['C02 a deleted field instruction', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:del w:id="1" w:author="a" w:date="2020-01-01T00:00:00Z"><w:r><w:delInstrText> INCLUDEPICTURE "http://evil-c02/x.png" \\d </w:delInstrText></w:r></w:del><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>r</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+    ['C03 a field with no end', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> INCLUDEPICTURE "http://evil-c03/x.png" \\d </w:instrText></w:r></w:p>')],
+    ['C05 an unknown fldCharType', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="xyz"/></w:r></w:p>')],
+    ['an href in a relationships part', (f) => set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace('</Relationships>', '<Note xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="http://evil-rh/x"/></Relationships>'))],
+    ['B01 a mail merge connection', settings('<w:mailMerge><w:mainDocumentType w:val="formLetters"/><w:linkToQuery/><w:dataType w:val="native"/><w:connectString w:val="Provider=Microsoft.ACE.OLEDB.12.0;Data Source=\\\\evil-b01\\share\\db.xlsx;"/><w:query w:val="SELECT * FROM `\\\\evil-b01\\share\\db.xlsx`.`Sheet1`"/></w:mailMerge>')],
+    ['B03 a mail merge data source (odso, udl)', settings('<w:mailMerge><w:mainDocumentType w:val="formLetters"/><w:dataType w:val="database"/><w:query w:val="SELECT * FROM t"/><w:odso><w:udl w:val="Provider=SQLOLEDB;Data Source=evil-b03;"/><w:table w:val="t"/></w:odso></w:mailMerge>')],
+    ['a mail merge data source outside a mailMerge', settings('<w:odso><w:udl w:val="Provider=SQLOLEDB;Data Source=evil-odso;"/></w:odso>')],
+    ['B05 an Internal template above the package', (f) => { settings('<w:attachedTemplate r:id="rIdT"/>')(f); addRel(f, 'word/_rels/settings.xml.rels', rel('rIdT', 'attachedTemplate', '../../../../evil-b05/t.dotm', '')); }],
+    ['an Internal image above the package', internalImage('media/../../evil-dots/x.png')],
+    ['B13 a HyperlinkBase', (f) => {
+      // docx writes app.xml as one empty element.
+      const app = get(f, 'docProps/app.xml').replace(/<Properties([^>]*?)\/>/, '<Properties$1></Properties>');
+      set(f, 'docProps/app.xml', app.replace('</Properties>', '<HyperlinkBase>\\\\evil-b13\\share\\</HyperlinkBase></Properties>'));
+      retarget('https://ok.example/', 'relative/doc.docx')(f);
+    }],
+    ['B15 a fldSimple inside a HYPERLINK instruction', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> HYPERLINK "</w:instrText></w:r><w:fldSimple w:instr=" REF bm "><w:r><w:t>\\\\evil-b15\\x</w:t></w:r></w:fldSimple><w:r><w:instrText xml:space="preserve">" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>t</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+  ];
+
+  it.each(stopped)('stops the export for %s', async (_name, attack) => {
+    await expect(realGate(await attacked(attack))).rejects.toThrow(OUTSIDE_CONTENT);
+  });
+
+  const unreadable: [string, (f: Files) => void][] = [
+    ['C06 a part that is not well-formed', (f) => set(f, 'word/settings.xml', `<w:settings xmlns:w="${W_NS}"><w:x></w:settings>`)],
+    ['B11 the main document under another name', (f) => {
+      f['word/document.bin'] = strToU8(get(f, 'word/document.xml').replace(/<w:body>/, `<w:body>${fieldRuns(' INCLUDEPICTURE "http://evil-b11/x.png" \\d ')}`));
+      delete f['word/document.xml'];
+      f['word/_rels/document.bin.rels'] = f[DOCUMENT_RELS]!;
+      delete f[DOCUMENT_RELS];
+      set(f, '_rels/.rels', get(f, '_rels/.rels').replace('word/document.xml', 'word/document.bin'));
+      set(f, '[Content_Types].xml', get(f, '[Content_Types].xml').replace('PartName="/word/document.xml"', 'PartName="/word/document.bin"'));
+    }],
+    ['B12 a header under another name', (f) => {
+      set(f, 'word/header9.bin', `<?xml version="1.0"?><w:hdr xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:p><w:fldSimple w:instr=" INCLUDEPICTURE &quot;http://evil-b12/x.png&quot; \\d "><w:r><w:t>h</w:t></w:r></w:fldSimple></w:p></w:hdr>`);
+      set(f, '[Content_Types].xml', get(f, '[Content_Types].xml').replace('</Types>', '<Override PartName="/word/header9.bin" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>'));
+      addRel(f, DOCUMENT_RELS, rel('rIdH9', 'header', 'header9.bin', ''));
+    }],
+    ['an XML part by its extension\'s default type', (f) => {
+      set(f, 'word/extra.dat', `<?xml version="1.0"?><w:hdr xmlns:w="${W_NS}"/>`);
+      set(f, '[Content_Types].xml', get(f, '[Content_Types].xml').replace('</Types>', '<Default Extension="DAT" ContentType="text/xml"/></Types>'));
+    }],
+  ];
+
+  it.each(unreadable)('stops the export for %s, which it cannot check', async (_name, attack) => {
+    await expect(realGate(await attacked(attack))).rejects.toThrow(/could not be checked/);
+  });
+});
+
 describe('raw HTML the input layer cannot rewrite safely (Ruling 339)', () => {
   it('becomes its text when the rewritten HTML reads differently (M8b)', async () => {
     vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
@@ -772,11 +836,26 @@ describe('raw HTML the input layer cannot rewrite safely (Ruling 339)', () => {
     expect(count(xml, /<w:drawing>/g)).toBe(0);
   });
 
-  it('never draws an empty <svg> from a block split by a blank line', async () => {
-    const text = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\n\n<rect width="40" height="20"/></svg>\n';
+  // The verifier's split cases (rounds 4 and 5): each half alone draws nothing.
+  it.each([
+    ['an empty <svg>', '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\n\n<rect width="40" height="20"/></svg>\n'],
+    ['an empty <g>', '<svg width="40" height="20"><g>\n\n<rect width="5" height="5"/></g></svg>\n'],
+    ['an empty <defs>', '<svg width="40" height="20"><defs>\n\n</defs><rect width="5" height="5"/></svg>\n'],
+    ['a closed empty <g>', '<svg width="40" height="20"><g></g>\n\n<rect width="5" height="5"/></svg>\n'],
+  ])('never draws %s from a block split by a blank line', async (_name, text) => {
     const xml = (await parts(text)).get('word/document.xml')!;
-    for (const [svg] of vi.mocked(svgToPng).mock.calls) expect(svg).toMatch(/^<svg[^>]*>\s*<\w/);
+    expect(svgToPng).not.toHaveBeenCalled();
     expect(count(xml, /<w:drawing>/g)).toBe(0);
+  });
+
+  it.each([
+    ['a whole <svg>', '<svg width="40" height="20"><rect width="5" height="5"/></svg>\n'],
+    ['a first half that draws', '<svg width="40" height="20">\n<rect width="5" height="5"/>\n\n<circle r="3"/></svg>\n'],
+    ['shapes inside a <g>', '<svg width="40" height="20"><g><defs></defs><rect width="5" height="5"/></g></svg>\n'],
+  ])('still draws %s', async (_name, text) => {
+    const xml = (await parts(text)).get('word/document.xml')!;
+    expect(svgToPng).toHaveBeenCalledTimes(1);
+    expect(count(xml, /<w:drawing>/g)).toBe(1);
   });
 });
 

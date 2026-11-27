@@ -7,22 +7,25 @@ const FIELD_TOKEN = /[“”„‟"＂]([^“”„‟"＂]*)[“”„‟"＂]?
 const FIELD_SWITCH = /^\\[a-z*#@!]$/i;
 // A path inside the package, such as media/image1.png. Anything else may name a place outside.
 const PART_PATH = /^[\w.~-]+(\/[\w.~-]+)*$/;
+// Elements that make Word take in content, read a data source or resolve links from elsewhere.
+const OUTSIDE_ELEMENTS = new Set(['altChunk', 'mailMerge', 'odso', 'udl', 'HyperlinkBase']);
 
 export const OUTSIDE_CONTENT =
   'This document would make Word load something from outside the file, so Lintel did not export it.';
 
 /**
- * The last check before a .docx is written; whatever the input did, the file it passes links
- * only where keepsLink allows and loads nothing from outside (Rulings 335, 339). An outside
- * hyperlink that fails keepsLink is removed, with everything that points at it. Any other
- * outside relationship, unknown field, VML link or altChunk throws OUTSIDE_CONTENT.
- * Returns `bytes` itself when nothing was removed.
+ * The last check before a .docx is written (Rulings 335, 339, 340). For packages remark-docx and
+ * docx produce, whatever the input did, the file it passes links only where keepsLink allows and
+ * loads nothing from outside; hand-made packages may hold parts it does not read, so recheck
+ * after a remark-docx or docx upgrade. An unsafe outside hyperlink is removed, with everything
+ * that points at it; any other outside reference throws. Returns `bytes` itself when unchanged.
  */
 export async function gateDocx(bytes: Uint8Array): Promise<Uint8Array> {
   const { unzipSync, zipSync, strFromU8, strToU8 } = await import('fflate');
   const files = unzipSync(bytes);
   const parsed = new Map<string, Document>();
   const read = (name: string) => parsed.get(name) ?? parsed.set(name, parseXml(strFromU8(files[name]!), name)).get(name)!;
+  checkPartNames(Object.keys(files), read);
   const changed = new Set<string>();
   for (const name of Object.keys(files)) {
     if (!/\.rels$/i.test(name)) continue;
@@ -47,7 +50,8 @@ function removeUnsafeHyperlinks(rels: Document): Set<string> {
   const removed = new Set<string>();
   for (const rel of [...rels.getElementsByTagNameNS('*', 'Relationship')]) {
     const target = rel.getAttribute('Target') ?? '';
-    const external = rel.getAttribute('TargetMode')?.trim().toLowerCase() === 'external' || !PART_PATH.test(target);
+    const inside = PART_PATH.test(target) && !target.split('/').includes('..');
+    const external = rel.getAttribute('TargetMode')?.trim().toLowerCase() === 'external' || !inside;
     if (!external) continue;
     if (!rel.getAttribute('Type')?.endsWith('/hyperlink')) throw new Error(OUTSIDE_CONTENT);
     if (keepsLink(target)) continue;
@@ -69,16 +73,17 @@ function dropReferences(part: Document, ids: Set<string>) {
   }
 }
 
-/** Throws if the part has an altChunk, a VML link, or a field that may load or link outside. */
+/** Throws if the part has an element, link or field that may load or link outside. */
 function checkPart(part: Document) {
   // Fields whose instruction is still being read; a field inside one could build its address.
   const open: { instruction: string; done: boolean }[] = [];
   for (const el of part.getElementsByTagNameNS('*', '*')) {
-    if (el.localName === 'altChunk') throw new Error(OUTSIDE_CONTENT);
+    if (OUTSIDE_ELEMENTS.has(el.localName)) throw new Error(OUTSIDE_CONTENT);
     if ([...el.attributes].some((attr) => attr.localName === 'href' || attr.localName === 'src')) throw new Error(OUTSIDE_CONTENT);
     const top = open.at(-1);
     switch (el.localName) {
       case 'fldSimple':
+        if (top && !top.done) throw new Error(OUTSIDE_CONTENT);
         checkField(attribute(el, 'instr'));
         break;
       case 'instrText':
@@ -128,10 +133,34 @@ function sourcePartOf(rels: string, names: string[]): string | null {
   return names.find((name) => name.toLowerCase() === source) ?? null;
 }
 
+/** Throws for a part Word reads as XML whose name the scans here skip. */
+function checkPartNames(names: string[], read: (name: string) => Document) {
+  const typesName = names.find((name) => name.toLowerCase() === '[content_types].xml');
+  if (!typesName) return;
+  const byExtension = contentTypes(read(typesName), 'Default', 'Extension');
+  const byName = contentTypes(read(typesName), 'Override', 'PartName');
+  for (const name of names) {
+    if (/\.(xml|rels)$/i.test(name)) continue;
+    const extension = /\.([^./]*)$/.exec(name)?.[1] ?? '';
+    const type = byName.get(`/${name}`.toLowerCase()) ?? byExtension.get(extension.toLowerCase()) ?? '';
+    if (/[/+]xml$/i.test(type.trim())) throw cannotCheck(name);
+  }
+}
+
+// Extensions and part names are not case sensitive.
+function contentTypes(types: Document, tag: string, key: string): Map<string, string> {
+  const entries = [...types.getElementsByTagNameNS('*', tag)].map((el) => [el.getAttribute(key)?.toLowerCase() ?? '', el.getAttribute('ContentType') ?? ''] as const);
+  return new Map(entries);
+}
+
 function parseXml(text: string, name: string): Document {
   const doc = new DOMParser().parseFromString(text, 'application/xml');
-  if (doc.getElementsByTagName('parsererror').length > 0) throw new Error(`The Word file could not be checked (${name}).`);
+  if (doc.getElementsByTagName('parsererror').length > 0) throw cannotCheck(name);
   return doc;
+}
+
+function cannotCheck(name: string): Error {
+  return new Error(`The Word file could not be checked (${name}).`);
 }
 
 // WebKit's and Chromium's XMLSerializer write a declaration and jsdom's does not; Word expects one.

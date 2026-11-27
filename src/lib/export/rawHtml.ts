@@ -15,6 +15,8 @@ const JOINED = new Set([
 ]);
 // Text in these is not shown, or is markup, so it is left out when HTML becomes text.
 const HIDDEN = new Set(['script', 'style', 'template', 'noscript', 'xmp', 'iframe', 'noembed', 'noframes', 'textarea', 'title']);
+// SVG elements that draw nothing unless something else is inside them.
+const SVG_NO_INK = new Set(['g', 'defs', 'symbol', 'title', 'desc', 'metadata']);
 
 /**
  * The first layer of the Word export's link and image rules; the output gate is the second
@@ -96,8 +98,9 @@ function checkGroup(group: RootContent[], block: boolean, inline: InlineSvg) {
 /**
  * One raw HTML node with unsafe hrefs removed, remote and off-device images as their alt
  * text, and inline SVGs and SVG data: images as pictures loaded through `inline` (PNG only
- * in Word); an empty inline SVG becomes its aria-label. Changes are made on the parsed tree, which is written back out only if writing
- * and reading it again gives the same HTML. Null when the node must become text instead.
+ * in Word); an inline SVG with nothing to draw becomes its aria-label. Changes are made on the
+ * parsed tree, which is written back out only if writing and reading it again gives the same
+ * HTML. Null when the node must become text instead.
  */
 function safeRawHtml(html: string, inline: InlineSvg): string | null {
   if (!/href|src|<svg/i.test(html)) return html;
@@ -127,8 +130,8 @@ function safeRawHtml(html: string, inline: InlineSvg): string | null {
   for (const svg of root.querySelectorAll('svg')) {
     if (svg.parentElement?.closest('svg')) continue;
     changed = true;
-    // An empty SVG, such as half a block split by a blank line, would draw a blank picture.
-    if (svg.childElementCount === 0) {
+    // An SVG with nothing to draw, such as half a block split by a blank line, would be a blank picture.
+    if ([...svg.querySelectorAll('*')].every((el) => SVG_NO_INK.has(el.localName))) {
       svg.replaceWith(svg.getAttribute('aria-label') ?? '');
       continue;
     }
