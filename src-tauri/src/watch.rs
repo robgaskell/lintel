@@ -22,6 +22,9 @@ pub const FILE_REMOVED: &str = "lintel://file-removed";
 const DEBOUNCE: Duration = Duration::from_millis(200);
 // Another program may still have the file open; Windows then refuses the read.
 const READ_RETRY: Duration = Duration::from_millis(100);
+// FSEvents keeps watching a folder that goes away and reports it when it is put back;
+// inotify and ReadDirectoryChangesW end that watch (Ruling 278).
+const OS_WATCH_SURVIVES: bool = cfg!(target_os = "macos");
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FileChangedEvent {
@@ -58,8 +61,8 @@ pub struct Watcher {
 struct Files {
     by_key: HashMap<PathBuf, Watched>,
     folder_counts: HashMap<PathBuf, usize>,
-    /// Watched folders that disappeared; their OS watch is dropped until a file in them is
-    /// watched or saved again.
+    /// Watched folders that disappeared. Where the OS ends their watch, it is renewed when a
+    /// file in them is watched or saved again.
     lost: HashSet<PathBuf>,
 }
 
@@ -220,7 +223,9 @@ impl Watcher {
         if !files.lost.contains(folder) || !folder.is_dir() {
             return Ok(());
         }
-        self.watch_folder(folder)?;
+        if !OS_WATCH_SURVIVES {
+            self.watch_folder(folder)?;
+        }
         files.lost.remove(folder);
         Ok(())
     }
@@ -242,7 +247,7 @@ impl Watcher {
             return;
         }
         files.folder_counts.remove(folder);
-        if files.lost.remove(folder) {
+        if files.lost.remove(folder) && !OS_WATCH_SURVIVES {
             return;
         }
         if let Ok(watcher) = lock(&self.folders).as_mut() {
@@ -317,6 +322,9 @@ fn check(
         notices.push((watched.owner.clone(), notice_for(&watched.path, &now)));
         watched.hash = now;
     }
+    if OS_WATCH_SURVIVES {
+        files.lost.retain(|folder| vanished.contains(folder));
+    }
     let gone: Vec<PathBuf> = vanished
         .into_iter()
         .filter(|folder| !files.lost.contains(folder))
@@ -326,9 +334,12 @@ fn check(
 }
 
 /// Inotify and ReadDirectoryChangesW end a watch whose folder is deleted; dropping it here
-/// keeps the OS watcher's own list in step on every platform.
+/// keeps the OS watcher's own list in step. FSEvents keeps its watch.
 fn drop_lost(folders: &Weak<Folders>, lost: &[PathBuf]) {
-    let Some(folders) = folders.upgrade().filter(|_| !lost.is_empty()) else {
+    if OS_WATCH_SURVIVES || lost.is_empty() {
+        return;
+    }
+    let Some(folders) = folders.upgrade() else {
         return;
     };
     let mut guard = lock(&folders);
@@ -672,7 +683,8 @@ mod tests {
         let got = two_notices(&notices, "a deleted folder");
         assert_eq!(got, [removed(&a), removed(&b)]);
         assert_eq!(lost_folders(&watcher), 1);
-        assert_eq!(os_watched_folders(&watcher), 0);
+        let kept = if OS_WATCH_SURVIVES { 1 } else { 0 };
+        assert_eq!(os_watched_folders(&watcher), kept);
     }
 
     #[test]
@@ -742,6 +754,25 @@ mod tests {
 
         let notice = next(&notices, "a change after a save into a folder put back");
         assert_eq!(notice, ("main".to_owned(), changed(&a, "theirs")));
+    }
+
+    // FSEvents keeps watching a folder that goes away; inotify and ReadDirectoryChangesW
+    // end the watch, so there a folder put back waits for a save or a watch (Ruling 278).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_folder_put_back_is_reported_without_a_save() {
+        let dir = TempDir::new();
+        let (watcher, notices) = watcher();
+        let (folder, a, b) = watched_folder(&dir, &watcher);
+        let trash = dir.0.join("trash");
+        fs::rename(&folder, &trash).unwrap();
+        two_notices(&notices, "a folder moved away");
+
+        fs::rename(&trash, &folder).unwrap();
+
+        let got = two_notices(&notices, "a folder put back");
+        assert_eq!(got, [changed(&a, "a.md"), changed(&b, "b.md")]);
+        assert_eq!(lost_folders(&watcher), 0);
     }
 
     #[test]
