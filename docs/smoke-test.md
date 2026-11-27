@@ -10,3 +10,8 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 - [ ] Windows, `.exe` installer: uninstall Lintel. `.md` files still open with Notepad, and **Open with** no longer lists Lintel.
 - [ ] Windows and Linux: `lintel missing.md notes.bin` from a terminal shows no dialog. The window's status bar says "Could not open 2 files: missing.md, notes.bin", and hovering over it shows why.
 - [ ] Windows and Linux: `lintel <folder>` opens nothing and shows no message.
+
+## Command-line tool and default app (M5.2)
+
+- [ ] Windows: Install command-line tool, then `lintel x.md` in a new terminal works. Make default opens the Default apps settings page.
+- [ ] Linux: Install command-line tool works. After Make default, `xdg-mime query default text/markdown` prints `lintel.desktop`.
