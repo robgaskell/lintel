@@ -14,6 +14,7 @@
   import { keepMine, loadDisk } from '../docs/reload';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
+  import { attachLint } from '../lint/lintState.svelte';
   import { largeFileNotices } from '../os/open';
   import { extractHeadings } from '../render/headings';
   import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
@@ -59,6 +60,7 @@
     cleanups.push(
       registerView(doc.id, editor),
       trackCursor(doc.id, editor),
+      attachLint(doc.id, editor),
       attachEditorContextMenu(editor),
       () => editor.scrollDOM.removeEventListener('scroll', onEditorScroll),
     );

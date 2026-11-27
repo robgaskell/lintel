@@ -6,6 +6,9 @@ import { fakePreviewLayout } from '../../test/layout';
 import { cursors, setStartCursor, setStartTopLine, topLineOf } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
+import type { LintIssue } from '../lint/lint';
+import { lintExtension } from '../lint/lintExtension';
+import { lintIssues } from '../lint/lintState.svelte';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
 import { outline, outlinePlacement, outlineSources } from './outline.svelte';
 
@@ -17,6 +20,11 @@ vi.mock('../ipc', async (importOriginal) => ({
   readTextFile: vi.fn(async () => ({ text: 'theirs\n', hash: 'h-theirs' })),
   watchPath: vi.fn(async () => {}),
   unwatchPath: vi.fn(async () => {}),
+}));
+ // Stubbed, so real markdownlint never runs on live 400 ms timers here (Ruling 275).
+vi.mock('../lint/lintExtension', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lint/lintExtension')>()),
+  lintExtension: vi.fn(() => []),
 }));
 
 const NOTICE = 'Large file: preview is off. Switch to Split or Read to render it.';
@@ -65,6 +73,20 @@ function pane(mode: ViewMode, raw = '# Title\n') {
   const q = (selector: string) => view.container.querySelector(selector);
   return { doc, ...view, q };
 }
+
+describe('lint (M6.1)', () => {
+  it("lints the pane's editor and keeps its issues for the status bar until the pane goes", () => {
+    const { doc, unmount } = pane('edit');
+    const report = vi.mocked(lintExtension).mock.lastCall![1];
+    const issues = [{ rule: 'MD004' }] as LintIssue[];
+
+    report(issues);
+    expect(lintIssues.get(doc.id)).toBe(issues);
+
+    unmount();
+    expect(lintIssues.has(doc.id)).toBe(false);
+  });
+});
 
 describe('a doc moved from another window', () => {
   it('starts with the cursor where it was there, line and column (Rulings 186, 201)', () => {

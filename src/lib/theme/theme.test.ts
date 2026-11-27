@@ -216,7 +216,7 @@ describe('cssVariables', () => {
 });
 
 // The fixed tokens app.css may still define: syntax colours and a shadow (Ruling 148).
-const FIXED = ['--preview-code-keyword', '--preview-code-string', '--preview-code-title', '--preview-code-comment', '--editor-code', '--lint-warning', '--mode-selected-shadow'];
+const FIXED = ['--preview-code-keyword', '--preview-code-string', '--preview-code-title', '--preview-code-comment', '--editor-code', '--lint-warning', '--mode-selected-shadow', '--lint-card-shadow'];
 
 function blocks(css: string): { selector: string; media: string | null; decls: Record<string, string> }[] {
   const out: { selector: string; media: string | null; decls: Record<string, string> }[] = [];

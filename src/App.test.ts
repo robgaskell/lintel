@@ -4,6 +4,9 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
+import { registerView } from './lib/editor/views';
+import { fixAll, type LintIssue } from './lib/lint/lint';
+import { lintIssues } from './lib/lint/lintState.svelte';
 import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
@@ -104,6 +107,13 @@ vi.mock('./lib/os/recent', () => ({
   recordRecent: vi.fn(),
   clearRecent: vi.fn(),
 }));
+// Fix all reaches markdownlint only through this module; the lint source is stubbed (Ruling 275).
+vi.mock('./lib/lint/lint', () => ({ fixAll: vi.fn() }));
+vi.mock('./lib/lint/lintExtension', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/lint/lintExtension')>()),
+  lintExtension: vi.fn(() => []),
+  relint: vi.fn(),
+}));
 vi.mock('./lib/settings/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/settings/settings.svelte')>()),
   loadSettings: vi.fn(async () => {}),
@@ -127,6 +137,7 @@ const statusText = (container: HTMLElement) =>
 beforeEach(() => {
   docs.clear();
   (cursors as Map<string, Cursor>).clear();
+  (lintIssues as Map<string, LintIssue[] | null>).clear();
   fake.active = null;
   fake.activeListeners.clear();
   fake.layoutListeners.clear();
@@ -190,6 +201,49 @@ describe('App status bar (Ruling 120)', () => {
 
     expect(statusText(container)).toContain('2 words · 1 min read');
     expect(statusText(container)).not.toContain('Ln');
+  });
+});
+
+describe('App lint count (M6.1)', () => {
+  const issue = (fixable: boolean) => ({ rule: 'MD004', fixable }) as LintIssue;
+  const setIssues = (id: string, issues: LintIssue[] | null) => {
+    (lintIssues as Map<string, LintIssue[] | null>).set(id, issues);
+    flushSync();
+  };
+
+  it("shows the active doc's warnings, with Fix all only when one is fixable", () => {
+    const a = createDoc({ path: '/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    const b = createDoc({ path: '/b.md', raw: 'y', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container, queryByRole } = render(App);
+    expect(statusText(container)).not.toContain('lint');
+
+    setIssues(a.id, [issue(true), issue(false)]);
+    expect(statusText(container)).toContain('2 lint warnings');
+    expect(queryByRole('button', { name: 'Fix all' })).not.toBeNull();
+
+    setIssues(b.id, [issue(false)]);
+    setActive(b.id);
+    expect(statusText(container)).toContain('1 lint warning');
+    expect(queryByRole('button', { name: 'Fix all' })).toBeNull();
+
+    setIssues(b.id, null);
+    expect(statusText(container)).not.toContain('lint');
+  });
+
+  it("fixes the active doc's issues in its own editor", async () => {
+    const a = createDoc({ path: '/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    const view = { dispatch: vi.fn() } as unknown as Parameters<typeof registerView>[1];
+    const stop = registerView(a.id, view);
+    fake.active = a.id;
+    const { getByRole } = render(App);
+    const issues = [issue(true)];
+    setIssues(a.id, issues);
+
+    await fireEvent.click(getByRole('button', { name: 'Fix all' }));
+
+    await vi.waitFor(() => expect(fixAll).toHaveBeenCalledWith(view, issues));
+    stop();
   });
 });
 

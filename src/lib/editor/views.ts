@@ -18,6 +18,11 @@ export function viewFor(docId: string): EditorView | null {
   return views.get(docId) ?? null;
 }
 
+/** Every open editor in this window. */
+export function allViews(): EditorView[] {
+  return [...views.values()];
+}
+
 export function setActiveDocSource(source: { activeDocId(): string | null } | null): void {
   activeSource = source;
 }

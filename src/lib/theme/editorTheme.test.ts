@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { editorExtensions } from '../editor/setup';
+import { lintExtension, renderLintCard } from '../lint/lintExtension';
+import type { LintIssue } from '../lint/lint';
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
 
 let view: EditorView | null = null;
@@ -22,6 +24,9 @@ const TOKENS: Record<string, string> = {
   '--search-match-current': '#0b0b0b',
   '--preview-code-comment': '#0c0c0c',
   '--active-line': '#0d0d0d',
+  '--lint-warning': '#0e0e0e',
+  '--lint-active': '#0f0f0f',
+  '--lint-card-shadow': '0px 1px 2px #111111',
   '--editor-bg': 'var(--bg)',
   '--editor-text': 'var(--text)',
 };
@@ -41,8 +46,13 @@ afterEach(() => {
   root.removeAttribute('style');
 });
 
-function mount(doc: string): EditorView {
-  view = new EditorView({ state: EditorState.create({ doc, extensions: editorExtensions(() => {}) }), parent: document.body });
+vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
+
+function mount(doc: string, extra: Extension = []): EditorView {
+  view = new EditorView({
+    state: EditorState.create({ doc, extensions: [editorExtensions(() => {}), extra] }),
+    parent: document.body,
+  });
   return view;
 }
 
@@ -127,5 +137,69 @@ describe('editorTheme (Rulings 92, 130)', () => {
       settings.fontSize = DEFAULT_SETTINGS.fontSize;
       settings.editorFont = DEFAULT_SETTINGS.editorFont;
     }
+  });
+});
+
+describe('lint surfaces (Rulings 152, 272)', () => {
+  // With the linter's own base theme mounted, which hard-codes light colours, and its dark
+  // variants switched on, so the tokens must win over both.
+  const withLint = [lintExtension(() => null, () => {}), EditorView.darkTheme.of(true)];
+
+  it('underlines a problem with a wavy line in the warning colour, not the base image', () => {
+    const v = mount('text', withLint);
+    const range = inside(v, 'span', 'cm-lintRange cm-lintRange-warning', v.contentDOM);
+
+    const style = getComputedStyle(range);
+    expect(style.backgroundImage).toBe('none');
+    expect(style.textDecorationLine).toBe('underline');
+    expect(style.textDecorationStyle).toBe('wavy');
+    expect(style.textDecorationColor).toBe(rgb(TOKENS['--lint-warning']));
+  });
+
+  it('tints the hovered range and marks the line number from tokens', () => {
+    const v = mount('text', withLint);
+    const active = inside(v, 'span', 'cm-lintRange cm-lintRange-warning cm-lintRange-active', v.contentDOM);
+    const gutter = v.dom.querySelector('.cm-gutters')!;
+    const line = inside(v, 'div', 'cm-gutterElement cm-activeLineGutter cm-lintLine', gutter);
+
+    expect(getComputedStyle(active).backgroundColor).toBe(rgb(TOKENS['--lint-active']));
+    expect(getComputedStyle(line).color).toBe(rgb(TOKENS['--lint-warning']));
+    expect(getComputedStyle(line).fontWeight).toBe('700');
+  });
+
+  it('styles the hover card, its rule name and both buttons from tokens', () => {
+    const v = mount('text', withLint);
+    const tooltip = inside(v, 'div', 'cm-tooltip cm-tooltip-hover');
+    const issue = { rule: 'MD004', alias: 'ul-style', message: 'm', fixable: true } as LintIssue;
+    const card = renderLintCard([issue], { fix: () => {}, turnOff: () => {} });
+    tooltip.append(card);
+    const fix = card.querySelector('.cm-lintCard-fix')!;
+    const off = card.querySelector('.cm-lintCard-off')!;
+
+    expect(getComputedStyle(tooltip).boxShadow).toBe('rgb(17, 17, 17) 0px 1px 2px');
+    expect(getComputedStyle(card).color).toBe(rgb(TOKENS['--text']));
+    expect(getComputedStyle(card.querySelector('.cm-lintCard-rule')!).color).toBe(rgb(TOKENS['--lint-warning']));
+    expect(getComputedStyle(fix).backgroundColor).toBe(rgb(TOKENS['--accent']));
+    expect(getComputedStyle(fix).color).toBe(rgb(TOKENS['--bg']));
+    expect(getComputedStyle(off).backgroundColor).toBe(rgb(TOKENS['--bg']));
+    expect(getComputedStyle(off).color).toBe(rgb(TOKENS['--text']));
+    expect(getComputedStyle(off).borderTopColor).toBe(rgb(TOKENS['--border']));
+  });
+
+  it("styles the linter's own list, actions and point marker from tokens", () => {
+    const v = mount('text', withLint);
+    const panels = inside(v, 'div', 'cm-panels cm-panels-bottom');
+    const panel = inside(v, 'div', 'cm-panel cm-panel-lint', panels);
+    const list = inside(v, 'ul', '', panel);
+    const item = inside(v, 'li', 'cm-diagnostic cm-diagnostic-warning', list);
+    item.setAttribute('aria-selected', 'true');
+    const action = inside(v, 'button', 'cm-diagnosticAction', item);
+    const point = inside(v, 'span', 'cm-lintPoint cm-lintPoint-warning', v.contentDOM);
+
+    expect(getComputedStyle(item).borderLeftColor).toBe(rgb(TOKENS['--lint-warning']));
+    expect(getComputedStyle(item).backgroundColor).toBe(rgb(TOKENS['--selection-unfocused']));
+    expect(getComputedStyle(action).backgroundColor).toBe(rgb(TOKENS['--accent']));
+    expect(getComputedStyle(action).color).toBe(rgb(TOKENS['--bg']));
+    expect(getComputedStyle(point, '::after').borderBottomColor).toBe(rgb(TOKENS['--lint-warning']));
   });
 });

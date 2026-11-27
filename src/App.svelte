@@ -11,8 +11,9 @@
   } from './lib/docs/reload';
   import { countWords, saveStateOf } from './lib/docs/stats';
   import { docs, setWatchFailureReporter } from './lib/docs/store.svelte';
-  import { followEditorFont, setActiveDocSource } from './lib/editor/views';
+  import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
+  import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
   import { Workspace } from './lib/layout/workspace';
   import {
     setOutlineChecked,
@@ -52,6 +53,16 @@
   let activeId = $state<string | null>(null);
   const active = $derived(activeId === null ? undefined : docs.get(activeId));
   const cursor = $derived(activeId === null ? undefined : cursors.get(activeId));
+  // null or missing: not linted, so the status bar shows no count.
+  const issues = $derived(activeId === null ? null : (lintIssues.get(activeId) ?? null));
+
+  function fixAllActive() {
+    const view = activeId === null ? null : viewFor(activeId);
+    const list = issues;
+    if (!view || !list) return;
+    // Loaded already: there are issues only once markdownlint has run.
+    void import('./lib/lint/lint').then(({ fixAll }) => fixAll(view, list));
+  }
 
   // Counted at once on a tab switch, then debounced like the preview (Ruling 109).
   let words = $state(0);
@@ -163,6 +174,7 @@
     let stopMenu = () => {};
     let stopTheme = () => {};
     let stopEditorFont = () => {};
+    let stopLint = () => {};
     // Settings decide whether Open Recent shows; a failed load keeps the defaults. Until they
     // load, the theme is the one main.ts restored, so a forced theme never flashes (Ruling 150).
     loadSettings()
@@ -171,6 +183,7 @@
         if (disposed) return;
         stopTheme = followTheme(() => settings);
         stopEditorFont = followEditorFont();
+        stopLint = followLintSettings();
         stopMenu = syncAppMenu(menuHandlers, showError);
         // After the settings, which the restored docs' previews read.
         void restoreSession();
@@ -220,6 +233,7 @@
       stopMenu();
       stopTheme();
       stopEditorFont();
+      stopLint();
       stopActive();
       stopUpdates();
       fileEvents.stop();
@@ -258,8 +272,9 @@
       col={cursor?.col ?? 1}
       {words}
       saveState={saveStateOf(active)}
-      lintCount={null}
-      lintFixable={false}
+      lintCount={issues?.length ?? null}
+      lintFixable={issues?.some((i) => i.fixable) ?? false}
+      onFixAll={fixAllActive}
       {notice}
       {noticeDetails}
       update="none"

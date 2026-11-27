@@ -44,6 +44,8 @@
   --preview-code-title: #9a3412;
   --preview-code-comment: #6b6b67;
   --lint-warning: #b45309;
+  --lint-active: var(--search-match);
+  --lint-card-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
   --mode-selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
   color-scheme: light;
 }
@@ -56,6 +58,7 @@
   --preview-code-title: #f0b37e;
   --preview-code-comment: #9a9a95;
   --lint-warning: #f0b37e;
+  --lint-card-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   --mode-selected-shadow: none;
   color-scheme: dark;
 }
