@@ -45,6 +45,9 @@
         "rank": "Default"
       }
     ],
+    "windows": {
+      "nsis": { "installerHooks": "windows/installer-hooks.nsh" }
+    },
     "linux": {
       "deb": { "desktopTemplate": "linux/lintel.desktop" },
       "rpm": { "desktopTemplate": "linux/lintel.desktop" }

@@ -7,6 +7,7 @@ mod startup;
 mod windows;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::menu::Menu;
 use tauri::plugin::Plugin;
@@ -39,12 +40,8 @@ pub fn run() {
         .manage(Mutex::new(OpenQueue::default()))
         .on_window_event(windows::on_doc_window_event)
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            startup::disable_window_tabbing();
-            if let Some(window) = app.get_webview_window("main") {
-                startup::prepare_main_window(&window);
-            }
-            open_launch_args(app.handle());
+            let args = std::env::args_os().map(|arg| arg.to_string_lossy().into_owned());
+            setup_app(app, args, std::env::current_dir().ok());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -72,9 +69,7 @@ pub fn run() {
 fn app_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
     let mut plugins: Vec<Box<dyn Plugin<R>>> = vec![
         // First, so a second launch hands over its files and exits before other plugins start.
-        Box::new(tauri_plugin_single_instance::init(|app, args, cwd| {
-            open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
-        })),
+        Box::new(tauri_plugin_single_instance::init(on_second_instance)),
         Box::new(navigation_guard()),
         Box::new(settings_window()),
         Box::new(tauri_plugin_clipboard_manager::init()),
@@ -95,11 +90,25 @@ fn app_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
     plugins
 }
 
-fn open_launch_args<R: Runtime>(app: &AppHandle<R>) {
-    let args = std::env::args_os().map(|arg| arg.to_string_lossy().into_owned());
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let paths = open_queue::paths_from_args(args, &cwd.to_string_lossy());
-    open_queue::open_from_outside(app, paths);
+/// Runs once the app is built. `args` and `cwd` are this launch's, `cwd` None when it
+/// could not be read.
+fn setup_app<R: Runtime>(
+    app: &tauri::App<R>,
+    args: impl IntoIterator<Item = String>,
+    cwd: Option<PathBuf>,
+) {
+    #[cfg(target_os = "macos")]
+    startup::disable_window_tabbing();
+    if let Some(window) = app.get_webview_window("main") {
+        startup::prepare_main_window(&window);
+    }
+    let cwd = cwd.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
+    open_queue::open_from_outside(app.handle(), open_queue::paths_from_args(args, &cwd));
+}
+
+// The plugin sends "" as `cwd` when the second launch's folder could not be read.
+fn on_second_instance<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, cwd: String) {
+    open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
 }
 
 // macOS passes files from Finder, `open` and the Dock here, not through argv.
@@ -252,6 +261,84 @@ mod tests {
         );
     }
 
+    // Tauri's builder cannot be read back, so its wiring is checked as written.
+    #[test]
+    fn run_wires_every_open_route_and_launches_without_activating() {
+        let source = include_str!("lib.rs");
+        for wiring in [
+            concat!("tauri_plugin_single_instance::init(", "on_second_instance)"),
+            concat!(".run(", "on_run_event)"),
+            concat!("setup_app(", "app, args, std::env::current_dir().ok())"),
+            concat!("builder = builder.", "activate_ignoring_other_apps(false);"),
+        ] {
+            assert_eq!(source.matches(wiring).count(), 1, "{wiring}");
+        }
+    }
+
+    mod open_routes {
+        use super::*;
+        use std::sync::Arc;
+        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::{Listener, WebviewUrl, WebviewWindowBuilder};
+
+        type Heard = Arc<Mutex<Vec<String>>>;
+
+        // An app whose main window is ready and records the files sent to it.
+        fn app() -> (tauri::App<MockRuntime>, Heard) {
+            let app = mock_builder()
+                .manage(Mutex::new(OpenQueue::default()))
+                .build(mock_context(noop_assets()))
+                .unwrap();
+            let main = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default())
+                .build()
+                .unwrap();
+            let heard = Heard::default();
+            let log = Arc::clone(&heard);
+            main.listen(open_queue::OPEN_FILES, move |e| {
+                log.lock().unwrap().push(e.payload().to_owned())
+            });
+            open_queue::frontend_ready(main.as_ref().window(), app.state());
+            (app, heard)
+        }
+
+        fn args(list: &[&str]) -> Vec<String> {
+            list.iter().map(|s| s.to_string()).collect()
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn a_second_launch_opens_its_files_from_its_own_folder() {
+            let (app, heard) = app();
+            on_second_instance(app.handle(), args(&["lintel", "a.md"]), "/tmp/x".to_owned());
+            assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/x/a.md"]}"#]);
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn setup_opens_the_launch_arguments() {
+            let (app, heard) = app();
+            setup_app(&app, args(&["lintel", "a.md", "-v"]), Some("/tmp/x".into()));
+            assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/x/a.md"]}"#]);
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn setup_leaves_relative_paths_relative_when_its_folder_is_unknown() {
+            let (app, heard) = app();
+            setup_app(&app, args(&["lintel", "a.md"]), None);
+            assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["a.md"]}"#]);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn files_macos_opens_with_lintel_are_opened() {
+            let (app, heard) = app();
+            let urls = vec![Url::parse("file:///tmp/my%20notes.md").unwrap()];
+            on_run_event(app.handle(), RunEvent::Opened { urls });
+            assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/my notes.md"]}"#]);
+        }
+    }
+
     #[test]
     fn settings_closes_with_the_last_document_window() {
         let closed = |label: &str, open: &[&str]| {
@@ -338,6 +425,26 @@ mod tests {
                 "rank": "Default"
             }])
         );
+    }
+
+    #[test]
+    fn windows_installer_adds_lintel_to_open_with_and_puts_the_default_back() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["bundle"]["windows"]["nsis"]["installerHooks"],
+            "windows/installer-hooks.nsh"
+        );
+        // APP_ASSOCIATE names its ProgID and backup value after the association's name.
+        let name = conf["bundle"]["fileAssociations"][0]["name"].as_str().unwrap();
+        let hooks = include_str!("../windows/installer-hooks.nsh");
+        assert!(hooks.contains(&format!("\"{name}_backup\"")));
+        for ext in ["md", "markdown"] {
+            assert!(hooks.contains(&format!("!insertmacro LINTEL_OPEN_WITH \"{ext}\"")));
+            let open_with = format!("\"Software\\Classes\\.{ext}\\OpenWithProgids\" \"{name}\"");
+            assert!(hooks.contains(&open_with), "the uninstaller leaves Lintel in {ext} Open with");
+        }
+        assert!(hooks.contains("\\OpenWithProgids\" \"Lintel.Markdown\" \"\""));
     }
 
     #[test]

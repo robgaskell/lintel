@@ -46,6 +46,13 @@ pub async fn read_text_file(path: String) -> Result<ReadResult, String> {
 /// Letter case is not folded on case-insensitive volumes (Ruling 44).
 #[tauri::command]
 pub async fn normalize_path(path: String) -> Result<String, String> {
+    // Only argv gives relative paths, and only when its folder could not be read (Ruling 242);
+    // Lintel's own folder would be the wrong one to resolve them against.
+    if Path::new(&path).is_relative() {
+        return Err(format!(
+            "Could not open {path}: the folder it was given from could not be read."
+        ));
+    }
     let real = fs::canonicalize(&path).map_err(|e| format!("Could not open {path}: {e}"))?;
     let real = real
         .into_os_string()
@@ -67,7 +74,7 @@ pub async fn paths_exist(paths: Vec<String>) -> Vec<bool> {
 }
 
 // A stat on a network mount whose server is gone can block for minutes (Ruling 71).
-const CHECK_BUDGET: Duration = Duration::from_secs(1);
+pub(crate) const CHECK_BUDGET: Duration = Duration::from_secs(1);
 
 /// Errors other than "not there", such as permission denied, count as present, so a file
 /// that only cannot be checked right now is not dropped from Open Recent.
@@ -83,7 +90,7 @@ fn may_be_file(path: &Path) -> bool {
 
 /// Runs `check` on each path, in order, on its own thread. Paths not answered within
 /// `budget` count as present; a stuck check is left to finish on its own.
-fn check_within<F>(paths: Vec<String>, budget: Duration, check: F) -> Vec<bool>
+pub(crate) fn check_within<F>(paths: Vec<String>, budget: Duration, check: F) -> Vec<bool>
 where
     F: Fn(&Path) -> bool + Send + 'static,
 {
@@ -558,6 +565,16 @@ mod tests {
 
         assert_eq!(via_link, direct);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn normalize_path_refuses_a_relative_path_even_when_it_exists_here() {
+        assert!(Path::new("Cargo.toml").exists(), "tests run in src-tauri");
+        let err = block_on(normalize_path("Cargo.toml".to_owned())).unwrap_err();
+        assert_eq!(
+            err,
+            "Could not open Cargo.toml: the folder it was given from could not be read."
+        );
     }
 
     #[test]

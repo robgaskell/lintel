@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, Window, WindowEvent};
 
-use crate::SETTINGS;
+use crate::{files, SETTINGS};
 
 /// Sent to a document window with paths opened from outside Lintel.
 pub const OPEN_FILES: &str = "lintel://open-files";
@@ -60,10 +60,17 @@ impl OpenQueue {
         std::mem::take(&mut self.pending)
     }
 
+    /// A window asked to close may be gone soon, so it takes no more paths until it reports
+    /// ready again, as it does when the close is cancelled (Ruling 242).
+    pub fn closing(&mut self, label: &str) {
+        self.ready.remove(label);
+    }
+
     /// Keeps the target in step with the focus order, whose front is `most_recent`.
     pub fn window_event(&mut self, label: &str, event: &WindowEvent, most_recent: Option<String>) {
         match event {
             WindowEvent::Focused(true) => self.last_focused = most_recent,
+            WindowEvent::CloseRequested { .. } => self.closing(label),
             WindowEvent::Destroyed => {
                 self.ready.remove(label);
                 self.last_focused = most_recent;
@@ -86,7 +93,8 @@ impl OpenQueue {
 }
 
 /// Paths from a command line: the program name and options are skipped, and relative paths
-/// are taken from `cwd`, the folder the command ran in (Ruling 231).
+/// are taken from `cwd`, the folder the command ran in (Ruling 231). An empty `cwd` could
+/// not be read; relative paths then stay relative and fail to open (Ruling 242).
 pub fn paths_from_args(args: impl IntoIterator<Item = String>, cwd: &str) -> Vec<String> {
     args.into_iter()
         .skip(1)
@@ -104,9 +112,23 @@ pub fn paths_from_urls(urls: &[tauri::Url]) -> Vec<String> {
         .collect()
 }
 
-/// Opens `paths` from outside Lintel. Nothing here shows or focuses a window (Ruling 229).
+/// Opens `paths` from outside Lintel, skipping folders (Ruling 238). Nothing here shows or
+/// focuses a window (Ruling 229).
 pub fn open_from_outside<R: Runtime>(app: &AppHandle<R>, paths: Vec<String>) {
+    let paths = without_folders(paths);
     lock(&app.state::<Mutex<OpenQueue>>()).push(paths, app);
+}
+
+// A path whose check runs out of time is kept; opening it then reports what is wrong.
+fn without_folders(paths: Vec<String>) -> Vec<String> {
+    let keep = files::check_within(paths.clone(), files::CHECK_BUDGET, |path| {
+        !path.is_absolute() || !path.is_dir()
+    });
+    paths
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(path, keep)| keep.then_some(path))
+        .collect()
 }
 
 /// Called by a document window once it listens for `OPEN_FILES`. Returns the paths that
@@ -175,6 +197,68 @@ mod tests {
             ),
             [r"C:\x\notes.md", r"C:\abs\b.md"]
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn with_no_cwd_relative_paths_stay_relative() {
+        assert_eq!(
+            paths_from_args(args(&["lintel", "notes.md", "/abs/b.md"]), ""),
+            ["notes.md", "/abs/b.md"]
+        );
+    }
+
+    #[test]
+    fn a_window_asked_to_close_gets_no_paths_until_it_is_ready_again() {
+        let mut queue = OpenQueue::default();
+        let sent = Sent::default();
+        queue.ready("main");
+        queue.ready("w-1");
+        queue.window_event("w-1", &WindowEvent::Focused(true), Some("w-1".to_owned()));
+
+        queue.closing("w-1");
+        queue.push(paths(&["/a.md"]), &sent);
+        assert_eq!(sent.take(), [("main".to_owned(), paths(&["/a.md"]))]);
+
+        queue.ready("w-1");
+        queue.push(paths(&["/b.md"]), &sent);
+        assert_eq!(sent.take(), [("w-1".to_owned(), paths(&["/b.md"]))]);
+    }
+
+    // Tauri's CloseRequestApi cannot be made outside Tauri, so the arm is checked as written.
+    #[test]
+    fn a_close_request_marks_the_window_closing() {
+        let arm = concat!(
+            "WindowEvent::CloseRequested { .. } => ",
+            "self.closing(label)"
+        );
+        assert_eq!(include_str!("open_queue.rs").matches(arm).count(), 1);
+    }
+
+    #[test]
+    fn folders_are_skipped() {
+        let dir = std::env::temp_dir().join(format!("lintel-open-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        let file = dir.join("a.md");
+        std::fs::write(&file, "x").unwrap();
+        let given = |p: &Path| p.to_string_lossy().into_owned();
+
+        let kept = without_folders(vec![
+            given(&dir.join("folder")),
+            given(&file),
+            given(&dir.join("missing.md")),
+            "relative.md".to_owned(),
+        ]);
+
+        assert_eq!(
+            kept,
+            [
+                given(&file),
+                given(&dir.join("missing.md")),
+                "relative.md".to_owned()
+            ]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

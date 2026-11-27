@@ -67,3 +67,7 @@ jobs:
         working-directory: src-tauri
 
       - run: pnpm tauri build --debug --no-bundle
+
+      # Builds the .exe installer, so its hooks compile (Ruling 240).
+      - run: pnpm tauri build --debug --bundles nsis
+        if: runner.os == 'Windows'
