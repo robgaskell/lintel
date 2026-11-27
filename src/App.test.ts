@@ -6,7 +6,7 @@ import { createDoc, docs } from './lib/docs/store.svelte';
 import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
-import { openPaths } from './lib/os/open';
+import { listenForDrops, listenForOpenFiles, openPaths } from './lib/os/open';
 import { listenForQuitRequests } from './lib/os/quit';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
@@ -22,6 +22,7 @@ const fake = vi.hoisted(() => ({
   focusHandler: null as ((event: { payload: boolean }) => void) | null,
   label: 'main',
   focused: true,
+  stopDrops: (() => {}) as () => void,
 }));
 
 vi.mock('./lib/layout/workspace', () => ({
@@ -67,6 +68,8 @@ vi.mock('./lib/os/windows', () => ({
 }));
 vi.mock('./lib/os/open', () => ({
   setWorkspace: vi.fn(),
+  listenForOpenFiles: vi.fn(),
+  listenForDrops: vi.fn(() => fake.stopDrops),
   openPaths: vi.fn(async () => {}),
   newUntitled: vi.fn(),
   largeFileNotices: new Set(),
@@ -316,6 +319,34 @@ describe('App session (Rulings 205, 209, 212)', () => {
     await vi.waitFor(() => expect(restoreAllWindows).toHaveBeenCalled());
     expect(restoreWindow).toHaveBeenCalledWith('main');
     expect(listenForQuitRequests).toHaveBeenCalled();
+  });
+
+  it('takes files opened from outside once this window has restored, before the other windows open (Ruling 230)', async () => {
+    render(App);
+
+    await vi.waitFor(() => expect(restoreAllWindows).toHaveBeenCalled());
+    expect(listenForOpenFiles).toHaveBeenCalledOnce();
+    const order = (fn: unknown) => vi.mocked(fn as () => void).mock.invocationCallOrder[0];
+    expect(order(restoreWindow)).toBeLessThan(order(listenForOpenFiles));
+    expect(order(listenForOpenFiles)).toBeLessThan(order(restoreAllWindows));
+  });
+
+  it('takes files opened from outside even when the restore fails', async () => {
+    vi.mocked(restoreWindow).mockRejectedValueOnce(new Error('store gone'));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(App);
+
+    await vi.waitFor(() => expect(listenForOpenFiles).toHaveBeenCalledOnce());
+    quiet.mockRestore();
+  });
+
+  it('opens dropped files, and stops listening when the window goes', () => {
+    fake.stopDrops = vi.fn();
+    const { unmount } = render(App);
+    expect(listenForDrops).toHaveBeenCalledOnce();
+
+    unmount();
+    expect(fake.stopDrops).toHaveBeenCalledOnce();
   });
 
   it('reopens no other windows from a second window', async () => {

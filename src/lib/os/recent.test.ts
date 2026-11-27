@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) =>
 vi.mock('../ipc', () => ({
   pathsExist: vi.fn(),
   claimPath: vi.fn(async () => null),
+  frontendReady: vi.fn(async () => []),
   releasePath: vi.fn(async () => {}),
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),

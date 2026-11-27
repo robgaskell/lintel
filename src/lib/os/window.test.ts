@@ -10,6 +10,7 @@ vi.mock('../ipc', () => ({
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
+  frontendReady: vi.fn(async () => []),
   releasePath: vi.fn(async () => {}),
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),

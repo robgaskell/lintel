@@ -16,7 +16,7 @@
     type MenuHandlers,
   } from './lib/os/menu';
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
-  import { setWorkspace } from './lib/os/open';
+  import { listenForDrops, listenForOpenFiles, setWorkspace } from './lib/os/open';
   import { currentPlatform } from './lib/os/platform';
   import { listenForQuitRequests } from './lib/os/quit';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
@@ -109,6 +109,7 @@
     const stopReveal = listenForReveal(workspace);
     // Last of the two: it tells the window that opened this one that it can hand a doc over.
     const stopAdoption = listenForAdoption();
+    const stopDrops = listenForDrops();
     // onActiveChange makes no first call, so read the current value too (Ruling 111).
     activeId = workspace.activeDocId();
     const stopActive = workspace.onActiveChange((id) => (activeId = id));
@@ -154,10 +155,19 @@
         // After the settings, which the restored docs' previews read.
         void restoreSession();
       });
+    // After this window's restore, so a file it restores is not opened twice; before main
+    // reopens the other windows, so main takes the files given at launch.
+    let takingFiles = false;
+    function takeOpenedFiles() {
+      if (disposed || takingFiles) return;
+      takingFiles = true;
+      listenForOpenFiles();
+    }
     async function restoreSession() {
       try {
         const { missing } = await restoreWindow(label);
         if (disposed) return;
+        takeOpenedFiles();
         if (missing.length > 0) showNotice(missingNotice(missing.length));
         // The tick follows the focused window; this one may have taken focus before its
         // restore set the outline (Ruling 235).
@@ -165,6 +175,8 @@
         if (label === 'main') await restoreAllWindows();
       } catch (err) {
         console.error('Could not restore the last session:', err);
+      } finally {
+        takeOpenedFiles();
       }
     }
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
@@ -193,6 +205,7 @@
       stopRecent();
       stopReveal();
       stopAdoption();
+      stopDrops();
       unlistenClose.then((stop) => stop());
       unlistenFocus.then((stop) => stop());
       setActiveDocSource(null);

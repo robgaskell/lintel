@@ -86,3 +86,8 @@ export interface HandoffStatus {
 export function handoffStatus(since: number): Promise<HandoffStatus> {
   return invoke<HandoffStatus>('handoff_status', { since });
 }
+
+/** Marks this window ready for files opened from outside; resolves to those sent before any was. */
+export function frontendReady(): Promise<string[]> {
+  return invoke<string[]>('frontend_ready');
+}

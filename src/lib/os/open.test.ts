@@ -1,11 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { listen } from '@tauri-apps/api/event';
+import { Window } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
-import { claimPath, normalizePath, readTextFile, releasePath } from '../ipc';
+import { claimPath, frontendReady, normalizePath, pathsExist, readTextFile, releasePath } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
 import { settings } from '../settings/settings.svelte';
-import { largeFileNotices, newUntitled, openPaths, revealAnswered, setWorkspace } from './open';
+import {
+  largeFileNotices,
+  listenForDrops,
+  listenForOpenFiles,
+  newUntitled,
+  OPEN_FILES,
+  openPaths,
+  revealAnswered,
+  setWorkspace,
+} from './open';
 import type { Workspace } from '../layout/workspace';
 import { recordRecent } from './recent';
+
+type Handler = (e: { payload: unknown }) => void;
+
+const fake = vi.hoisted(() => ({
+  listeners: new Map<string, Handler>(),
+  drop: null as Handler | null,
+  owner: {
+    isMinimized: vi.fn(async () => false),
+    isVisible: vi.fn(async () => true),
+    unminimize: vi.fn(async () => {}),
+    show: vi.fn(async () => {}),
+    setFocus: vi.fn(async () => {}),
+  },
+}));
 
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
@@ -16,6 +41,26 @@ vi.mock('../ipc', () => ({
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),
   cancelHandoff: vi.fn(async () => true),
+  frontendReady: vi.fn(async () => []),
+  pathsExist: vi.fn(async (paths: string[]) => paths.map(() => true)),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async (event: string, handler: Handler) => {
+    fake.listeners.set(event, handler);
+    return () => fake.listeners.delete(event);
+  }),
+}));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ label: 'main' }),
+  Window: { getByLabel: vi.fn(async () => fake.owner) },
+}));
+vi.mock('@tauri-apps/api/webview', () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: async (handler: Handler) => {
+      fake.drop = handler;
+      return () => {};
+    },
+  }),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -45,6 +90,16 @@ beforeEach(() => {
   vi.mocked(claimPath).mockResolvedValue(null);
   vi.mocked(releasePath).mockReset();
   vi.mocked(releasePath).mockResolvedValue();
+  vi.mocked(frontendReady).mockReset();
+  vi.mocked(frontendReady).mockResolvedValue([]);
+  vi.mocked(pathsExist).mockReset();
+  vi.mocked(pathsExist).mockImplementation(async (paths) => paths.map(() => true));
+  vi.mocked(Window.getByLabel).mockClear();
+  for (const fn of Object.values(fake.owner)) fn.mockClear();
+  fake.owner.isMinimized.mockResolvedValue(false);
+  fake.owner.isVisible.mockResolvedValue(true);
+  fake.listeners.clear();
+  fake.drop = null;
   setWorkspace(workspace as unknown as Workspace);
 });
 
@@ -309,6 +364,129 @@ describe('openPaths with path spellings', () => {
 
     expect(docs.size).toBe(1);
     expect(workspace.openDoc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('openPaths and focus (Ruling 229)', () => {
+  it('brings the window that shows the file forward, for an open from inside Lintel', async () => {
+    ownedElsewhere(true);
+
+    await openPaths(['/a.md']);
+
+    expect(Window.getByLabel).toHaveBeenCalledWith('w-1');
+    await vi.waitFor(() => expect(fake.owner.setFocus).toHaveBeenCalled());
+  });
+
+  it('leaves every window where it is for an open from outside Lintel', async () => {
+    ownedElsewhere(true);
+
+    await openPaths(['/a.md'], { fromOutside: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(Window.getByLabel).not.toHaveBeenCalled();
+    expect(fake.owner.setFocus).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('unminimises a minimised owner before focusing it', async () => {
+    fake.owner.isMinimized.mockResolvedValue(true);
+    fake.owner.isVisible.mockResolvedValue(false);
+    ownedElsewhere(true);
+
+    await openPaths(['/a.md']);
+
+    await vi.waitFor(() => expect(fake.owner.setFocus).toHaveBeenCalled());
+    expect(fake.owner.unminimize).toHaveBeenCalled();
+  });
+
+  it('keeps a hidden owner hidden, as it is still restoring (Ruling 205)', async () => {
+    fake.owner.isVisible.mockResolvedValue(false);
+    ownedElsewhere(true);
+
+    await openPaths(['/a.md']);
+    await vi.waitFor(() => expect(fake.owner.isVisible).toHaveBeenCalled());
+
+    expect(fake.owner.setFocus).not.toHaveBeenCalled();
+    expect(fake.owner.show).not.toHaveBeenCalled();
+  });
+});
+
+describe('listenForOpenFiles (Ruling 230)', () => {
+  it('listens to this window before it reports ready, then opens the files sent before', async () => {
+    vi.mocked(frontendReady).mockResolvedValue(['/queued.md']);
+
+    listenForOpenFiles();
+
+    await vi.waitFor(() => expect(docs.size).toBe(1));
+    expect(listen).toHaveBeenCalledWith(OPEN_FILES, expect.any(Function), {
+      target: { kind: 'WebviewWindow', label: 'main' },
+    });
+    expect(vi.mocked(listen).mock.invocationCallOrder.at(-1)).toBeLessThan(
+      vi.mocked(frontendReady).mock.invocationCallOrder[0],
+    );
+    expect([...docs.values()][0].path).toBe('/queued.md');
+  });
+
+  it('opens the files Rust sends later, without bringing any window forward', async () => {
+    listenForOpenFiles();
+    await vi.waitFor(() => expect(frontendReady).toHaveBeenCalled());
+    ownedElsewhere(true);
+
+    fake.listeners.get(OPEN_FILES)!({ payload: { paths: ['/a.md', '/b.md'] } });
+
+    await vi.waitFor(() => expect(docs.size).toBe(1));
+    expect([...docs.values()][0].path).toBe('/b.md');
+    expect(Window.getByLabel).not.toHaveBeenCalled();
+  });
+});
+
+describe('listenForDrops (Ruling 232)', () => {
+  function drop(payload: unknown) {
+    fake.drop!({ payload });
+  }
+
+  it('opens dropped files and skips folders', async () => {
+    vi.mocked(pathsExist).mockResolvedValue([true, false, true]);
+    listenForDrops();
+    await vi.waitFor(() => expect(fake.drop).not.toBeNull());
+
+    drop({ type: 'drop', paths: ['/a.md', '/folder', '/notes.txt'], position: { x: 0, y: 0 } });
+
+    await vi.waitFor(() => expect(docs.size).toBe(2));
+    expect(pathsExist).toHaveBeenCalledWith(['/a.md', '/folder', '/notes.txt']);
+    expect([...docs.values()].map((d) => d.path)).toEqual(['/a.md', '/notes.txt']);
+    expect(read).not.toHaveBeenCalledWith('/folder');
+  });
+
+  it('reports every file of a drop that failed in one dialog', async () => {
+    read.mockImplementation(async (path) => {
+      if (path !== '/good.md') throw 'Lintel opens UTF-8 text files only.';
+      return { text: 'ok', hash: 'h' };
+    });
+    listenForDrops();
+    await vi.waitFor(() => expect(fake.drop).not.toBeNull());
+
+    drop({ type: 'drop', paths: ['/one.png', '/good.md', '/two.bin'], position: { x: 0, y: 0 } });
+
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalled());
+    expect(messageDialog).toHaveBeenCalledOnce();
+    expect(messageDialog.mock.calls[0][0]).toContain('one.png');
+    expect(messageDialog.mock.calls[0][0]).toContain('two.bin');
+    expect(docs.size).toBe(1);
+  });
+
+  it('does nothing while files are only dragged over the window', async () => {
+    listenForDrops();
+    await vi.waitFor(() => expect(fake.drop).not.toBeNull());
+
+    drop({ type: 'enter', paths: ['/a.md'], position: { x: 0, y: 0 } });
+    drop({ type: 'over', position: { x: 0, y: 0 } });
+    drop({ type: 'leave' });
+    drop({ type: 'drop', paths: [], position: { x: 0, y: 0 } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pathsExist).not.toHaveBeenCalled();
+    expect(docs.size).toBe(0);
   });
 });
 

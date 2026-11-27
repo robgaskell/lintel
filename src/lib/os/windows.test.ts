@@ -111,6 +111,7 @@ vi.mock('../ipc', () => ({
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
+  frontendReady: vi.fn(async () => []),
   releasePath: vi.fn(async () => {}),
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),
@@ -550,7 +551,7 @@ describe('listenForReveal', () => {
     return vi.mocked(emit).mock.calls.filter(([event]) => event === REVEAL_ANSWER).map(([, p]) => p);
   }
 
-  it('shows the tab for the path, brings this window forward and says so', async () => {
+  it('shows the tab for the path and says so, leaving the window where it is (Ruling 229)', async () => {
     const doc = fileDoc();
     await listening();
     expect(listen).toHaveBeenCalledWith(REVEAL_DOC, expect.any(Function), {
@@ -560,10 +561,10 @@ describe('listenForReveal', () => {
     deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
 
     expect(workspace.activate).toHaveBeenCalledWith(doc.id);
-    await vi.waitFor(() => expect(fake.win.setFocus).toHaveBeenCalled());
-    expect(fake.win.unminimize).toHaveBeenCalled();
-    expect(fake.win.show).toHaveBeenCalled();
-    expect(answers()).toEqual([{ path: '/notes/a.md', shown: true }]);
+    await vi.waitFor(() => expect(answers()).toEqual([{ path: '/notes/a.md', shown: true }]));
+    expect(fake.win.setFocus).not.toHaveBeenCalled();
+    expect(fake.win.unminimize).not.toHaveBeenCalled();
+    expect(fake.win.show).not.toHaveBeenCalled();
   });
 
   it('lets go of a stale claim and says so, so the asking window opens the file (Ruling 199)', async () => {

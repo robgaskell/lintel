@@ -182,8 +182,9 @@ export async function docWindowLabels(): Promise<string[]> {
 }
 
 /**
- * Shows the doc Rust names in this window and brings the window forward, and answers
- * the window that asked. Also passes on other windows' answers to this one's requests.
+ * Shows the doc Rust names in this window and answers the window that asked. The window is
+ * not brought forward here: an open from outside Lintel must not take focus (Ruling 229).
+ * Also passes on other windows' answers to this one's requests.
  */
 export function listenForReveal(ws: Pick<Workspace, 'activate'>): () => void {
   const label = getCurrentWindow().label;
@@ -313,15 +314,7 @@ async function reveal(ws: Pick<Workspace, 'activate'>, path: string): Promise<vo
     return answer(path, false);
   }
   ws.activate(doc.id);
-  void answer(path, true);
-  const win = getCurrentWindow();
-  try {
-    if (await win.isMinimized()) await win.unminimize();
-    await win.show();
-    await win.setFocus();
-  } catch (err) {
-    console.error('Could not bring the window forward:', err);
-  }
+  await answer(path, true);
 }
 
 async function answer(path: string, shown: boolean): Promise<void> {

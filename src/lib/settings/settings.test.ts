@@ -25,6 +25,7 @@ vi.mock('../ipc', async () => {
       return 'hash';
     }),
     claimPath: vi.fn(async () => null),
+    frontendReady: vi.fn(async () => []),
     releasePath: vi.fn(async () => {}),
     transferPath: vi.fn(async () => 1),
     completeHandoff: vi.fn(async () => true),
