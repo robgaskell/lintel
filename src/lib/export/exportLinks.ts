@@ -34,7 +34,10 @@ function isSafe(href: string): boolean {
   // NFKC turns fullwidth letters, slashes and backslashes into plain ones.
   const target = href.normalize('NFKC').replace(SLASHES, '/').replace(BACKSLASHES, '\\').replace(IGNORED, '');
   if (/^[\\/]{2}/.test(target)) return false;
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(target)?.[1]?.toLowerCase();
+  // A colon before any slash, ? or # ends a scheme, whatever its characters (HTML turns a NUL into U+FFFD).
+  const colon = target.search(/[:/\\?#]/);
+  if (colon === -1 || target[colon] !== ':') return true;
+  const scheme = target.slice(0, colon).toLowerCase();
   // One letter is a Windows drive, not a scheme.
-  return scheme === undefined || scheme.length === 1 || KEPT_SCHEMES.has(scheme);
+  return /^[a-z]$/.test(scheme) || KEPT_SCHEMES.has(scheme);
 }

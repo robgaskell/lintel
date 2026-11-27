@@ -33,6 +33,8 @@ describe('keepsLink (Rulings 324, 330)', () => {
     ['a zero-width space', '\u200b//host/x'],
     ['fullwidth backslashes', '\uFF3C\uFF3Chost\\x'],
     ['fullwidth slashes', '\uFF0F\uFF0Fhost/x'],
+    ['a scheme with a replaced NUL in it', 'fi\ufffdle://host/x'],
+    ['a scheme with a space in it', 'fi le://host/x'],
     ['a fullwidth scheme', '\uFF46\uFF49\uFF4C\uFF45://host/x'],
   ])('drops %s', (_name, href) => {
     expect(keepsLink(href)).toBe(false);
