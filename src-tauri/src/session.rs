@@ -84,23 +84,27 @@ fn keep_window_sizes<R: Runtime>() -> TauriPlugin<R> {
             app.manage(KeptSizes::default());
             Ok(())
         })
-        .on_event(|app, event| match event {
-            RunEvent::WindowEvent {
-                label,
-                event:
-                    WindowEvent::Resized(_)
-                    | WindowEvent::Moved(_)
-                    | WindowEvent::Focused(_)
-                    | WindowEvent::CloseRequested { .. },
-                ..
-            } => {
-                let window = app.get_webview_window(label);
-                kept_sizes(app).note(label, window.and_then(|w| window_size(&w)));
-            }
-            RunEvent::Exit => write_kept_sizes(app),
-            _ => {}
-        })
+        .on_event(keep_size_on)
         .build()
+}
+
+fn keep_size_on<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
+    match event {
+        RunEvent::WindowEvent {
+            label,
+            event:
+                WindowEvent::Resized(_)
+                | WindowEvent::Moved(_)
+                | WindowEvent::Focused(_)
+                | WindowEvent::CloseRequested { .. },
+            ..
+        } => {
+            let window = app.get_webview_window(label);
+            kept_sizes(app).note(label, window.and_then(|w| window_size(&w)));
+        }
+        RunEvent::Exit => write_kept_sizes(app),
+        _ => {}
+    }
 }
 
 /// What exit saves, for an exit that skips RunEvent::Exit: the Windows updater's, which
@@ -136,7 +140,8 @@ fn write_kept_sizes<R: Runtime>(app: &AppHandle<R>) {
         kept.note(&label, size);
     }
     if let Ok(config) = app.path().app_config_dir() {
-        let state = config.join(tauri_plugin_window_state::DEFAULT_FILENAME);
+        // window-state's own file, which is where its exit save went.
+        let state = config.join(app.filename());
         if let Err(err) = kept.write(&state) {
             eprintln!("Could not save the window sizes: {err}");
         }
@@ -276,10 +281,89 @@ fn pruned(saved: &str, keep: &HashSet<String>) -> Option<String> {
     serde_json::to_string_pretty(&Value::Object(states)).ok()
 }
 
+/// A mock app with the geometry plugins writing to a file of the test's own.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+
+    /// A window "main" as window-state saved it last time.
+    pub const SAVED: &str = r#"{"main":{"width":10,"height":10,"x":0,"y":0,"prev_x":0,"prev_y":0,"maximized":false,"visible":true,"decorated":true,"fullscreen":false}}"#;
+
+    /// window-state reads and writes `state`, which holds SAVED until the app is built and
+    /// is then removed, so only a new save makes it again. No window is open: on macOS a
+    /// mock window's frame cannot be read.
+    pub fn geometry_app(state: &Path) -> tauri::App<MockRuntime> {
+        std::fs::write(state, SAVED).unwrap();
+        let window_state = configure(tauri_plugin_window_state::Builder::new())
+            .with_filename(state.to_string_lossy());
+        let app = mock_builder()
+            .plugin(window_state.build())
+            .plugin(keep_window_sizes())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        std::fs::remove_file(state).unwrap();
+        app
+    }
+
+    pub fn note_size<R: Runtime>(app: &AppHandle<R>, label: &str, size: (u32, u32)) {
+        kept_sizes(app).note(label, Some(size));
+    }
+
+    /// The width and height `state` holds for `label`.
+    pub fn saved_size(state: &Path, label: &str) -> Option<(u64, u64)> {
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(state).ok()?).ok()?;
+        let entry = &saved[label];
+        Some((entry["width"].as_u64()?, entry["height"].as_u64()?))
+    }
+
+    /// A fresh folder per test, so tests can run in parallel.
+    pub fn temp_dir(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "lintel-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn exit_writes_the_kept_sizes_into_window_states_file() {
+        let dir = temp_dir("exit-sizes");
+        let state = dir.join("window-state.json");
+        let app = geometry_app(&state);
+        std::fs::write(&state, SAVED).unwrap();
+        note_size(app.handle(), MAIN, (640, 480));
+
+        keep_size_on(app.handle(), &RunEvent::Exit);
+
+        assert_eq!(saved_size(&state, MAIN), Some((640, 480)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_geometry_now_writes_window_state_then_the_kept_sizes() {
+        let dir = temp_dir("save-now");
+        let state = dir.join("window-state.json");
+        let app = geometry_app(&state);
+        note_size(app.handle(), MAIN, (640, 480));
+
+        save_geometry_now(app.handle());
+
+        assert_eq!(saved_size(&state, MAIN), Some((640, 480)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn labels(session: &str) -> Vec<String> {
         let mut labels: Vec<_> = restored_labels(Some(session)).into_iter().collect();

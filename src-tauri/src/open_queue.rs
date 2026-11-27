@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -11,6 +11,8 @@ use crate::{files, SETTINGS};
 pub const OPEN_FILES: &str = "lintel://open-files";
 
 const MAIN: &str = "main";
+/// In the app data folder: paths opened while an update installed, for the next launch.
+const HELD_FILE: &str = "open-after-update.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OpenFilesEvent {
@@ -24,6 +26,13 @@ pub struct OpenQueue {
     ready: HashSet<String>,
     pending: Vec<String>,
     last_focused: Option<String>,
+    held: Option<Held>,
+}
+
+/// Paths kept while an update installs, and the file that keeps them past a relaunch.
+struct Held {
+    file: PathBuf,
+    paths: Vec<String>,
 }
 
 /// Sends `OpenFilesEvent`s; a trait so the queue can be tested without an app.
@@ -45,6 +54,13 @@ impl OpenQueue {
         if paths.is_empty() {
             return;
         }
+        if let Some(held) = &mut self.held {
+            held.paths.extend(paths);
+            if let Err(err) = save_held(&held.file, &held.paths) {
+                eprintln!("Could not keep the files opened during the update: {err}");
+            }
+            return;
+        }
         match self.target() {
             Some(label) => emitter.open_files(&label, OpenFilesEvent { paths }),
             None => self.pending.extend(paths),
@@ -58,6 +74,28 @@ impl OpenQueue {
         }
         self.ready.insert(label.to_owned());
         std::mem::take(&mut self.pending)
+    }
+
+    /// From now until `release`, paths are kept in `file` instead of opened: the windows
+    /// are locked while an update installs, and the app may relaunch (Ruling 349).
+    pub fn hold(&mut self, file: PathBuf) {
+        self.held.get_or_insert(Held {
+            file,
+            paths: Vec::new(),
+        });
+    }
+
+    /// The install failed: the kept paths open now.
+    pub fn release(&mut self, emitter: &impl OpenFilesEmitter) {
+        if let Some(held) = self.held.take() {
+            let _ = std::fs::remove_file(&held.file);
+            self.push(held.paths, emitter);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        self.held.is_some()
     }
 
     /// A window asked to close may be gone soon, so it takes no more paths until it reports
@@ -110,6 +148,39 @@ pub fn paths_from_urls(urls: &[tauri::Url]) -> Vec<String> {
         .filter_map(|url| url.to_file_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
         .collect()
+}
+
+fn save_held(file: &Path, paths: &[String]) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_vec(paths).map_err(std::io::Error::other)?;
+    files::write_atomic(file, &json, None)
+}
+
+/// The paths kept by a run that relaunched into an update, removed so they open once.
+pub fn take_held(file: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    let _ = std::fs::remove_file(file);
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn held_file<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| dir.join(HELD_FILE))
+}
+
+/// Holds paths opened from outside while an update installs.
+pub fn hold<R: Runtime>(app: &AppHandle<R>) {
+    match held_file(app) {
+        Some(file) => lock(&app.state::<Mutex<OpenQueue>>()).hold(file),
+        None => eprintln!("No app data folder; files opened during the update open now"),
+    }
+}
+
+pub fn release<R: Runtime>(app: &AppHandle<R>) {
+    lock(&app.state::<Mutex<OpenQueue>>()).release(app);
 }
 
 /// Opens `paths` from outside Lintel, skipping folders (Ruling 238). Nothing here shows or
@@ -165,6 +236,43 @@ mod tests {
         fn take(&self) -> Vec<(String, Vec<String>)> {
             std::mem::take(&mut self.0.borrow_mut())
         }
+    }
+
+    #[test]
+    fn while_an_update_installs_opened_files_wait_in_a_file_and_open_if_it_fails() {
+        let dir = crate::session::test_support::temp_dir("held-opens");
+        let file = dir.join(HELD_FILE);
+        let sent = Sent::default();
+        let mut queue = OpenQueue::default();
+        queue.ready(MAIN);
+
+        queue.hold(file.clone());
+        queue.push(paths(&["/a.md"]), &sent);
+        queue.push(paths(&["/b.md"]), &sent);
+
+        assert!(sent.take().is_empty());
+        let kept: Vec<String> = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(kept, paths(&["/a.md", "/b.md"]));
+
+        queue.release(&sent);
+        assert_eq!(sent.take(), [("main".to_owned(), paths(&["/a.md", "/b.md"]))]);
+        assert!(!file.exists() && !queue.is_held());
+        queue.push(paths(&["/c.md"]), &sent);
+        assert_eq!(sent.take(), [("main".to_owned(), paths(&["/c.md"]))]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_launch_after_an_update_takes_the_kept_files_once() {
+        let dir = crate::session::test_support::temp_dir("held-launch");
+        let file = dir.join(HELD_FILE);
+        std::fs::write(&file, r#"["/a.md","/b.md"]"#).unwrap();
+
+        assert_eq!(take_held(&file), paths(&["/a.md", "/b.md"]));
+        assert!(take_held(&file).is_empty());
+        std::fs::write(&file, "not json").unwrap();
+        assert!(take_held(&file).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn paths(list: &[&str]) -> Vec<String> {

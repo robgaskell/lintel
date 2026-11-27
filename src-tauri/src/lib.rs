@@ -123,7 +123,12 @@ fn setup_app<R: Runtime>(
     os_integration::listen_for_os_actions(app.handle());
     updater::start(app.handle());
     let cwd = cwd.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
-    open_queue::open_from_outside(app.handle(), open_queue::paths_from_args(args, &cwd));
+    let mut paths = open_queue::paths_from_args(args, &cwd);
+    // Files opened while the last run installed an update (Ruling 349).
+    if let Some(file) = open_queue::held_file(app.handle()) {
+        paths.extend(open_queue::take_held(&file));
+    }
+    open_queue::open_from_outside(app.handle(), paths);
 }
 
 // The plugin sends "" as `cwd` when the second launch's folder could not be read.
@@ -499,13 +504,11 @@ mod tests {
         );
     }
 
-    // Checked as written: the hook runs only inside the Windows installer path.
+    // The hook itself is tested in updater.rs.
     #[test]
-    fn the_updater_starts_with_the_app_and_saves_geometry_before_the_windows_installer() {
+    fn the_updater_starts_with_the_app() {
         let lib = include_str!("lib.rs");
         assert_eq!(lib.matches(concat!("updater::", "start(app.handle());")).count(), 1);
-        let hook = concat!(".on_before_exit(move || crate::session::", "save_geometry_now(&hook))");
-        assert_eq!(include_str!("updater.rs").matches(hook).count(), 1);
     }
 
     #[test]
