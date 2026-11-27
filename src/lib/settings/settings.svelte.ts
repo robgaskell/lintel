@@ -237,10 +237,20 @@ async function readStore(): Promise<Settings> {
     if (repairs && (await repairQuietly(repairs))) return $state.snapshot(settings) as Settings;
     // A repair that saved nothing (another window changed the key first) brings no
     // snapshot, so the store is read again (Ruling 300).
-    if (repairs) next = readSettings(new Map(await store.entries<unknown>()));
+    if (repairs) next = await readAgain(store, next);
   }
   Object.assign(settings, next);
   return structuredClone(next);
+}
+
+// A failed second read keeps the first read's settings, so the load still succeeds.
+async function readAgain(store: Store, first: Settings): Promise<Settings> {
+  try {
+    return readSettings(new Map(await store.entries<unknown>()));
+  } catch (err) {
+    console.error('Could not read the settings again:', err);
+    return first;
+  }
 }
 
 // Each stored field as its reader takes it, or the default.

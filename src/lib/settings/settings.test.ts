@@ -43,6 +43,32 @@ beforeEach(async () => {
 });
 
 describe('loadSettings', () => {
+  it("keeps the first read's settings and resolves when the read after a repair fails (Ruling 310)", async () => {
+    resetFakes();
+    fakes.settingsRevision.value = 0;
+    await store().set('version', 1);
+    await store().set('fontSize', 20);
+    await store().set('lint', { enabled: 'yes', rules: { default: true } });
+    const real = fakes.coreModule.invoke;
+    vi.spyOn(fakes.coreModule, 'invoke').mockImplementationOnce(async (command: string, args?: unknown) => {
+      store().data.set('lint', { enabled: 'maybe', rules: { default: true } });
+      return real(command as never, args as never);
+    });
+    const firstRead = store().entries.bind(store());
+    vi.spyOn(store(), 'entries')
+      .mockImplementationOnce(firstRead)
+      .mockRejectedValueOnce(new Error('disk gone'));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const loaded = await loadSettings();
+
+    expect(loaded.fontSize).toBe(20);
+    expect(settings.fontSize).toBe(20);
+    expect(quiet).toHaveBeenCalledWith('Could not read the settings again:', expect.any(Error));
+    quiet.mockRestore();
+    await expect(updateSettings({ fontSize: 18 })).resolves.toBeUndefined();
+  });
+
   it('applies the stored settings when its repair saves nothing, even at revision 0 (Ruling 300)', async () => {
     resetFakes();
     fakes.settingsRevision.value = 0;
