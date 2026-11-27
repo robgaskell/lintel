@@ -10,6 +10,8 @@
     "build": "vite build",
     "test": "vitest run",
     "svelte-check": "svelte-check --tsconfig ./tsconfig.json",
+    "notices": "node scripts/notices.mjs",
+    "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "tauri": "tauri"
   },
   "dependencies": {

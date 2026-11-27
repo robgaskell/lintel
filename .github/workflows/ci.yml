@@ -71,3 +71,29 @@ jobs:
       # Builds the .exe installer, so its hooks compile (Ruling 240).
       - run: pnpm tauri build --debug --bundles nsis
         if: runner.os == 'Windows'
+
+  # The notices list every target's crates, so one Linux run checks them all.
+  notices:
+    name: notices
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      # cargo tree and cargo metadata only; nothing is compiled.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test:scripts
+
+      - run: node scripts/notices.mjs --check
