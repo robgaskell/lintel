@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::State;
+use tauri::{Runtime, State, Window};
 
 use crate::watch::Watcher;
 
@@ -373,14 +373,15 @@ fn doctype_end(text: &str) -> Option<usize> {
 }
 
 /// Returns the sha-256 hex of the bytes written. The watcher learns the new hash, so
-/// Lintel's own save does not come back as a change on disk.
+/// Lintel's own save does not come back to this window; other windows watching it hear it.
 #[tauri::command]
-pub async fn write_text_file(
+pub async fn write_text_file<R: Runtime>(
+    window: Window<R>,
     watcher: State<'_, Watcher>,
     path: String,
     text: String,
 ) -> Result<String, String> {
-    watcher.saving(&path, || write_text(&path, &text))
+    watcher.saving(window.label(), &path, || write_text(&path, &text))
 }
 
 pub(crate) fn write_text(path: &str, text: &str) -> Result<String, String> {
