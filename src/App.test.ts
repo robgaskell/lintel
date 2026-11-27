@@ -17,6 +17,7 @@ import { listenForQuitRequests } from './lib/os/quit';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
 import { restartToUpdate, type UpdateState } from './lib/os/updater';
+import { handleCloseRequested } from './lib/os/window';
 import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
 import App from './App.svelte';
 
@@ -27,6 +28,7 @@ const fake = vi.hoisted(() => ({
   layoutListeners: new Set<() => void>(),
   alone: new Set<string>(),
   focusHandler: null as ((event: { payload: boolean }) => void) | null,
+  closeHandler: null as ((event: { preventDefault(): void }) => unknown) | null,
   label: 'main',
   focused: true,
   stopDrops: (() => {}) as () => void,
@@ -53,7 +55,10 @@ vi.mock('./lib/layout/workspace', () => ({
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     label: fake.label,
-    onCloseRequested: async () => () => {},
+    onCloseRequested: async (handler: (event: { preventDefault(): void }) => unknown) => {
+      fake.closeHandler = handler;
+      return () => {};
+    },
     onFocusChanged: async (handler: (event: { payload: boolean }) => void) => {
       fake.focusHandler = handler;
       return () => {};
@@ -95,6 +100,7 @@ vi.mock('./lib/docs/reload', async (importOriginal) => ({
   setReloadNoticeShower: vi.fn(),
 }));
 vi.mock('./lib/os/quit', () => ({ listenForQuitRequests: vi.fn(() => () => {}), quitApp: vi.fn() }));
+vi.mock('./lib/os/window', () => ({ handleCloseRequested: vi.fn(async () => {}) }));
 vi.mock('./lib/editor/views', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/editor/views')>()),
   setEditorsLocked: vi.fn(),
@@ -386,6 +392,23 @@ describe('App update ready (Ruling 343)', () => {
     flushSync();
     expect(queryByText('Installing update…')).toBeNull();
     expect(setEditorsLocked).toHaveBeenLastCalledWith(false);
+  });
+
+  it('refuses to close the window while the update installs, and closes again if it fails (Ruling 353)', async () => {
+    render(App);
+    updates.send({ ...ready, status: 'installing', revision: 4 });
+    flushSync();
+    const refused = { preventDefault: vi.fn() };
+    await fake.closeHandler!(refused);
+    expect(refused.preventDefault).toHaveBeenCalledOnce();
+    expect(handleCloseRequested).not.toHaveBeenCalled();
+
+    updates.send({ ...ready, revision: 5 });
+    flushSync();
+    const allowed = { preventDefault: vi.fn() };
+    await fake.closeHandler!(allowed);
+    expect(allowed.preventDefault).not.toHaveBeenCalled();
+    expect(handleCloseRequested).toHaveBeenCalledWith(allowed, expect.anything());
   });
 
   it('shows it in the empty window too, which has no status bar', async () => {

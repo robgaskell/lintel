@@ -156,7 +156,8 @@ function replaceRanges(
   edit: (range: SelectionRange, state: EditorState) => RangeEdit,
 ): boolean {
   const { state } = view;
-  // Read-only while an update installs (Ruling 351); CodeMirror's own commands check this too.
+  // Read-only while an update installs. The lock (setup.ts) drops the change anyway; this
+  // tells a menu or shortcut that the command did not run (Rulings 351, 353).
   if (state.readOnly) return false;
   view.dispatch(state.changeByRange((range) => edit(range, state)), {
     scrollIntoView: true,

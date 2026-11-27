@@ -10,6 +10,7 @@ import {
   type FileChangedEvent,
   type FileRemovedEvent,
 } from '../ipc';
+import { lockExempt } from '../editor/setup';
 import { activeDocId, viewFor } from '../editor/views';
 import { handleConfigFileEvent } from '../lint/config';
 import type { Workspace } from '../layout/workspace';
@@ -219,6 +220,7 @@ function replaceKeepingCursorLine(view: EditorView, text: string): void {
   view.dispatch({
     changes: { from: start, to: old.length - end, insert: text.slice(start, text.length - end) },
     selection: { anchor: line.from + Math.min(column, line.length) },
-    annotations: isolateHistory.of('full'),
+    // The file's own text, which a locked editor still takes.
+    annotations: [isolateHistory.of('full'), lockExempt.of(true)],
   });
 }

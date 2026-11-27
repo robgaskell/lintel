@@ -240,9 +240,14 @@
         takeOpenedFiles();
       }
     }
-    const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
-      handleCloseRequested(event, workspace),
-    );
+    const unlistenClose = getCurrentWindow().onCloseRequested((event) => {
+      // No window closes until the relaunch; a failed install unlocks (Ruling 353).
+      if (installing) {
+        event.preventDefault();
+        return;
+      }
+      return handleCloseRequested(event, workspace);
+    });
     // The menu bar is shared: the focused window builds it, and its tick shows that
     // window's outline (Rulings 110, 188).
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -357,7 +362,8 @@
     gap: 12px;
   }
 
-  /* Over everything, so nothing is clicked; the editor lock refuses typing and edit commands. */
+  /* Blocks the mouse. The editor lock (setup.ts) swallows keys, paste and drop, and drops
+     every edit; close requests are refused. */
   .installing {
     position: fixed;
     inset: 0;

@@ -6,7 +6,7 @@ import { EditorState, type ChangeSet } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { FILE_CHANGED, FILE_REMOVED, pathsExist, readTextFile, writeTextFile } from '../ipc';
 import { editorExtensions } from '../editor/setup';
-import { registerView, setActiveDocSource } from '../editor/views';
+import { registerView, setActiveDocSource, setEditorsLocked } from '../editor/views';
 import {
   followWorkspace,
   handleFileChanged,
@@ -116,6 +116,21 @@ describe('handleFileChanged', () => {
     expect(doc.diskHash).toBe('h-new');
     expect(doc.external).toBe('none');
     expect(notices).toEqual(['plan.md reloaded from disk']);
+  });
+
+  it('still reloads an editor locked for an update, as the file is not an edit (Ruling 353)', async () => {
+    const doc = openDoc('# Plan\n');
+    const view = editorFor(doc);
+    active = doc.id;
+    setEditorsLocked(true);
+    try {
+      diskHas('# New plan\n', 'h-new');
+      await handleFileChanged({ path: '/notes/plan.md', hash: 'h-new' });
+      expect(view.state.doc.toString()).toBe('# New plan\n');
+      expect(doc.text).toBe('# New plan\n');
+    } finally {
+      setEditorsLocked(false);
+    }
   });
 
   it('replaces only what changed, so an appended line leaves the rest and the cursor alone', async () => {

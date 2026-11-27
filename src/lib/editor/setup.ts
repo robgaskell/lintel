@@ -1,5 +1,5 @@
 import { minimalSetup } from 'codemirror';
-import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
 import {
   EditorView,
   highlightActiveLine,
@@ -26,12 +26,54 @@ export function fontTheme(s: Pick<Settings, 'editorFont' | 'fontSize'>): Extensi
   return EditorView.theme({ '.cm-scroller': { fontFamily: family, fontSize: size } });
 }
 
-/** Makes the editor read-only while an update installs (Ruling 349). */
+/** Locks the editor while an update installs (Rulings 349, 353). */
 export const lockCompartment = new Compartment();
 const lock = { on: false };
 
+/** Marks a change a locked editor still takes: the file's own text, read from disk. */
+export const lockExempt = Annotation.define<boolean>();
+
+/**
+ * While locked, keys other than moving and copying, paste, cut, drop and typed input are
+ * swallowed before any other handler, so no command runs from them; and any document
+ * change not marked lockExempt is dropped, whatever made it.
+ */
 export function lockExtension(locked: boolean): Extension {
-  return locked ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+  if (!locked) return [];
+  return [
+    EditorState.readOnly.of(true),
+    EditorView.editable.of(false),
+    Prec.highest(
+      EditorView.domEventHandlers({
+        keydown: (event) => swallow(event, movesOrCopies(event)),
+        paste: (event) => swallow(event),
+        cut: (event) => swallow(event),
+        drop: (event) => swallow(event),
+        beforeinput: (event) => swallow(event),
+      }),
+    ),
+    EditorState.transactionFilter.of((tr) => (tr.docChanged && !tr.annotation(lockExempt) ? [] : tr)),
+  ];
+}
+
+const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+const LONE_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'Escape']);
+// With Cmd or Ctrl: copy, select all, find, find next and previous. Shift+C inserts a
+// code block, so case matters.
+const COPY_KEYS = new Set(['c', 'a', 'f', 'g', 'G']);
+
+// Alt with an arrow moves or copies lines, so it is not a plain move.
+function movesOrCopies(event: KeyboardEvent): boolean {
+  if (LONE_MODIFIERS.has(event.key)) return true;
+  if (MOVE_KEYS.has(event.key)) return !event.altKey;
+  const mod = event.metaKey || event.ctrlKey;
+  return mod && !event.altKey && COPY_KEYS.has(event.key);
+}
+
+function swallow(event: Event, allowed = false): boolean {
+  if (allowed) return false;
+  event.preventDefault();
+  return true;
 }
 
 /** Whether editors made from now on start read-only. views.ts locks the open ones. */
