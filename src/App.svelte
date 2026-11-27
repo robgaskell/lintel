@@ -11,7 +11,7 @@
   } from './lib/docs/reload';
   import { countWords, saveStateOf } from './lib/docs/stats';
   import { docs, setWatchFailureReporter } from './lib/docs/store.svelte';
-  import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
+  import { followEditorFont, setActiveDocSource, setEditorsLocked, viewFor } from './lib/editor/views';
   import { dropStalePrintRoot } from './lib/export/print';
   import { outline } from './lib/layout/outline.svelte';
   import { configStatus, currentConfig, followDocConfigs, refreshConfigsOnFocus } from './lib/lint/config';
@@ -122,6 +122,9 @@
   // Shown in the status bar, or in the notice bar when no doc is open (Ruling 343).
   let update = $state<UpdateState | null>(null);
   const updateReady = $derived(update?.status === 'ready');
+  // Until the relaunch, or a failed install unlocks it (Ruling 349).
+  const installing = $derived(update?.status === 'installing');
+  $effect(() => setEditorsLocked(installing));
   let workspaceForUpdate: Workspace | undefined;
   function restartForUpdate() {
     void restartToUpdate(workspaceForUpdate);
@@ -318,6 +321,9 @@
       {/if}
     </footer>
   {/if}
+  {#if installing}
+    <div class="installing" role="status">Installing update…</div>
+  {/if}
 </div>
 
 <style>
@@ -349,6 +355,20 @@
     color: var(--muted-strong);
     font-size: 12px;
     gap: 12px;
+  }
+
+  /* Over everything, so nothing is clicked or typed until the relaunch. */
+  .installing {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--chrome) 85%, transparent);
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
   }
 
   /* As in the status bar. */

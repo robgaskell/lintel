@@ -12,7 +12,18 @@ import {
   type UpdateState,
 } from './updater';
 
-vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
+// A listen resolves only once `listening.open` does, as Tauri's goes through the core.
+const listening = vi.hoisted(() => ({ open: Promise.resolve() }));
+vi.mock('@tauri-apps/api/event', async () => {
+  const { eventModule } = await import('../../test/fakes');
+  return {
+    ...eventModule,
+    listen: async (...args: Parameters<typeof eventModule.listen>) => {
+      await listening.open;
+      return eventModule.listen(...args);
+    },
+  };
+});
 const rust = vi.hoisted(() => ({ state: null as UpdateState | null }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (command: string) => {
@@ -37,6 +48,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   resetFakes();
+  listening.open = Promise.resolve();
   rust.state = state('none', 0);
   rounds.outcome = 'proceed';
   vi.mocked(invoke).mockClear();
@@ -70,6 +82,23 @@ describe('followUpdates (Ruling 343)', () => {
     await settle();
 
     expect(seen).toEqual(['downloading', 'ready']);
+  });
+
+  it('asks only once it listens, so no change between the two is missed (Ruling 349)', async () => {
+    let open = () => {};
+    listening.open = new Promise<void>((resolve) => (open = resolve));
+    const asked: unknown[] = [];
+    await eventModule.listen(UPDATE_REQUEST, ({ payload }) => asked.push(payload));
+
+    followUpdates(() => {});
+    followUpdatesInSettings(() => {});
+    await settle();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(asked).toEqual([]);
+
+    open();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('update_state'));
+    await vi.waitFor(() => expect(asked).toEqual([{ action: 'state' }]));
   });
 
   it('hears nothing once stopped', async () => {
@@ -116,7 +145,8 @@ describe('restartToUpdate (Ruling 343)', () => {
   it('installs only after every window has passed its quit prompts', async () => {
     await restartToUpdate();
 
-    expect(runQuitRounds).toHaveBeenCalledOnce();
+    // As an update round, whose hung-window question offers Install Anyway.
+    expect(runQuitRounds).toHaveBeenCalledWith(undefined, expect.any(Function), 'update');
     expect(invoke).toHaveBeenCalledWith('install_update');
   });
 

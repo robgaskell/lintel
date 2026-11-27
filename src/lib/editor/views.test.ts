@@ -3,7 +3,7 @@ import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { DEFAULT_SETTINGS, settings, type Settings } from '../settings/settings.svelte';
 import { editorExtensions, fontCompartment } from './setup';
-import { activeView, followEditorFont, registerView, setActiveDocSource, viewFor } from './views';
+import { activeView, followEditorFont, registerView, setActiveDocSource, setEditorsLocked, viewFor } from './views';
 
 const changed = vi.hoisted(() => ({ cb: null as ((s: Settings) => void) | null }));
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
@@ -106,5 +106,36 @@ describe('followEditorFont (Ruling 170)', () => {
     expect(changed.cb).toBeNull();
     forget.forEach((f) => f());
     views.forEach((v) => v.destroy());
+  });
+});
+
+describe('setEditorsLocked (Ruling 349)', () => {
+  const editor = () =>
+    new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: 'a', extensions: editorExtensions(() => {}) }),
+    });
+
+  it('makes every editor read-only, and those made while locked too, until unlocked', () => {
+    const open = editor();
+    const forget = registerView('doc-open', open);
+    try {
+      setEditorsLocked(true);
+      const later = editor();
+      for (const view of [open, later]) {
+        expect(view.state.readOnly).toBe(true);
+        expect(view.contentDOM.getAttribute('contenteditable')).toBe('false');
+      }
+      later.destroy();
+
+      setEditorsLocked(false);
+      expect(open.state.readOnly).toBe(false);
+      expect(open.contentDOM.getAttribute('contenteditable')).toBe('true');
+      expect(editor().state.readOnly).toBe(false);
+    } finally {
+      setEditorsLocked(false);
+      forget();
+      open.destroy();
+    }
   });
 });

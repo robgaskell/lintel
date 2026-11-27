@@ -4,7 +4,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
-import { registerView } from './lib/editor/views';
+import { registerView, setEditorsLocked } from './lib/editor/views';
 import { dropStalePrintRoot } from './lib/export/print';
 import { findLintConfig } from './lib/ipc';
 import { fixAll, type LintIssue } from './lib/lint/lint';
@@ -95,6 +95,10 @@ vi.mock('./lib/docs/reload', async (importOriginal) => ({
   setReloadNoticeShower: vi.fn(),
 }));
 vi.mock('./lib/os/quit', () => ({ listenForQuitRequests: vi.fn(() => () => {}), quitApp: vi.fn() }));
+vi.mock('./lib/editor/views', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/editor/views')>()),
+  setEditorsLocked: vi.fn(),
+}));
 // Rust's update service, as the window hears it.
 const updates = vi.hoisted(() => ({ send: (_state: UpdateState) => {} }));
 vi.mock('./lib/os/updater', () => ({
@@ -363,6 +367,25 @@ describe('App update ready (Ruling 343)', () => {
     await fireEvent.click(getByRole('button', { name: 'Update ready: restart' }));
 
     expect(restartToUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('locks every editor under an overlay while the update installs, and unlocks if it fails (Ruling 349)', () => {
+    const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { queryByText } = render(App);
+    updates.send(ready);
+    flushSync();
+    expect(setEditorsLocked).toHaveBeenLastCalledWith(false);
+
+    updates.send({ ...ready, status: 'installing', revision: 4 });
+    flushSync();
+    expect(queryByText('Installing update…')).toBeTruthy();
+    expect(setEditorsLocked).toHaveBeenLastCalledWith(true);
+
+    updates.send({ ...ready, revision: 5 });
+    flushSync();
+    expect(queryByText('Installing update…')).toBeNull();
+    expect(setEditorsLocked).toHaveBeenLastCalledWith(false);
   });
 
   it('shows it in the empty window too, which has no status bar', async () => {

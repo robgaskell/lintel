@@ -91,7 +91,21 @@ describe('UpdatesSection (Ruling 343)', () => {
     expect(result(container)).toBe('Downloading Lintel 0.1.1…');
     send({ status: 'ready', version: '0.1.1' });
     expect(result(container)).toContain('Lintel 0.1.1 is ready.');
-    send({ status: 'error', error: 'offline' });
-    expect(result(container)).toBe('Could not check for updates: offline');
+    send({ status: 'installing', version: '0.1.1' });
+    expect(result(container)).toBe('Installing Lintel 0.1.1…');
+    send({ status: 'error', error: 'Could not download the update: offline' });
+    expect(result(container)).toBe('Could not download the update: offline');
+  });
+
+  it('Check now with an update ready says so, and asks Rust nothing (Ruling 349)', async () => {
+    const { container, getByRole } = render(UpdatesSection);
+    send({ status: 'ready', version: '0.1.1' });
+
+    await fireEvent.click(getByRole('button', { name: 'Check now' }));
+
+    expect(result(container)).toBe('An update is ready. Restart to install it.');
+    expect(checkForUpdates).not.toHaveBeenCalled();
+    send({ status: 'ready', version: '0.1.1', revision: 2 });
+    expect(result(container)).toContain('Lintel 0.1.1 is ready.');
   });
 });

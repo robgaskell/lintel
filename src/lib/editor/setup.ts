@@ -1,5 +1,5 @@
 import { minimalSetup } from 'codemirror';
-import { Compartment, Prec, type Extension } from '@codemirror/state';
+import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
 import {
   EditorView,
   highlightActiveLine,
@@ -26,6 +26,19 @@ export function fontTheme(s: Pick<Settings, 'editorFont' | 'fontSize'>): Extensi
   return EditorView.theme({ '.cm-scroller': { fontFamily: family, fontSize: size } });
 }
 
+/** Makes the editor read-only while an update installs (Ruling 349). */
+export const lockCompartment = new Compartment();
+const lock = { on: false };
+
+export function lockExtension(locked: boolean): Extension {
+  return locked ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+}
+
+/** Whether editors made from now on start read-only. views.ts locks the open ones. */
+export function setNewEditorsLocked(locked: boolean): void {
+  lock.on = locked;
+}
+
 /** Extensions for one markdown editor; `onChange` gets the full text after each edit. */
 export function editorExtensions(onChange: (text: string) => void): Extension[] {
   return [
@@ -45,5 +58,6 @@ export function editorExtensions(onChange: (text: string) => void): Extension[] 
     }),
     editorTheme,
     fontCompartment.of(fontTheme(settings)),
+    lockCompartment.of(lockExtension(lock.on)),
   ];
 }

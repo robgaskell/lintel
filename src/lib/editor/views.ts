@@ -1,5 +1,5 @@
 import type { EditorView } from '@codemirror/view';
-import { fontCompartment, fontTheme } from './setup';
+import { fontCompartment, fontTheme, lockCompartment, lockExtension, setNewEditorsLocked } from './setup';
 import { onSettingsChanged, settings, type Settings } from '../settings/settings.svelte';
 
 const views = new Map<string, EditorView>();
@@ -50,6 +50,14 @@ export function followEditorFont(): () => void {
     last = key;
     for (const view of views.values()) setFont(view, next);
   });
+}
+
+/** Every editor in this window, and any made later, read-only or not (Ruling 349). */
+export function setEditorsLocked(locked: boolean): void {
+  setNewEditorsLocked(locked);
+  for (const view of views.values()) {
+    view.dispatch({ effects: lockCompartment.reconfigure(lockExtension(locked)) });
+  }
 }
 
 function setFont(view: EditorView, s: Settings): void {

@@ -6,12 +6,26 @@
 
   let update = $state<UpdateState | null>(null);
   let askError = $state('');
-  const busy = $derived(update?.status === 'checking' || update?.status === 'downloading');
+  // Shown instead of the last result until the state next changes.
+  let note = $state('');
+  const busy = $derived(
+    update?.status === 'checking' || update?.status === 'downloading' || update?.status === 'installing',
+  );
 
-  onMount(() => followUpdatesInSettings((state) => (update = state)));
+  onMount(() =>
+    followUpdatesInSettings((state) => {
+      update = state;
+      note = '';
+    }),
+  );
 
   async function checkNow() {
     askError = '';
+    // A downloaded update is not checked again (Ruling 349).
+    if (update?.status === 'ready') {
+      note = 'An update is ready. Restart to install it.';
+      return;
+    }
     try {
       await checkForUpdates();
     } catch (err) {
@@ -27,8 +41,10 @@
         return `Downloading Lintel ${state.version}…`;
       case 'ready':
         return `Lintel ${state.version} is ready. Choose “Update ready: restart” in a document window to install it.`;
+      case 'installing':
+        return `Installing Lintel ${state.version}…`;
       case 'error':
-        return `Could not check for updates: ${state.error}`;
+        return state.error ?? 'The last check failed.';
       case 'none':
         return state.lastChecked === null
           ? 'Not checked yet.'
@@ -61,7 +77,7 @@
       Check now
     </button>
   </div>
-  <p id="update-result" class="hint result" class:failed={update?.status === 'error' || askError !== ''} role="status">{askError || (update ? lastResult(update) : '')}</p>
+  <p id="update-result" class="hint result" class:failed={update?.status === 'error' || askError !== ''} role="status">{askError || note || (update ? lastResult(update) : '')}</p>
 </div>
 
 <style>

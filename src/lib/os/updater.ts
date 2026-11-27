@@ -8,7 +8,8 @@ export const UPDATE_STATE = 'lintel://update-state';
 /** Settings has no app commands, so it asks by event (Ruling 245). */
 export const UPDATE_REQUEST = 'lintel://update-request';
 
-export type UpdateStatus = 'none' | 'checking' | 'downloading' | 'ready' | 'error';
+// 'installing': from the install request until the relaunch; windows are locked meanwhile.
+export type UpdateStatus = 'none' | 'checking' | 'downloading' | 'ready' | 'installing' | 'error';
 
 export interface UpdateState {
   status: UpdateStatus;
@@ -51,7 +52,7 @@ export async function checkForUpdates(): Promise<void> {
 export async function restartToUpdate(
   workspace?: Pick<Workspace, 'docIdsInOrder' | 'activate'>,
 ): Promise<void> {
-  await runQuitRounds(workspace, () => invoke('install_update'));
+  await runQuitRounds(workspace, () => invoke('install_update'), 'update');
 }
 
 // Listens before asking, so a change between the two is not missed.
