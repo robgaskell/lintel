@@ -10,6 +10,7 @@ import {
   docs,
   findByPath,
   isDirty,
+  opening,
   removeDoc,
   restoreDoc,
   saveDoc,
@@ -583,7 +584,7 @@ describe('the path registry (Ruling 185)', () => {
 });
 
 describe('Save As onto a file open in another tab of this window (Ruling 199)', () => {
-  it('is refused with the same message, and that tab is shown', async () => {
+  it('is refused, saying so, and that tab is shown (Ruling 217)', async () => {
     const show = vi.fn();
     setTabShower(show);
     const a = createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h', mode: 'edit' });
@@ -596,9 +597,41 @@ describe('Save As onto a file open in another tab of this window (Ruling 199)', 
     expect(b.path).toBe('/notes/b.md');
     expect(show).toHaveBeenCalledWith(a.id);
     expect(messageDialog).toHaveBeenCalledWith(
-      expect.stringContaining('a.md is open in another window'),
+      'a.md is already open in another tab.',
       expect.objectContaining({ kind: 'error' }),
     );
+  });
+});
+
+describe('Save As and the paths being opened here (Ruling 216)', () => {
+  it('marks the chosen path while it is claimed and written, and not after', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/b.md');
+    const seen: boolean[] = [];
+    vi.mocked(claimPath).mockImplementationOnce(async (path) => {
+      seen.push(opening.has(path));
+      return null;
+    });
+    write.mockImplementationOnce(async (path) => {
+      seen.push(opening.has(path));
+      return 'h2';
+    });
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(seen).toEqual([true, true]);
+    expect(opening.has('/notes/b.md')).toBe(false);
+  });
+
+  it('unmarks the path when Save As is refused or the write fails', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    saveDialog.mockResolvedValueOnce('/notes/b.md').mockResolvedValueOnce('/notes/c.md');
+    vi.mocked(claimPath).mockResolvedValueOnce('w-1');
+    expect(await saveDocAs(doc.id)).toBe(false);
+    write.mockRejectedValueOnce(new Error('disk full'));
+    await expect(saveDocAs(doc.id)).rejects.toThrow('disk full');
+
+    expect(opening.size).toBe(0);
   });
 });
 

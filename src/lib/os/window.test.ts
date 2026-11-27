@@ -27,6 +27,7 @@ vi.mock('./session', () => ({
 vi.mock('./windows', () => ({ docWindowLabels: vi.fn(async () => ['main']) }));
 
 const messageDialog = vi.mocked(message);
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function dirtyDoc(path: string) {
   const doc = createDoc({ path, raw: '', hash: '', mode: 'split' });
@@ -118,6 +119,70 @@ describe('handleCloseRequested', () => {
     expect(docs.has(back.id)).toBe(true);
   });
 
+  it('never asks about a doc that moved away while it waited, and closes (Ruling 217)', async () => {
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const moving = dirtyDoc('/moving.md');
+    const event = { preventDefault: vi.fn() };
+
+    const closing = handleCloseRequested(event, { docIdsInOrder: () => [...docs.keys()], activate: vi.fn() });
+    await tick();
+    docs.delete(moving.id);
+    settle();
+    await closing;
+
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('asks once about a doc that comes back while it asks about another, then closes (Ruling 217)', async () => {
+    const a = dirtyDoc('/a.md');
+    let answer: (choice: string) => void = () => {};
+    messageDialog.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    messageDialog.mockResolvedValue("Don't Save");
+    const event = { preventDefault: vi.fn() };
+
+    const closing = handleCloseRequested(event, { docIdsInOrder: () => [...docs.keys()], activate: vi.fn() });
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalledOnce());
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const back = dirtyDoc('/back.md');
+    settle();
+    answer("Don't Save");
+    await closing;
+
+    expect(messageDialog.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('a.md'),
+      expect.stringContaining('back.md'),
+    ]);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(docs.has(a.id) && docs.has(back.id)).toBe(true);
+  });
+
+  it('waits for a hand-over that starts while its prompt is open before it closes (Ruling 216)', async () => {
+    const x = dirtyDoc('/x.md');
+    let answer: (choice: string) => void = () => {};
+    messageDialog.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const event = { preventDefault: vi.fn() };
+    let closed = false;
+
+    const closing = handleCloseRequested(event, { docIdsInOrder: () => [...docs.keys()], activate: vi.fn() }).then(
+      () => (closed = true),
+    );
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalledOnce());
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    docs.delete(x.id);
+    answer("Don't Save");
+    await tick();
+    expect(closed).toBe(false);
+
+    settle();
+    await closing;
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(messageDialog).toHaveBeenCalledOnce();
+  });
+
   it('stops the window closing when the user cancels', async () => {
     const a = dirtyDoc('/a.md');
     const event = { preventDefault: vi.fn() };
@@ -156,12 +221,48 @@ describe('handleCloseRequested', () => {
 
 describe('closeTabOrWindow', () => {
   it('closes the active tab when there is one', async () => {
-    const workspace = { activeDocId: () => 'doc-1', closeDoc: vi.fn(async () => true) };
+    const doc = dirtyDoc('/a.md');
+    const workspace = { activeDocId: () => doc.id, closeDoc: vi.fn(async () => true) };
     const win = { destroy: vi.fn(async () => {}) };
 
     await closeTabOrWindow(workspace, win);
 
-    expect(workspace.closeDoc).toHaveBeenCalledWith('doc-1');
+    expect(workspace.closeDoc).toHaveBeenCalledWith(doc.id);
+    expect(win.destroy).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing about a tab that moves away meanwhile, and closes the window it empties (Ruling 217)', async () => {
+    const doc = dirtyDoc('/moving.md');
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const workspace = { activeDocId: () => (docs.has(doc.id) ? doc.id : null), closeDoc: vi.fn(async () => true) };
+    const win = { destroy: vi.fn(async () => {}) };
+
+    const closing = closeTabOrWindow(workspace, win, 'w-1');
+    await tick();
+    docs.delete(doc.id);
+    settle();
+    await closing;
+
+    expect(workspace.closeDoc).not.toHaveBeenCalled();
+    expect(win.destroy).toHaveBeenCalled();
+  });
+
+  it('keeps the window when other tabs remain after the active one moved away', async () => {
+    const doc = dirtyDoc('/moving.md');
+    const other = dirtyDoc('/other.md');
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const workspace = { activeDocId: () => (docs.has(doc.id) ? doc.id : other.id), closeDoc: vi.fn(async () => true) };
+    const win = { destroy: vi.fn(async () => {}) };
+
+    const closing = closeTabOrWindow(workspace, win, 'w-1');
+    await tick();
+    docs.delete(doc.id);
+    settle();
+    await closing;
+
+    expect(workspace.closeDoc).not.toHaveBeenCalled();
     expect(win.destroy).not.toHaveBeenCalled();
   });
 

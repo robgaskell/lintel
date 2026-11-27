@@ -5,7 +5,7 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { releasePath } from '../ipc';
-import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
+import { createDoc, docs, removeDoc, trackHandoff, untitledCounter, type DocState } from '../docs/store.svelte';
 import { openDocInNewWindow } from '../os/windows';
 import { showTabMenu, tabMenuItems } from './tabMenu';
 import { Workspace } from './workspace';
@@ -177,6 +177,66 @@ describe('tabMenuItems', () => {
       tabMenuItems(fileDoc('a.md'), 'macos', true).map((item) => [item.label, item.enabled]),
     );
     expect(enabled).toMatchObject({ 'Split Right': false, 'Split Down': false, Close: true });
+  });
+});
+
+describe('closing a tab while a doc moves to another window (Ruling 217)', () => {
+  function pendingHandoff(): () => void {
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    return settle;
+  }
+
+  it('waits, and asks nothing about the tab once it has moved away', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    open(a, b);
+    a.text = 'unsaved';
+    const settle = pendingHandoff();
+
+    const closing = ws.closeDoc(a.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(messageDialog).not.toHaveBeenCalled();
+    // As the hand-over takes it out.
+    removeDoc(a.id, { keepClaim: true });
+    void ws.closeDoc(a.id);
+    expect(ws.docIdsInOrder()).toEqual([b.id]);
+    settle();
+
+    expect(await closing).toBe(true);
+    expect(messageDialog).not.toHaveBeenCalled();
+  });
+
+  it('Close All waits too, and asks nothing about a tab that moved away', async () => {
+    const [a, b] = ['a.md', 'b.md'].map(fileDoc);
+    open(a, b);
+    a.text = 'unsaved';
+    const settle = pendingHandoff();
+
+    const closing = ws.closeAll(a.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    removeDoc(a.id, { keepClaim: true });
+    void ws.closeDoc(a.id);
+    settle();
+    await closing;
+
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(ws.docIdsInOrder()).toEqual([]);
+  });
+
+  it('asks once about a tab that stayed, once the hand-over has settled', async () => {
+    const a = fileDoc('a.md');
+    open(a);
+    a.text = 'unsaved';
+    const settle = pendingHandoff();
+    messageDialog.mockResolvedValue("Don't Save");
+
+    const closing = ws.closeDoc(a.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(messageDialog).not.toHaveBeenCalled();
+    settle();
+
+    expect(await closing).toBe(true);
+    expect(messageDialog).toHaveBeenCalledOnce();
   });
 });
 

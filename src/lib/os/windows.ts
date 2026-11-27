@@ -115,9 +115,17 @@ export function tooLargeToMove(doc: DocState): boolean {
  * hand-over id, whether the new window takes it or it comes back here; never both
  * (Rulings 197, 213).
  */
-export async function openDocInNewWindow(docId: string): Promise<void> {
+export function openDocInNewWindow(docId: string): Promise<void> {
   const doc = docs.get(docId);
-  if (!doc || tooLargeToMove(doc)) return;
+  if (!doc || tooLargeToMove(doc)) return Promise.resolve();
+  // Counted from the start: a close or quit meanwhile waits rather than asking about a doc
+  // that is about to leave (Ruling 216).
+  const moving = moveToNewWindow(docId);
+  trackHandoff(moving);
+  return moving;
+}
+
+async function moveToNewWindow(docId: string): Promise<void> {
   const label = `w-${crypto.randomUUID()}`;
   const ready = await waitFor<WindowReadyEvent>(WINDOW_READY, (e) => e.label === label);
   let win: WebviewWindow | null = null;
@@ -137,9 +145,7 @@ export async function openDocInNewWindow(docId: string): Promise<void> {
     await win.destroy();
     return;
   }
-  const settled = handOver(win, label, handover);
-  trackHandoff(settled);
-  await settled;
+  await handOver(win, label, handover);
 }
 
 /**

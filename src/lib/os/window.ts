@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
-import { confirmCloseAll, handoffsSettled } from '../docs/store.svelte';
+import { confirmCloseAll, docs, handoffsSettled } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { forgetWindowSession, saveWindowSession } from './session';
 import { docWindowLabels } from './windows';
@@ -15,12 +15,18 @@ export async function handleCloseRequested(
   label: string = getCurrentWindow().label,
 ): Promise<void> {
   try {
-    // A doc on its way to another window may come back, and must then be asked about.
-    await handoffsSettled();
-    const ids = workspace.docIdsInOrder();
-    if (!(await confirmCloseAll(ids, (id) => workspace.activate(id)))) {
-      event.preventDefault();
-      return;
+    // A doc on its way to another window is asked about only if it comes back, and then
+    // once, even when it comes back while another prompt is open (Ruling 217).
+    const asked = new Set<string>();
+    for (;;) {
+      await handoffsSettled();
+      const ids = workspace.docIdsInOrder().filter((id) => !asked.has(id));
+      if (ids.length === 0) break;
+      for (const id of ids) asked.add(id);
+      if (!(await confirmCloseAll(ids, (id) => workspace.activate(id)))) {
+        event.preventDefault();
+        return;
+      }
     }
   } catch (err) {
     event.preventDefault();
@@ -38,8 +44,14 @@ export async function closeTabOrWindow(
 ): Promise<void> {
   const id = workspace.activeDocId();
   if (id) {
-    await workspace.closeDoc(id);
-    return;
+    // A tab on its way to another window is never asked about (Ruling 217).
+    await handoffsSettled();
+    if (docs.has(id)) {
+      await workspace.closeDoc(id);
+      return;
+    }
+    // It moved away. If that left this window empty, the key press closes the window.
+    if (workspace.activeDocId() !== null) return;
   }
   // destroy raises no close-requested event, so the session is settled here (Ruling 209).
   await endWindowSession(label);

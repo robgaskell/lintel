@@ -12,6 +12,7 @@ import {
   closeDocWithPrompt,
   confirmCloseAll,
   docs,
+  handoffsSettled,
   removeDoc,
   type DocState,
 } from '../docs/store.svelte';
@@ -108,6 +109,11 @@ export class Workspace {
 
   /** False when the user cancels the prompt or the save fails; the tab then stays. */
   closeDoc(id: string): Promise<boolean> {
+    // A doc already gone, as one handed to another window, leaves its tab at once.
+    if (!docs.has(id)) {
+      this.removePanel(id);
+      return Promise.resolve(true);
+    }
     const running = this.closing.get(id);
     if (running) return running;
     const promise = this.runClose(id).finally(() => this.closing.delete(id));
@@ -229,14 +235,22 @@ export class Workspace {
   }
 
   private async runClose(id: string): Promise<boolean> {
+    // A tab on its way to another window is never asked about (Ruling 217).
+    await handoffsSettled();
     if (docs.has(id) && !(await closeDocWithPrompt(id))) return false;
+    this.removePanel(id);
+    return true;
+  }
+
+  private removePanel(id: string): void {
     const panel = this.api.getPanel(id);
     if (panel) this.api.removePanel(panel);
-    return true;
   }
 
   // Cancel at any prompt closes nothing, as with Quit (Ruling 32).
   private async closeUnpinned(ids: string[]): Promise<void> {
+    // As in runClose: a tab on its way to another window is never asked about.
+    await handoffsSettled();
     const targets = ids.filter((id) => docs.has(id) && !docs.get(id)?.pinned);
     if (!(await confirmCloseAll(targets, (id) => this.activate(id)))) return;
     for (const id of targets) {

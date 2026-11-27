@@ -430,6 +430,56 @@ describe('openDocInNewWindow', () => {
     await moving;
   });
 
+  it('counts as running from the start, while the new window is still starting (Ruling 216)', async () => {
+    fake.announce = false;
+    const doc = fileDoc();
+    const moving = openDocInNewWindow(doc.id);
+    await vi.waitFor(() => expect(fake.created).toHaveLength(1));
+    let settled = false;
+    const waiting = handoffsSettled().then(() => (settled = true));
+    await tick();
+    expect(settled).toBe(false);
+
+    deliver(WINDOW_READY, { label: fake.created[0].label });
+    await moving;
+    await waiting;
+    expect(docs.has(doc.id)).toBe(false);
+  });
+
+  it('heals a stale claim on the path once the hand-over is over (Ruling 216)', async () => {
+    const doc = fileDoc();
+    listenForReveal(workspace);
+    await openDocInNewWindow(doc.id);
+
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
+
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(REVEAL_ANSWER, { path: '/notes/a.md', shown: false }),
+    );
+    expect(releasePath).toHaveBeenCalledWith('/notes/a.md');
+  });
+
+  it('brings the doc back when Rust cannot be asked whether the new window took it (Ruling 216)', async () => {
+    vi.useFakeTimers();
+    try {
+      fake.acknowledge = false;
+      vi.mocked(cancelHandoff).mockRejectedValueOnce(new Error('ipc down'));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const doc = fileDoc();
+      const moving = openDocInNewWindow(doc.id);
+      const failed = expect(moving).rejects.toThrow('The new window did not start.');
+
+      await vi.advanceTimersByTimeAsync(10_100);
+      await failed;
+
+      expect(docs.has(doc.id)).toBe(true);
+      expect(fake.created[0].destroy).toHaveBeenCalled();
+      logged.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('lets closing and quitting wait until the hand-over has settled (Ruling 213)', async () => {
     fake.acknowledge = false;
     const doc = fileDoc();

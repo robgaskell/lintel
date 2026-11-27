@@ -238,7 +238,8 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
   const otherTab = findByPath(chosen);
   if (otherTab && otherTab !== doc) {
     showTab(otherTab.id);
-    await refuseOpenElsewhere(chosen);
+    const text = `${baseName(chosen)} is already open in another tab.`;
+    await message(text, { title: 'Lintel', kind: 'error' });
     return false;
   }
   opening.add(chosen);
