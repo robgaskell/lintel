@@ -21,6 +21,7 @@
   import { listenForQuitRequests } from './lib/os/quit';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
   import {
+    listenForForgets,
     missingNotice,
     restoreAllWindows,
     restoreWindow,
@@ -124,6 +125,7 @@
       scheduleWindowSave(label);
     });
     const stopQuit = listenForQuitRequests();
+    const stopForgets = listenForForgets(label);
     const stopRecent = onRecentChanged(() => {
       if (docs.size === 0) loadRecent();
     });
@@ -183,6 +185,7 @@
       stopActive();
       stopLayout();
       stopQuit();
+      stopForgets();
       stopRecent();
       stopReveal();
       stopAdoption();

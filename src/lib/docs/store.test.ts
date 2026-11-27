@@ -708,12 +708,31 @@ describe('restoreDoc (Ruling 204)', () => {
   it('opens the file under its saved id, with its pin and mode, and no Open Recent entry', async () => {
     vi.mocked(readTextFile).mockResolvedValue({ text: 'a\r\nb\r\n', hash: 'h1' });
 
-    const doc = await restoreDoc({ id: 'saved-id', path: '/a.md', mode: 'read', pinned: true });
+    const { doc, large } = (await restoreDoc({ id: 'saved-id', path: '/a.md', mode: 'read', pinned: true }))!;
 
     expect(doc).toMatchObject({ id: 'saved-id', path: '/a.md', mode: 'read', pinned: true, text: 'a\nb\n' });
+    expect(large).toBe(false);
     expect(docs.get('saved-id')).toBe(doc);
     expect(claimPath).toHaveBeenCalledWith('/a.md');
     expect(recordRecent).not.toHaveBeenCalled();
+  });
+
+  it('opens a file over 2,000,000 bytes in Edit, whatever mode it had (Ruling 222)', async () => {
+    vi.mocked(readTextFile).mockResolvedValue({ text: 'x'.repeat(2_000_001), hash: 'h' });
+
+    const { doc, large } = (await restoreDoc({ id: 'big', path: '/big.md', mode: 'split', pinned: false }))!;
+
+    expect(large).toBe(true);
+    expect(doc.mode).toBe('edit');
+  });
+
+  it('keeps the saved mode at exactly 2,000,000 bytes', async () => {
+    vi.mocked(readTextFile).mockResolvedValue({ text: 'x'.repeat(2_000_000), hash: 'h' });
+
+    const { doc, large } = (await restoreDoc({ id: 'edge', path: '/edge.md', mode: 'read', pinned: false }))!;
+
+    expect(large).toBe(false);
+    expect(doc.mode).toBe('read');
   });
 
   it('leaves the file to the window that has it', async () => {

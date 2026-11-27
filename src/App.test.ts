@@ -75,6 +75,7 @@ vi.mock('./lib/os/session', async (importOriginal) => ({
   restoreWindow: vi.fn(async () => ({ restored: 0, missing: [] })),
   restoreAllWindows: vi.fn(async () => {}),
   scheduleWindowSave: vi.fn(),
+  listenForForgets: vi.fn(() => () => {}),
 }));
 vi.mock('./lib/os/recent', () => ({
   knownRecent: vi.fn(async () => ['/notes/a.md', '/notes/b.md']),

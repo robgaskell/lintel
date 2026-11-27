@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, trackHandoff, untitledCounter } from '../docs/store.svelte';
-import { forgetWindowSession, saveWindowSession } from './session';
+import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { closeTabOrWindow, handleCloseRequested } from './window';
 import { docWindowLabels } from './windows';
 
@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: 'main' }) }));
 vi.mock('./session', () => ({
-  forgetWindowSession: vi.fn(async () => {}),
+  forgetWindowSessionLater: vi.fn(async () => {}),
   saveWindowSession: vi.fn(async () => {}),
 }));
 vi.mock('./windows', () => ({ docWindowLabels: vi.fn(async () => ['main']) }));
@@ -39,7 +39,7 @@ beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
   messageDialog.mockReset();
-  vi.mocked(forgetWindowSession).mockClear();
+  vi.mocked(forgetWindowSessionLater).mockClear();
   vi.mocked(saveWindowSession).mockClear();
   vi.mocked(docWindowLabels).mockResolvedValue(['main']);
 });
@@ -47,13 +47,17 @@ beforeEach(() => {
 const noTabs = { docIdsInOrder: () => [], activate: vi.fn() };
 
 describe('the session when a window closes (spec: Session lifetime, Ruling 209)', () => {
-  it('closing window w-1 while main is open calls forgetWindowSession(\'w-1\')', async () => {
+  it('closing window w-1 while main is open saves it, then has it forgotten 2 s on (Ruling 220)', async () => {
     vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
 
     await handleCloseRequested({ preventDefault: vi.fn() }, noTabs, 'w-1');
 
-    expect(forgetWindowSession).toHaveBeenCalledWith('w-1');
-    expect(saveWindowSession).not.toHaveBeenCalled();
+    expect(forgetWindowSessionLater).toHaveBeenCalledWith('w-1');
+    // Saved first: if main closes within the 2 s too, the session is kept as on a quit.
+    expect(saveWindowSession).toHaveBeenCalledWith('w-1');
+    expect(vi.mocked(saveWindowSession).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(forgetWindowSessionLater).mock.invocationCallOrder[0],
+    );
   });
 
   it('keeps the session of the last window, saved for the next launch', async () => {
@@ -62,7 +66,7 @@ describe('the session when a window closes (spec: Session lifetime, Ruling 209)'
     await handleCloseRequested({ preventDefault: vi.fn() }, noTabs, 'w-1');
 
     expect(saveWindowSession).toHaveBeenCalledWith('w-1');
-    expect(forgetWindowSession).not.toHaveBeenCalled();
+    expect(forgetWindowSessionLater).not.toHaveBeenCalled();
   });
 
   it('touches no session when the close is cancelled', async () => {
@@ -72,7 +76,7 @@ describe('the session when a window closes (spec: Session lifetime, Ruling 209)'
 
     await handleCloseRequested({ preventDefault: vi.fn() }, { docIdsInOrder: () => [a.id], activate: vi.fn() }, 'w-1');
 
-    expect(forgetWindowSession).not.toHaveBeenCalled();
+    expect(forgetWindowSessionLater).not.toHaveBeenCalled();
     expect(saveWindowSession).not.toHaveBeenCalled();
   });
 
@@ -82,15 +86,15 @@ describe('the session when a window closes (spec: Session lifetime, Ruling 209)'
 
     await closeTabOrWindow({ activeDocId: () => null, closeDoc: vi.fn() }, win, 'w-1');
 
-    expect(forgetWindowSession).toHaveBeenCalledWith('w-1');
-    expect(vi.mocked(forgetWindowSession).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(forgetWindowSessionLater).toHaveBeenCalledWith('w-1');
+    expect(vi.mocked(forgetWindowSessionLater).mock.invocationCallOrder[0]).toBeLessThan(
       win.destroy.mock.invocationCallOrder[0],
     );
   });
 
   it('still closes the window when the session cannot be written', async () => {
     vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
-    vi.mocked(forgetWindowSession).mockRejectedValueOnce(new Error('store down'));
+    vi.mocked(forgetWindowSessionLater).mockRejectedValueOnce(new Error('store down'));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const event = { preventDefault: vi.fn() };
 

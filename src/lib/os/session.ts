@@ -1,3 +1,4 @@
+import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { setStartTopLine, topLineOf } from '../docs/cursor.svelte';
@@ -6,7 +7,7 @@ import { pathsExist } from '../ipc';
 import { outline } from '../layout/outline.svelte';
 import type { Workspace } from '../layout/workspace';
 import { SETTINGS_LABEL } from '../../settings/settingsWindow';
-import { requireWorkspace } from './open';
+import { largeFileNotices, requireWorkspace } from './open';
 import { createAppWindow, docWindowLabels, setRestoring } from './windows';
 
 /**
@@ -61,26 +62,33 @@ export function missingNotice(count: number): string {
 }
 
 let pending: ReturnType<typeof setTimeout> | undefined;
-// Until a window's restore is done, its stored key is the truth and saves skip.
-const restoreDone = new Set<string>();
+let pendingLabel: string | null = null;
+// Until a window's restore is done, its stored key is the truth and saves skip. After a
+// failed restore the key stays until the user changes something (Ruling 222).
+const restoreState = new Map<string, 'done' | 'failed'>();
 // A forgotten window is closing; a late save must not bring its key back.
 const forgotten = new Set<string>();
 
 /** Saves this window's session once nothing has changed for 1 s (Ruling 209). */
 export function scheduleWindowSave(label: string): void {
   if (forgotten.has(label)) return;
+  if (restoreState.get(label) === 'failed') restoreState.set(label, 'done');
   cancelPendingSave();
+  pendingLabel = label;
   pending = setTimeout(() => {
     pending = undefined;
     saveWindowSession(label).catch((err) => console.error('Could not save the session:', err));
   }, SAVE_DELAY_MS);
 }
 
-/** Writes only the key `window:<label>`, at once; any pending save is folded in. */
+/**
+ * Writes only the key `window:<label>`, at once; any pending save is folded in. A window
+ * other than main with no saved tabs is removed instead, so it does not come back empty.
+ */
 export function saveWindowSession(label: string): Promise<void> {
   cancelPendingSave();
   return oneAtATime(async () => {
-    if (!restoreDone.has(label) || forgotten.has(label)) return;
+    if (restoreState.get(label) !== 'done' || forgotten.has(label)) return;
     const session = toWindowSession(requireWorkspace(), outline.visible, label);
     const store = await sessionStore();
     // A session of another version was ignored at launch; the first save starts over (Ruling 210).
@@ -88,20 +96,56 @@ export function saveWindowSession(label: string): Promise<void> {
       await store.clear();
       await store.set('version', VERSION);
     }
-    await store.set(KEY_PREFIX + label, session);
+    if (label !== MAIN && Object.keys(session.tabs).length === 0) await store.delete(KEY_PREFIX + label);
+    else await store.set(KEY_PREFIX + label, session);
     await store.save();
   });
 }
 
-/** Deletes the key `window:<label>`, for a window closed while others stay open. */
+/** Deletes the key `window:<label>` now. */
 export function forgetWindowSession(label: string): Promise<void> {
-  cancelPendingSave();
+  if (pendingLabel === label) cancelPendingSave();
   forgotten.add(label);
   return oneAtATime(async () => {
     const store = await sessionStore();
     await store.delete(KEY_PREFIX + label);
     await store.save();
   });
+}
+
+/** Sent by a window closing while others stay open; they forget its key 2 s on. */
+export const FORGET_WINDOW = 'lintel://forget-window';
+const FORGET_DELAY_MS = 2000;
+
+export interface ForgetWindowEvent {
+  label: string;
+}
+
+/**
+ * Asks the other windows to forget `label`'s key in 2 s. A window that closes or quits
+ * meanwhile takes its timer with it, so closing every window at once keeps the session,
+ * as a quit does (Ruling 220).
+ */
+export async function forgetWindowSessionLater(label: string): Promise<void> {
+  await emit(FORGET_WINDOW, { label } satisfies ForgetWindowEvent);
+}
+
+/** Forgets the keys of windows closed while this one stays open. Returns the stop. */
+export function listenForForgets(label: string): () => void {
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const stop = listen<ForgetWindowEvent>(FORGET_WINDOW, ({ payload }) => {
+    if (payload.label === label) return;
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      forgetWindowSession(payload.label).catch((err) => console.error('Could not forget a window:', err));
+    }, FORGET_DELAY_MS);
+    timers.add(timer);
+  });
+  stop.catch((err) => console.error('Could not listen for closed windows:', err));
+  return () => {
+    for (const timer of timers) clearTimeout(timer);
+    void stop.then((unlisten) => unlisten()).catch(() => {});
+  };
 }
 
 let shown: () => void = () => {};
@@ -121,18 +165,25 @@ export function whenRestored(): Promise<void> {
  */
 export async function restoreWindow(label: string): Promise<{ restored: number; missing: string[] }> {
   let found = false;
+  let outcome: 'done' | 'failed' = 'failed';
   try {
     const session = await readSession(label);
-    if (!session) return { restored: 0, missing: [] };
+    if (!session) {
+      outcome = 'done';
+      return { restored: 0, missing: [] };
+    }
     found = true;
     setRestoring(true);
     try {
-      return await rebuild(session);
+      const result = await rebuild(session);
+      outcome = 'done';
+      return result;
     } finally {
       setRestoring(false);
     }
   } finally {
-    restoreDone.add(label);
+    // A user change may have come first; it already opened saving.
+    if (restoreState.get(label) !== 'done') restoreState.set(label, outcome);
     if (found || label === MAIN) shown();
   }
 }
@@ -169,9 +220,10 @@ async function rebuild(session: WindowSession): Promise<{ restored: number; miss
       continue;
     }
     try {
-      const doc = await restoreDoc({ id, path: tab.path, mode: tab.mode, pinned: tab.pinned });
+      const opened = await restoreDoc({ id, path: tab.path, mode: tab.mode, pinned: tab.pinned });
       // Null: another window shows the file, which is where it belongs.
-      if (!doc) continue;
+      if (!opened) continue;
+      if (opened.large) largeFileNotices.add(id);
       setStartTopLine(id, tab.topLine);
       restored++;
     } catch (err) {
@@ -218,6 +270,7 @@ function isTab(value: unknown): value is PersistedTab {
 function cancelPendingSave(): void {
   clearTimeout(pending);
   pending = undefined;
+  pendingLabel = null;
 }
 
 let queue: Promise<unknown> = Promise.resolve();

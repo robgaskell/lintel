@@ -2,7 +2,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
 import { confirmCloseAll, docs, handoffsSettled } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
-import { forgetWindowSession, saveWindowSession } from './session';
+import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { docWindowLabels } from './windows';
 
 /**
@@ -61,13 +61,14 @@ export async function closeTabOrWindow(
 
 /**
  * Spec, Session lifetime: a window closed while other document windows stay open drops
- * its session; the last one keeps it for the next launch. Never rejects: the close goes on.
+ * its session, 2 s later and only if one of them is still open then (Ruling 220). The
+ * session is saved first, so closing every window at once keeps it. Never rejects.
  */
 async function endWindowSession(label: string): Promise<void> {
   try {
+    await saveWindowSession(label);
     const others = (await docWindowLabels()).filter((other) => other !== label);
-    if (others.length > 0) await forgetWindowSession(label);
-    else await saveWindowSession(label);
+    if (others.length > 0) await forgetWindowSessionLater(label);
   } catch (err) {
     console.error('Could not update the session:', err);
   }

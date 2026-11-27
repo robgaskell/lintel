@@ -4,10 +4,14 @@ import { createDoc, docs, untitledCounter } from '../docs/store.svelte';
 import { claimPath, pathsExist, readTextFile } from '../ipc';
 import { outline } from '../layout/outline.svelte';
 import { Workspace } from '../layout/workspace';
-import { calls, fakeStore, resetFakes } from '../../test/fakes';
+import { calls, eventModule, fakeStore, resetFakes } from '../../test/fakes';
+import { largeFileNotices } from './open';
 import { setWorkspace } from './open';
 import {
+  FORGET_WINDOW,
   forgetWindowSession,
+  forgetWindowSessionLater,
+  listenForForgets,
   missingNotice,
   restoreAllWindows,
   restoreWindow,
@@ -19,6 +23,7 @@ import {
 import { createAppWindow, docWindowLabels, setRestoring } from './windows';
 
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
+vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
   pathsExist: vi.fn(),
@@ -115,6 +120,7 @@ describe('saveWindowSession', () => {
     store().data.set('version', 2);
     store().data.set('window:old', { shape: 'unknown' });
     await restoreWindow('w-2');
+    fileDoc('/notes/a.md');
 
     await saveWindowSession('w-2');
 
@@ -134,6 +140,7 @@ describe('saveWindowSession', () => {
 
   it('saves 1 s after the last change, once (Ruling 209)', async () => {
     await restoreWindow('w-4');
+    fileDoc('/notes/a.md');
     vi.useFakeTimers();
     scheduleWindowSave('w-4');
     await vi.advanceTimersByTimeAsync(600);
@@ -152,6 +159,7 @@ describe('forgetWindowSession', () => {
     store().data.set('version', 1);
     store().data.set('window:main', { keep: true });
     await restoreWindow('w-5');
+    fileDoc('/notes/a.md');
     await saveWindowSession('w-5');
     vi.useFakeTimers();
     scheduleWindowSave('w-5');
@@ -292,5 +300,160 @@ describe('a real Workspace round trip', () => {
     expect(ws.groupCount()).toBe(2);
     expect(ws.docIdsInOrder()).toEqual(order);
     expect(docs.has(untitled.id)).toBe(false);
+  });
+});
+
+describe('saving a window with no tabs (Ruling 220)', () => {
+  it('removes the key of a window other than main instead of saving it empty', async () => {
+    store().data.set('version', 1);
+    store().data.set('window:w-20', session({ old: { path: '/old.md', pinned: false, mode: 'edit', topLine: 1 } }));
+    await restoreWindow('w-21');
+    store().data.set('window:w-21', { stale: true });
+    docs.clear();
+    createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+
+    await saveWindowSession('w-21');
+
+    expect(store().data.has('window:w-21')).toBe(false);
+  });
+
+  it('still saves main with no tabs', async () => {
+    store().data.set('version', 1);
+    await restoreWindow('main');
+    docs.clear();
+
+    await saveWindowSession('main');
+
+    expect(store().data.get('window:main')).toMatchObject({ label: 'main', tabs: {} });
+  });
+});
+
+describe('forgetting a closed window (Ruling 220)', () => {
+  async function closedWindowKey(label: string) {
+    store().data.set('version', 1);
+    store().data.set(`window:${label}`, session({}, { label }));
+  }
+
+  it('forgets the key 2 s after the window closes, while this window stays open', async () => {
+    vi.useFakeTimers();
+    await closedWindowKey('w-30');
+    listenForForgets('main');
+    await vi.advanceTimersByTimeAsync(0);
+
+    await forgetWindowSessionLater('w-30');
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(store().data.has('window:w-30')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(store().data.has('window:w-30')).toBe(false);
+  });
+
+  it('keeps the key when this window closes too within the 2 s, as on a quit', async () => {
+    vi.useFakeTimers();
+    await closedWindowKey('w-31');
+    const stop = listenForForgets('main');
+    await vi.advanceTimersByTimeAsync(0);
+
+    await eventModule.emit(FORGET_WINDOW, { label: 'w-31' });
+    await vi.advanceTimersByTimeAsync(1000);
+    stop();
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(store().data.has('window:w-31')).toBe(true);
+  });
+
+  it("does not drop this window's own pending save", async () => {
+    vi.useFakeTimers();
+    await closedWindowKey('w-32');
+    await restoreWindow('w-33');
+    fileDoc('/notes/a.md');
+    scheduleWindowSave('w-33');
+
+    await forgetWindowSession('w-32');
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(store().data.has('window:w-33')).toBe(true);
+  });
+});
+
+describe('a failed restore (Ruling 222)', () => {
+  it('keeps the stored session until the user changes something', async () => {
+    vi.useFakeTimers();
+    const saved = session({ 'id-a': { path: '/a.md', pinned: false, mode: 'split', topLine: 1 } }, { label: 'w-40' });
+    store().data.set('version', 1);
+    store().data.set('window:w-40', saved);
+    vi.mocked(pathsExist).mockRejectedValueOnce(new Error('ipc down'));
+    // The mount-time save, scheduled before the restore ran.
+    scheduleWindowSave('w-40');
+
+    await expect(restoreWindow('w-40')).rejects.toThrow('ipc down');
+    await vi.advanceTimersByTimeAsync(1000);
+    await saveWindowSession('w-40');
+    expect(store().data.get('window:w-40')).toEqual(saved);
+
+    fileDoc('/notes/new.md');
+    scheduleWindowSave('w-40');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store().data.get('window:w-40')).not.toEqual(saved);
+  });
+});
+
+describe('restoring a large file (Ruling 222)', () => {
+  it('opens it in Edit with the large-file notice', async () => {
+    store().data.set('version', 1);
+    store().data.set('window:w-41', session({ big: { path: '/big.md', pinned: false, mode: 'read', topLine: 1 } }));
+    vi.mocked(readTextFile).mockResolvedValue({ text: 'x'.repeat(2_000_001), hash: 'h' });
+
+    await restoreWindow('w-41');
+
+    expect(docs.get('big')?.mode).toBe('edit');
+    expect(largeFileNotices.has('big')).toBe(true);
+  });
+});
+
+// Fresh modules: the gate is one promise per window, settled once.
+describe('the show gate (Ruling 205)', () => {
+  async function freshSession() {
+    vi.resetModules();
+    const session = await import('./session');
+    const open = await import('./open');
+    open.setWorkspace(workspace as unknown as Workspace);
+    return { session };
+  }
+
+  async function settles(promise: Promise<void>): Promise<boolean> {
+    const later = new Promise<false>((resolve) => setTimeout(() => resolve(false), 20));
+    return Promise.race([promise.then(() => true as const), later]);
+  }
+
+  it('opens for main once its restore is done, with or without a session', async () => {
+    const { session } = await freshSession();
+    const gate = session.whenRestored();
+    expect(await settles(gate)).toBe(false);
+
+    await session.restoreWindow('main');
+
+    expect(await settles(gate)).toBe(true);
+  });
+
+  it('stays shut for a new window with no session, which waits for its doc instead', async () => {
+    const { session } = await freshSession();
+
+    await session.restoreWindow('w-50');
+
+    expect(await settles(session.whenRestored())).toBe(false);
+  });
+
+  it('opens for a window that had a session', async () => {
+    const { session } = await freshSession();
+    // The store module the fresh session module sees.
+    const { load } = await import('@tauri-apps/plugin-store');
+    const fresh = await load('session.json');
+    await fresh.set('version', 1);
+    await fresh.set('window:w-51', { label: 'w-51', layout: {}, tabs: {}, outlineVisible: true });
+
+    await session.restoreWindow('w-51');
+
+    expect(await settles(session.whenRestored())).toBe(true);
   });
 });

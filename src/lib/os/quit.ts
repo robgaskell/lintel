@@ -13,8 +13,10 @@ import { docWindowLabels } from './windows';
 export const QUIT_REQUEST = 'lintel://quit-request';
 /** A window's answer: false when the user cancelled one of its prompts. */
 export const QUIT_REPLY = 'lintel://quit-reply';
-/** Sent while a window answers: the asker's 5 s wait stops while a prompt is open (Ruling 211). */
+/** Sent at once and every 2 s while a window answers; no time limit while its prompt is open. */
 export const QUIT_PROGRESS = 'lintel://quit-progress';
+/** Sent to every window when a quit round starts and when it stops without quitting. */
+export const QUIT_ROUND = 'lintel://quit-round';
 
 export interface QuitRequestEvent {
   requestId: string;
@@ -24,6 +26,11 @@ export interface QuitReplyEvent {
   requestId: string;
   label: string;
   ok: boolean;
+}
+
+export interface QuitRoundEvent {
+  label: string;
+  running: boolean;
 }
 
 export interface QuitProgressEvent {
@@ -37,18 +44,27 @@ export const NOT_RESPONDING =
 const QUIT_ANYWAY = 'Quit Anyway';
 const REPLY_TIMEOUT_MS = 5000;
 // Rust saves geometry on exit too; saved here, while the windows exist, maximised is current.
-const GEOMETRY = StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED;
+const GEOMETRY = StateFlags.POSITION | StateFlags.MAXIMIZED;
+const HEARTBEAT_MS = 2000;
 
 type QuitOrder = Pick<Workspace, 'docIdsInOrder' | 'activate'>;
 
 let quitting: Promise<void> | null = null;
+// The window running a quit round elsewhere, as announced by QUIT_ROUND.
+let roundElsewhere: string | null = null;
 
 /**
  * Asks every document window, this one first, about its dirty docs and saves its session,
  * then exits. Cancel in any window stops the quit and closes nothing (Rulings 32, 211).
+ * A Cmd+Q while a quit round is running joins that round (Ruling 219).
  */
-export function quitApp(workspace?: QuitOrder): Promise<void> {
-  // A second Cmd+Q while a prompt is open must not stack another round of prompts.
+export async function quitApp(workspace?: QuitOrder): Promise<void> {
+  if (quitting) return quitting;
+  if (answering) {
+    await answering.catch(() => {});
+    return;
+  }
+  if (await roundRunsElsewhere()) return;
   quitting ??= runQuit(workspace).finally(() => (quitting = null));
   return quitting;
 }
@@ -56,51 +72,70 @@ export function quitApp(workspace?: QuitOrder): Promise<void> {
 /** Answers quit requests from other windows. Returns a function that stops listening. */
 export function listenForQuitRequests(): () => void {
   const label = getCurrentWindow().label;
-  const stop = listen<QuitRequestEvent>(
+  const requests = listen<QuitRequestEvent>(
     QUIT_REQUEST,
     ({ payload }) => void replyToQuit(label, payload.requestId),
     // A plain listen would also hear requests sent to other windows.
     { target: { kind: 'WebviewWindow', label } },
   );
-  stop.catch((err) => console.error('Could not listen for quit requests:', err));
-  return () => void stop.then((unlisten) => unlisten()).catch(() => {});
+  const rounds = listen<QuitRoundEvent>(QUIT_ROUND, ({ payload }) => {
+    if (payload.label === label) return;
+    if (payload.running) roundElsewhere = payload.label;
+    else if (roundElsewhere === payload.label) roundElsewhere = null;
+  });
+  for (const stop of [requests, rounds]) {
+    stop.catch((err) => console.error('Could not listen for quit requests:', err));
+  }
+  return () => {
+    for (const stop of [requests, rounds]) void stop.then((unlisten) => unlisten()).catch(() => {});
+  };
 }
 
 async function runQuit(workspace?: QuitOrder): Promise<void> {
+  const self = getCurrentWindow().label;
+  await announceRound(self, true);
   try {
-    const self = getCurrentWindow().label;
     const others = (await docWindowLabels()).filter((label) => label !== self);
     if (!(await answerQuit(self, workspace))) return;
     for (const label of others) {
       if (!(await askWindow(label))) return;
     }
+    // Size stays with Rust: on macOS a docked Web Inspector shrinks the size read here.
     await saveWindowState(GEOMETRY).catch((err) => console.error('Could not save window positions:', err));
     // exit() raises no close-requested event, so the window prompt does not run again.
     await exit(0);
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
+  } finally {
+    await announceRound(self, false);
+  }
+}
+
+// A round whose window has since closed is over.
+async function roundRunsElsewhere(): Promise<boolean> {
+  if (roundElsewhere === null || roundElsewhere === getCurrentWindow().label) return false;
+  if ((await docWindowLabels()).includes(roundElsewhere)) return true;
+  roundElsewhere = null;
+  return false;
+}
+
+async function announceRound(label: string, running: boolean): Promise<void> {
+  try {
+    await emit(QUIT_ROUND, { label, running } satisfies QuitRoundEvent);
+  } catch (err) {
+    console.error('Could not announce the quit:', err);
   }
 }
 
 let answering: Promise<boolean> | null = null;
 
 // Two quits at once share one round of prompts in this window.
-function answerQuit(
-  label: string,
-  workspace?: QuitOrder,
-  prompting?: (open: boolean) => void,
-): Promise<boolean> {
-  answering ??= runAnswer(label, workspace ?? requireWorkspace(), prompting).finally(
-    () => (answering = null),
-  );
+function answerQuit(label: string, workspace?: QuitOrder): Promise<boolean> {
+  answering ??= runAnswer(label, workspace ?? requireWorkspace()).finally(() => (answering = null));
   return answering;
 }
 
-async function runAnswer(
-  label: string,
-  workspace: QuitOrder,
-  prompting?: (open: boolean) => void,
-): Promise<boolean> {
+async function runAnswer(label: string, workspace: QuitOrder): Promise<boolean> {
   // A doc mid-save is still dirty: asking now would offer to exit mid-write.
   await savesSettled();
   // A doc on its way to another window may come back, and must then be asked about.
@@ -112,11 +147,15 @@ async function runAnswer(
     return doc !== undefined && isDirty(doc);
   });
   if (asking) {
-    prompting?.(true);
+    setPrompting(true);
     await bringForward();
   }
-  const ok = await confirmCloseAll(ids, (id) => workspace.activate(id));
-  if (asking) prompting?.(false);
+  let ok: boolean;
+  try {
+    ok = await confirmCloseAll(ids, (id) => workspace.activate(id));
+  } finally {
+    if (asking) setPrompting(false);
+  }
   if (!ok) return false;
   try {
     await saveWindowSession(label);
@@ -126,23 +165,46 @@ async function runAnswer(
   return true;
 }
 
+// Every request this window is answering, joined ones included, by id; each hears progress.
+const answeringFor = new Map<string, string>();
+let prompting = false;
+let heartbeat: ReturnType<typeof setInterval> | undefined;
+
 async function replyToQuit(label: string, requestId: string): Promise<void> {
-  const send = (prompting: boolean) =>
-    emit(QUIT_PROGRESS, { requestId, label, prompting } satisfies QuitProgressEvent).catch((err) =>
-      console.error('Could not report quit progress:', err),
-    );
+  answeringFor.set(requestId, label);
+  // At once, then every 2 s, so a slow save or hand-over never looks like a hang (Ruling 219).
+  reportProgress();
+  heartbeat ??= setInterval(reportProgress, HEARTBEAT_MS);
   let ok = false;
   try {
-    // Says this window is alive; the asker's wait starts again from here.
-    void send(false);
-    ok = await answerQuit(label, undefined, send);
+    ok = await answerQuit(label);
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
+  } finally {
+    answeringFor.delete(requestId);
+    if (answeringFor.size === 0) {
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+    }
   }
   try {
     await emit(QUIT_REPLY, { requestId, label, ok } satisfies QuitReplyEvent);
   } catch (err) {
     console.error('Could not answer the quit:', err);
+  }
+}
+
+// While a prompt is open the asker waits without a limit: the user may take any time.
+function setPrompting(open: boolean): void {
+  prompting = open;
+  reportProgress();
+}
+
+function reportProgress(): void {
+  for (const [requestId, label] of answeringFor) {
+    emit(QUIT_PROGRESS, { requestId, label, prompting } satisfies QuitProgressEvent).catch((err) =>
+      console.error('Could not report quit progress:', err),
+    );
   }
 }
 
@@ -171,10 +233,11 @@ async function askWindow(label: string): Promise<boolean> {
   }
 }
 
+// The first button is the default, so Return keeps the app running (Ruling 219).
 const notRespondingOptions = {
   title: 'Lintel',
   kind: 'warning',
-  buttons: { ok: QUIT_ANYWAY, cancel: 'Cancel' },
+  buttons: { ok: 'Cancel', cancel: QUIT_ANYWAY },
 } as const;
 
 // Listens before the request goes out, so a quick answer cannot be missed.

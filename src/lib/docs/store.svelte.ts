@@ -36,17 +36,25 @@ export function createDoc(init: {
   return insertDoc(crypto.randomUUID(), init);
 }
 
+/** Spec: above 2 MB a tab opens in Edit only, with a notice (1 MB = 1,000,000 bytes, Ruling 78). */
+export const LARGE_FILE_BYTES = 2_000_000;
+
+/** `raw` is the file's text before newline changes, so its UTF-8 length is the file size. */
+export function isLargeFile(raw: string): boolean {
+  return new TextEncoder().encode(raw).length > LARGE_FILE_BYTES;
+}
+
 /**
  * Opens a file from the last session under its old id, so the saved layout finds its tab
- * (Ruling 204). No dialogs and no Open Recent entry. Null when another window has the file;
- * rejects when it cannot be read.
+ * (Ruling 204). No dialogs and no Open Recent entry; a large file opens in Edit (Ruling 222).
+ * Null when another window has the file; rejects when it cannot be read.
  */
 export async function restoreDoc(init: {
   id: string;
   path: string;
   mode: ViewMode;
   pinned: boolean;
-}): Promise<DocState | null> {
+}): Promise<{ doc: DocState; large: boolean } | null> {
   const { id, path, mode, pinned } = init;
   opening.add(path);
   try {
@@ -58,9 +66,10 @@ export async function restoreDoc(init: {
       void release(path);
       throw err;
     }
-    const doc = insertDoc(id, { path, raw: read.text, hash: read.hash, mode });
+    const large = isLargeFile(read.text);
+    const doc = insertDoc(id, { path, raw: read.text, hash: read.hash, mode: large ? 'edit' : mode });
     doc.pinned = pinned;
-    return doc;
+    return { doc, large };
   } finally {
     opening.delete(path);
   }

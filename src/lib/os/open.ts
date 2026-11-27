@@ -1,7 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { message } from '@tauri-apps/plugin-dialog';
 import { claimPath, normalizePath, readTextFile, releasePath, type ReadResult } from '../ipc';
-import { createDoc, findByPath, opening, setTabShower } from '../docs/store.svelte';
+import { createDoc, findByPath, isLargeFile, opening, setTabShower } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { settings } from '../settings/settings.svelte';
 import { recordRecent } from './recent';
@@ -13,9 +13,6 @@ let workspace: Workspace | null = null;
 
 /** Docs opened in Edit because they are large; DocPane shows the notice while an id is here. */
 export const largeFileNotices: Set<string> = new SvelteSet<string>();
-
-// Spec: above 2 MB a tab opens in Edit only (1 MB = 1,000,000 bytes, Ruling 78).
-const LARGE_FILE_BYTES = 2_000_000;
 
 // An owner that does not answer in time is taken to show the file.
 const REVEAL_ANSWER_MS = 1000;
@@ -86,8 +83,7 @@ async function openOne(
     target.activate(raced.id);
   } else {
     const { text: raw, hash } = result;
-    // raw is the file's text before newline changes, so its UTF-8 length is the file size.
-    const large = new TextEncoder().encode(raw).length > LARGE_FILE_BYTES;
+    const large = isLargeFile(raw);
     const doc = createDoc({ path, raw, hash, mode: large ? 'edit' : settings.defaultMode });
     if (large) largeFileNotices.add(doc.id);
     target.openDoc(doc);
