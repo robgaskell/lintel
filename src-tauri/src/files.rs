@@ -11,6 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::State;
+
+use crate::watch::Watcher;
 
 const NOT_UTF8: &str = "Lintel opens UTF-8 text files only.";
 const READ_ONLY: &str = "This file is read-only.";
@@ -53,13 +56,19 @@ pub async fn normalize_path(path: String) -> Result<String, String> {
             "Could not open {path}: the folder it was given from could not be read."
         ));
     }
-    let real = fs::canonicalize(&path).map_err(|e| format!("Could not open {path}: {e}"))?;
-    let real = real
-        .into_os_string()
+    let real = canonical(Path::new(&path)).map_err(|e| format!("Could not open {path}: {e}"))?;
+    real.into_os_string()
         .into_string()
-        .map_err(|_| format!("Could not open {path}: the path is not valid Unicode."))?;
+        .map_err(|_| format!("Could not open {path}: the path is not valid Unicode."))
+}
+
+/// `fs::canonicalize` without the `\\?\` prefix Windows adds.
+pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
+    let real = fs::canonicalize(path)?;
     #[cfg(windows)]
-    let real = strip_verbatim_prefix(&real);
+    if let Some(plain) = real.to_str().map(strip_verbatim_prefix) {
+        return Ok(PathBuf::from(plain));
+    }
     Ok(real)
 }
 
@@ -363,11 +372,20 @@ fn doctype_end(text: &str) -> Option<usize> {
     None
 }
 
-/// Returns the sha-256 hex of the bytes written.
+/// Returns the sha-256 hex of the bytes written. The watcher learns the new hash, so
+/// Lintel's own save does not come back as a change on disk.
 #[tauri::command]
-pub async fn write_text_file(path: String, text: String) -> Result<String, String> {
+pub async fn write_text_file(
+    watcher: State<'_, Watcher>,
+    path: String,
+    text: String,
+) -> Result<String, String> {
+    watcher.saving(&path, || write_text(&path, &text))
+}
+
+pub(crate) fn write_text(path: &str, text: &str) -> Result<String, String> {
     let fail = |e: io::Error| format!("Could not save {path}: {e}");
-    let target = resolve_symlinks(Path::new(&path)).map_err(fail)?;
+    let target = resolve_symlinks(Path::new(path)).map_err(fail)?;
     let existing = match fs::metadata(&target) {
         Ok(meta) => Some(meta.permissions()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -499,7 +517,7 @@ mod tests {
         let file = path_str(&dir.join("note.md"));
         let text = "# Title\r\n\r\nCafé ✓\r\n".to_owned();
 
-        let written_hash = block_on(write_text_file(file.clone(), text.clone())).unwrap();
+        let written_hash = write_text(&file, &text).unwrap();
         let read = block_on(read_text_file(file)).unwrap();
 
         assert_eq!(read.text, text);
@@ -514,7 +532,7 @@ mod tests {
         let file = dir.join("note.md");
         fs::write(&file, "old").unwrap();
 
-        block_on(write_text_file(path_str(&file), "new".to_owned())).unwrap();
+        write_text(&path_str(&file), "new").unwrap();
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "new");
         let names: Vec<_> = fs::read_dir(&dir)
@@ -618,7 +636,7 @@ mod tests {
         fs::write(&file, "old").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
 
-        block_on(write_text_file(path_str(&file), "new".to_owned())).unwrap();
+        write_text(&path_str(&file), "new").unwrap();
 
         let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -655,7 +673,7 @@ mod tests {
         perms.set_readonly(true);
         fs::set_permissions(&file, perms).unwrap();
 
-        let err = block_on(write_text_file(path_str(&file), "new".to_owned())).unwrap_err();
+        let err = write_text(&path_str(&file), "new").unwrap_err();
 
         assert_eq!(err, "This file is read-only.");
         assert_eq!(fs::read_to_string(&file).unwrap(), "old");
@@ -679,7 +697,7 @@ mod tests {
         let file = dir.join(&name);
         fs::write(&file, "old").unwrap();
 
-        block_on(write_text_file(path_str(&file), "new".to_owned())).unwrap();
+        write_text(&path_str(&file), "new").unwrap();
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "new");
         fs::remove_dir_all(dir).unwrap();
@@ -695,8 +713,8 @@ mod tests {
         for _ in 0..20 {
             let (fa, fb) = (file.clone(), file.clone());
             let (ta, tb) = (big_a.clone(), big_b.clone());
-            let a = std::thread::spawn(move || block_on(write_text_file(fa, ta)));
-            let b = std::thread::spawn(move || block_on(write_text_file(fb, tb)));
+            let a = std::thread::spawn(move || write_text(&fa, &ta));
+            let b = std::thread::spawn(move || write_text(&fb, &tb));
             let hash_a = a.join().unwrap().unwrap();
             let hash_b = b.join().unwrap().unwrap();
 
@@ -713,10 +731,7 @@ mod tests {
         // A folder where the file should be makes the rename fail.
         fs::create_dir(dir.join("note.md")).unwrap();
 
-        let result = block_on(write_text_file(
-            path_str(&dir.join("note.md")),
-            "new".to_owned(),
-        ));
+        let result = write_text(&path_str(&dir.join("note.md")), "new");
 
         assert!(result.is_err());
         assert_eq!(file_names(&dir), vec!["note.md"]);
@@ -734,7 +749,7 @@ mod tests {
         let inode_before = fs::metadata(&file).unwrap().ino();
         let mut old_handle = File::open(&file).unwrap();
 
-        block_on(write_text_file(path_str(&file), "new".to_owned())).unwrap();
+        write_text(&path_str(&file), "new").unwrap();
 
         let mut seen = String::new();
         old_handle.read_to_string(&mut seen).unwrap();
@@ -753,7 +768,7 @@ mod tests {
         fs::write(&real, "old").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        block_on(write_text_file(path_str(&link), "new".to_owned())).unwrap();
+        write_text(&path_str(&link), "new").unwrap();
 
         assert_eq!(fs::read_to_string(&real).unwrap(), "new");
         assert!(fs::symlink_metadata(&link)

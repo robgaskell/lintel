@@ -5,6 +5,7 @@ mod os_integration;
 mod remote;
 mod session;
 mod startup;
+mod watch;
 mod windows;
 
 use std::collections::HashSet;
@@ -41,6 +42,7 @@ pub fn run() {
         .manage(Mutex::new(OpenQueue::default()))
         .on_window_event(windows::on_doc_window_event)
         .setup(|app| {
+            app.manage(watch::Watcher::for_app(app.handle().clone()));
             let args = std::env::args_os().map(|arg| arg.to_string_lossy().into_owned());
             setup_app(app, args, std::env::current_dir().ok());
             Ok(())
@@ -59,7 +61,9 @@ pub fn run() {
             windows::cancel_handoff,
             windows::handoff_status,
             appearance::set_window_appearance,
-            open_queue::frontend_ready
+            open_queue::frontend_ready,
+            watch::watch_path,
+            watch::unwatch_path
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lintel")
@@ -408,6 +412,22 @@ mod tests {
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let granted = main["permissions"].as_array().unwrap();
         assert!(granted.contains(&serde_json::json!("allow-frontend-ready")));
+    }
+
+    #[test]
+    fn document_windows_may_watch_and_unwatch_files() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let granted = main["permissions"].as_array().unwrap();
+        let build = include_str!("../build.rs");
+        for command in ["watch_path", "unwatch_path"] {
+            assert!(
+                build.contains(&format!("\"{command}\"")),
+                "{command} in build.rs"
+            );
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(granted.contains(&serde_json::json!(permission)));
+        }
     }
 
     #[test]

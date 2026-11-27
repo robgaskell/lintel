@@ -16,6 +16,8 @@ fn main() {
         "handoff_status",
         "set_window_appearance",
         "frontend_ready",
+        "watch_path",
+        "unwatch_path",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);
     if is_windows_msvc() {

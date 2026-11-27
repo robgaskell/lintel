@@ -5,6 +5,7 @@ use serde::Serialize;
 use tauri::{Emitter, Manager, Runtime, State, Window, WindowEvent};
 
 use crate::open_queue::{self, OpenQueue};
+use crate::watch::Watcher;
 use crate::SETTINGS;
 
 /// Sent to the window that owns a path when another window tries to open it.
@@ -271,14 +272,17 @@ impl FocusOrder {
     }
 }
 
-/// The app's window-event hook: keeps the registry, focus order and open queue current, and
-/// hands the app menu on when a document window closes.
+/// The app's window-event hook: keeps the registry, focus order, open queue and file watches
+/// current, and hands the app menu on when a document window closes.
 pub fn on_doc_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let app = window.app_handle();
     let open = || app.webview_windows().into_keys().collect();
     let registry = window.state::<PathRegistry>();
     let focus = window.state::<FocusOrder>();
     let claim = on_window_event(&registry, &focus, window.label(), event, open);
+    if let (WindowEvent::Destroyed, Some(watcher)) = (event, window.try_state::<Watcher>()) {
+        watcher.drop_window(window.label());
+    }
     open_queue::lock(&window.state::<Mutex<OpenQueue>>()).window_event(
         window.label(),
         event,

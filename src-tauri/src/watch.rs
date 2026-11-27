@@ -1,0 +1,657 @@
+//! Live reload: Rust watches the folder of each open file and tells the window that has the
+//! file when its bytes change or it goes away (spec: Live reload).
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::Duration;
+
+use notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Runtime, State, Window};
+
+use crate::files;
+
+pub const FILE_CHANGED: &str = "lintel://file-changed";
+pub const FILE_REMOVED: &str = "lintel://file-removed";
+
+const DEBOUNCE: Duration = Duration::from_millis(200);
+// Another program may still have the file open; Windows then refuses the read.
+const READ_RETRY: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FileChangedEvent {
+    pub path: String,
+    pub hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FileRemovedEvent {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Notice {
+    Changed(FileChangedEvent),
+    Removed(FileRemovedEvent),
+}
+
+type Sink = Arc<dyn Fn(&str, Notice) + Send + Sync>;
+type FolderWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
+
+/// One debounced watcher for the whole app. It watches folders, not files, because editors
+/// that save by renaming break a watch on the file itself. Each folder is watched once,
+/// however many open files it holds.
+pub struct Watcher {
+    files: Arc<Mutex<Files>>,
+    sink: Sink,
+    folders: Result<Mutex<FolderWatcher>, String>,
+}
+
+#[derive(Default)]
+struct Files {
+    by_key: HashMap<PathBuf, Watched>,
+    folder_counts: HashMap<PathBuf, usize>,
+}
+
+struct Watched {
+    /// The spelling the window gave, which its events carry back.
+    path: String,
+    owner: String,
+    /// The last hash Lintel read, wrote or reported; None while the file is gone.
+    hash: Option<String>,
+}
+
+impl Watcher {
+    /// Sends each change to the window that has the file.
+    pub fn for_app<R: Runtime>(app: AppHandle<R>) -> Self {
+        Self::new(move |owner, notice| {
+            let sent = match &notice {
+                Notice::Changed(event) => app.emit_to(owner, FILE_CHANGED, event),
+                Notice::Removed(event) => app.emit_to(owner, FILE_REMOVED, event),
+            };
+            if let Err(err) = sent {
+                eprintln!("Could not tell {owner} about a file change: {err}");
+            }
+        })
+    }
+
+    /// `sink` gets the owner's label and the notice. Without a working OS watcher, Lintel
+    /// still runs; `watch` then fails with the reason.
+    pub fn new(sink: impl Fn(&str, Notice) + Send + Sync + 'static) -> Self {
+        let sink: Sink = Arc::new(sink);
+        let files = Arc::new(Mutex::new(Files::default()));
+        let (on_files, on_sink) = (Arc::clone(&files), Arc::clone(&sink));
+        let folders = new_debouncer(
+            DEBOUNCE,
+            None,
+            move |result: DebounceEventResult| match result {
+                Ok(events) => {
+                    let rescan = events.iter().any(|e| e.event.need_rescan());
+                    let paths = events.iter().flat_map(|e| e.event.paths.iter().cloned());
+                    for (owner, notice) in check(&on_files, paths.collect(), rescan) {
+                        on_sink(&owner, notice);
+                    }
+                }
+                Err(errors) => {
+                    for err in errors {
+                        eprintln!("File watcher error: {err}");
+                    }
+                }
+            },
+        )
+        .map(Mutex::new)
+        .map_err(|e| format!("Lintel cannot watch files for changes: {e}"));
+        if let Err(err) = &folders {
+            eprintln!("{err}");
+        }
+        Self {
+            files,
+            sink,
+            folders,
+        }
+    }
+
+    /// Watches `path` for `owner`, taking it over from any other window. `known_hash` is
+    /// the hash of the text the window has; a file that already differs is reported at once.
+    pub fn watch(&self, owner: &str, path: String, known_hash: &str) -> Result<(), String> {
+        let key = watch_key(&path);
+        let mut files = self.lock();
+        if !files.by_key.contains_key(&key) {
+            self.add_folder(&mut files, folder_of(&key))?;
+        }
+        // An unreadable file counts as unchanged until an event shows otherwise.
+        let now = disk_hash(&key).unwrap_or_else(|| Some(known_hash.to_owned()));
+        let notice = (now.as_deref() != Some(known_hash)).then(|| notice_for(&path, &now));
+        files.by_key.insert(
+            key,
+            Watched {
+                path,
+                owner: owner.to_owned(),
+                hash: now,
+            },
+        );
+        drop(files);
+        if let Some(notice) = notice {
+            (self.sink)(owner, notice);
+        }
+        Ok(())
+    }
+
+    /// Stops watching `path` if `owner` has it; a window that handed the file on has not.
+    pub fn unwatch(&self, owner: &str, path: &str) {
+        let mut files = self.lock();
+        // A file gone since it was watched may no longer resolve to its key.
+        let key = Some(watch_key(path))
+            .filter(|key| files.by_key.contains_key(key))
+            .or_else(|| {
+                let found = files.by_key.iter().find(|(_, w)| w.path == path);
+                found.map(|(key, _)| key.clone())
+            });
+        let Some(key) = key else { return };
+        if files.by_key[&key].owner != owner {
+            return;
+        }
+        files.by_key.remove(&key);
+        self.remove_folder(&mut files, folder_of(&key));
+    }
+
+    /// Drops every watch of a closed window.
+    pub fn drop_window(&self, owner: &str) {
+        let mut files = self.lock();
+        let keys: Vec<PathBuf> = files
+            .by_key
+            .iter()
+            .filter(|(_, w)| w.owner == owner)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            files.by_key.remove(&key);
+            self.remove_folder(&mut files, folder_of(&key));
+        }
+    }
+
+    /// Runs Lintel's own write of `path` and records the hash it returns. Events are checked
+    /// under the same lock, so none can see the new bytes before the new hash.
+    pub fn saving(
+        &self,
+        path: &str,
+        write: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        let mut files = self.lock();
+        let hash = write()?;
+        if let Some(watched) = files.by_key.get_mut(&watch_key(path)) {
+            watched.hash = Some(hash.clone());
+        }
+        Ok(hash)
+    }
+
+    fn add_folder(&self, files: &mut Files, folder: &Path) -> Result<(), String> {
+        if !files.folder_counts.contains_key(folder) {
+            let watcher = self.folders.as_ref().map_err(Clone::clone)?;
+            lock(watcher)
+                .watch(folder, RecursiveMode::NonRecursive)
+                .map_err(|e| format!("Could not watch {}: {e}", folder.display()))?;
+        }
+        *files.folder_counts.entry(folder.to_path_buf()).or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn remove_folder(&self, files: &mut Files, folder: &Path) {
+        let Some(count) = files.folder_counts.get_mut(folder) else {
+            return;
+        };
+        *count -= 1;
+        if *count > 0 {
+            return;
+        }
+        files.folder_counts.remove(folder);
+        if let Ok(watcher) = &self.folders {
+            // The folder may be gone already, which ends its watch anyway.
+            let _ = lock(watcher).unwatch(folder);
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Files> {
+        lock(&self.files)
+    }
+}
+
+#[tauri::command]
+pub async fn watch_path<R: Runtime>(
+    window: Window<R>,
+    watcher: State<'_, Watcher>,
+    path: String,
+    known_hash: String,
+) -> Result<(), String> {
+    watcher.watch(window.label(), path, &known_hash)
+}
+
+#[tauri::command]
+pub async fn unwatch_path<R: Runtime>(
+    window: Window<R>,
+    watcher: State<'_, Watcher>,
+    path: String,
+) -> Result<(), String> {
+    watcher.unwatch(window.label(), &path);
+    Ok(())
+}
+
+/// Decides each watched file in `paths` by what is on disk now, never by the event kind:
+/// one batch can hold a remove for a file that a rename has already put back.
+fn check(files: &Mutex<Files>, paths: HashSet<PathBuf>, rescan: bool) -> Vec<(String, Notice)> {
+    let mut files = lock(files);
+    let mut notices = Vec::new();
+    for (key, watched) in files.by_key.iter_mut() {
+        if !rescan && !paths.contains(key) {
+            continue;
+        }
+        let Some(now) = disk_hash(key) else { continue };
+        if now == watched.hash {
+            continue;
+        }
+        notices.push((watched.owner.clone(), notice_for(&watched.path, &now)));
+        watched.hash = now;
+    }
+    notices
+}
+
+fn notice_for(path: &str, hash: &Option<String>) -> Notice {
+    let path = path.to_owned();
+    match hash {
+        Some(hash) => Notice::Changed(FileChangedEvent {
+            path,
+            hash: hash.clone(),
+        }),
+        None => Notice::Removed(FileRemovedEvent { path }),
+    }
+}
+
+/// `Some(None)` when the file is gone, `None` when it cannot be read even after a retry.
+fn disk_hash(path: &Path) -> Option<Option<String>> {
+    for attempt in 0..2 {
+        if attempt > 0 {
+            thread::sleep(READ_RETRY);
+        }
+        match fs::metadata(path) {
+            Ok(meta) if !meta.is_file() => return Some(None),
+            Err(e) if is_gone(&e) => return Some(None),
+            _ => {}
+        }
+        if let Ok(bytes) = fs::read(path) {
+            return Some(Some(files::sha256_hex(&bytes)));
+        }
+    }
+    None
+}
+
+fn is_gone(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+/// The canonical path, as `normalize_path` gives it, so a save and a watch agree. A missing
+/// file keeps its name in its folder's canonical path.
+fn watch_key(path: &str) -> PathBuf {
+    let given = Path::new(path);
+    files::canonical(given)
+        .ok()
+        .or_else(|| {
+            Some(
+                files::canonical(given.parent()?)
+                    .ok()?
+                    .join(given.file_name()?),
+            )
+        })
+        .unwrap_or_else(|| given.to_path_buf())
+}
+
+fn folder_of(key: &Path) -> &Path {
+    key.parent().unwrap_or(key)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+    use std::time::Instant;
+
+    // Hosted CI runners are slower than this machine; the manual check holds the 1 s figure.
+    const WAIT: Duration = Duration::from_secs(3);
+    const QUIET: Duration = Duration::from_millis(1500);
+
+    /// A fresh folder per test, removed when the test ends.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "lintel-watch-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn file(&self, name: &str, text: &str) -> String {
+            let path = self.0.join(name);
+            fs::write(&path, text).unwrap();
+            path.to_str().unwrap().to_owned()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn watcher() -> (Watcher, Receiver<(String, Notice)>) {
+        let (send, notices) = mpsc::channel();
+        let watcher = Watcher::new(move |owner, notice| {
+            let _ = send.send((owner.to_owned(), notice));
+        });
+        (watcher, notices)
+    }
+
+    fn hash(text: &str) -> String {
+        files::sha256_hex(text.as_bytes())
+    }
+
+    fn changed(path: &str, text: &str) -> Notice {
+        Notice::Changed(FileChangedEvent {
+            path: path.to_owned(),
+            hash: hash(text),
+        })
+    }
+
+    fn next(notices: &Receiver<(String, Notice)>, what: &str) -> (String, Notice) {
+        let started = Instant::now();
+        let notice = notices
+            .recv_timeout(WAIT)
+            .unwrap_or_else(|_| panic!("no notice for {what} within {WAIT:?}"));
+        println!("{what}: reported after {:?}", started.elapsed());
+        notice
+    }
+
+    fn assert_quiet(notices: &Receiver<(String, Notice)>) {
+        match notices.recv_timeout(QUIET) {
+            Err(RecvTimeoutError::Timeout) => {}
+            other => panic!("expected no notice, got {other:?}"),
+        }
+    }
+
+    fn folder_count(watcher: &Watcher) -> usize {
+        watcher.lock().folder_counts.len()
+    }
+
+    fn os_watched_folders(watcher: &Watcher) -> usize {
+        let folders = watcher.folders.as_ref().unwrap();
+        lock(folders).watched_paths().unwrap().len()
+    }
+
+    #[test]
+    fn a_write_by_another_program_is_reported_once() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+
+        fs::write(&path, "new").unwrap();
+
+        let notice = next(&notices, "a write by another program");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "new")));
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn writing_the_same_bytes_is_not_reported() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "same");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("same")).unwrap();
+
+        fs::write(&path, "same").unwrap();
+
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn lintel_s_own_save_is_not_reported() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+
+        let saved = watcher.saving(&path, || files::write_text(&path, "mine"));
+
+        assert_eq!(saved, Ok(hash("mine")));
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn an_atomic_rename_save_is_one_change_not_a_removal() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+
+        let temp = dir.file(".a.md.tmp", "renamed");
+        fs::rename(&temp, &path).unwrap();
+
+        let notice = next(&notices, "an atomic rename save");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "renamed")));
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn a_deleted_file_is_reported_removed_and_its_return_as_a_change() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        let removed = Notice::Removed(FileRemovedEvent { path: path.clone() });
+        assert_eq!(next(&notices, "a delete"), ("main".to_owned(), removed));
+
+        fs::write(&path, "back").unwrap();
+        let notice = next(&notices, "a file put back");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "back")));
+    }
+
+    #[test]
+    fn two_watched_files_in_one_folder_share_one_folder_watch() {
+        let dir = TempDir::new();
+        let a = dir.file("a.md", "a");
+        let b = dir.file("b.md", "b");
+        let (watcher, _notices) = watcher();
+
+        watcher.watch("main", a.clone(), &hash("a")).unwrap();
+        watcher.watch("main", b.clone(), &hash("b")).unwrap();
+        assert_eq!(folder_count(&watcher), 1);
+        assert_eq!(os_watched_folders(&watcher), 1);
+
+        watcher.unwatch("main", &a);
+        assert_eq!(os_watched_folders(&watcher), 1);
+        watcher.unwatch("main", &b);
+        assert_eq!(folder_count(&watcher), 0);
+        assert_eq!(os_watched_folders(&watcher), 0);
+    }
+
+    #[test]
+    fn a_file_that_changed_since_the_window_read_it_is_reported_at_once() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "newer");
+        let gone = dir.0.join("gone.md").to_str().unwrap().to_owned();
+        let (watcher, notices) = watcher();
+
+        watcher.watch("main", path.clone(), &hash("older")).unwrap();
+        watcher.watch("main", gone.clone(), &hash("older")).unwrap();
+
+        let removed = Notice::Removed(FileRemovedEvent { path: gone });
+        assert_eq!(
+            notices.try_recv(),
+            Ok(("main".to_owned(), changed(&path, "newer")))
+        );
+        assert_eq!(notices.try_recv(), Ok(("main".to_owned(), removed)));
+    }
+
+    #[test]
+    fn a_later_watch_takes_the_file_over_and_the_old_owner_cannot_unwatch_it() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watcher.watch("w-1", path.clone(), &hash("old")).unwrap();
+        watcher.watch("w-2", path.clone(), &hash("old")).unwrap();
+
+        watcher.unwatch("w-1", &path);
+        fs::write(&path, "new").unwrap();
+
+        let notice = next(&notices, "a write after a hand-over");
+        assert_eq!(notice, ("w-2".to_owned(), changed(&path, "new")));
+        assert_eq!(folder_count(&watcher), 1);
+    }
+
+    #[test]
+    fn a_closed_window_drops_its_watches_only() {
+        let dir = TempDir::new();
+        let a = dir.file("a.md", "a");
+        let b = dir.file("b.md", "b");
+        let (watcher, _notices) = watcher();
+        watcher.watch("w-1", a.clone(), &hash("a")).unwrap();
+        watcher.watch("main", b.clone(), &hash("b")).unwrap();
+
+        watcher.drop_window("w-1");
+
+        let files = watcher.lock();
+        let left: Vec<&str> = files.by_key.values().map(|w| w.path.as_str()).collect();
+        assert_eq!(left, [b.as_str()]);
+        assert_eq!(
+            files.folder_counts.values().copied().collect::<Vec<_>>(),
+            [1]
+        );
+    }
+
+    mod in_the_app {
+        use super::*;
+        use crate::open_queue::OpenQueue;
+        use crate::windows::{self, FocusOrder, PathRegistry};
+        use tauri::async_runtime::block_on;
+        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+        fn app() -> tauri::App<MockRuntime> {
+            let app = mock_builder()
+                .manage(PathRegistry::default())
+                .manage(FocusOrder::default())
+                .manage(Mutex::new(OpenQueue::default()))
+                .build(mock_context(noop_assets()))
+                .unwrap();
+            app.manage(Watcher::for_app(app.handle().clone()));
+            app
+        }
+
+        fn window(app: &tauri::App<MockRuntime>, label: &str) -> Window<MockRuntime> {
+            WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+                .build()
+                .unwrap();
+            app.get_webview_window(label).unwrap().as_ref().window()
+        }
+
+        fn heard(window: &Window<MockRuntime>, event: &'static str) -> Arc<Mutex<Vec<String>>> {
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&heard);
+            window.listen(event, move |e| {
+                log.lock().unwrap().push(e.payload().to_owned())
+            });
+            heard
+        }
+
+        #[test]
+        fn a_change_goes_to_the_window_that_watches_the_file_only() {
+            let dir = TempDir::new();
+            let path = dir.file("a.md", "new");
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            let in_main = heard(&main, FILE_CHANGED);
+            let in_w1 = heard(&w1, FILE_CHANGED);
+
+            block_on(watch_path(w1, app.state(), path.clone(), hash("old"))).unwrap();
+
+            let event = FileChangedEvent {
+                path,
+                hash: hash("new"),
+            };
+            let payload = serde_json::to_string(&event).unwrap();
+            assert_eq!(*in_w1.lock().unwrap(), [payload]);
+            assert!(in_main.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn write_text_file_records_the_hash_it_wrote() {
+            let dir = TempDir::new();
+            let path = dir.file("a.md", "old");
+            let app = app();
+            let main = window(&app, "main");
+            block_on(watch_path(
+                main.clone(),
+                app.state(),
+                path.clone(),
+                hash("old"),
+            ))
+            .unwrap();
+
+            block_on(files::write_text_file(
+                app.state(),
+                path.clone(),
+                "mine".to_owned(),
+            ))
+            .unwrap();
+
+            let watcher = app.state::<Watcher>();
+            let files = watcher.lock();
+            let watched = files.by_key.values().next().unwrap();
+            assert_eq!(watched.hash, Some(hash("mine")));
+        }
+
+        #[test]
+        fn a_destroyed_window_loses_its_watches_and_a_non_owner_cannot_unwatch() {
+            let dir = TempDir::new();
+            let path = dir.file("a.md", "old");
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            block_on(watch_path(
+                w1.clone(),
+                app.state(),
+                path.clone(),
+                hash("old"),
+            ))
+            .unwrap();
+
+            block_on(unwatch_path(main, app.state(), path.clone())).unwrap();
+            assert_eq!(folder_count(&app.state::<Watcher>()), 1);
+            windows::on_doc_window_event(&w1, &WindowEvent::Destroyed);
+
+            assert_eq!(folder_count(&app.state::<Watcher>()), 0);
+        }
+    }
+}
