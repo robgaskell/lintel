@@ -1237,7 +1237,7 @@ mod tests {
 
         #[test]
         fn the_windows_save_runs_on_the_main_thread_and_is_waited_for() {
-            use crate::test_support::run_app;
+            use crate::test_support::{run_app, LOOP_LIMIT};
             let dir = temp_dir("main-thread");
             let state = dir.join("window-state.json");
             let build_state = state.clone();
@@ -1245,7 +1245,7 @@ mod tests {
 
             let ran_on = Shared::<Option<std::thread::ThreadId>>::default();
             let record = ran_on.clone();
-            let finished = on_main_thread(&running.handle, Duration::from_secs(5), move |_| {
+            let finished = on_main_thread(&running.handle, LOOP_LIMIT, move |_| {
                 *record.lock().unwrap() = Some(std::thread::current().id());
             });
             assert!(finished);

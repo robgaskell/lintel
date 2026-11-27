@@ -539,8 +539,7 @@ mod tests {
     // Through the mock event loop, which raises close and exit requests as a desktop does.
     #[test]
     fn while_an_update_installs_no_window_closes_and_the_app_does_not_quit() {
-        use crate::test_support::{mock_context, run_app, wait_for};
-        use std::time::Duration;
+        use crate::test_support::{mock_context, run_app, LOOP_LIMIT};
         use tauri::{WebviewUrl, WebviewWindowBuilder};
 
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -577,17 +576,20 @@ mod tests {
             },
         );
         let seen = |name: &str| seen.lock().unwrap().iter().any(|s| s == name);
-        let wait = Duration::from_secs(8);
 
         // A closed last window would ask to exit; a refused close asks nothing.
-        running.on_main(|app| app.get_webview_window("main").unwrap().close().unwrap());
-        assert!(wait_for(wait, || seen("close main")));
-        std::thread::sleep(Duration::from_millis(2500));
+        let still_running = running.step("close main", |app| {
+            app.get_webview_window("main").unwrap().close().unwrap()
+        });
+        assert!(still_running, "the app quit on a close");
+        assert!(seen("close main"), "the close was never requested");
         assert!(!seen("exit requested"), "the window closed during the install");
 
-        running.on_main(|app| app.get_webview_window("main").unwrap().destroy().unwrap());
-        assert!(wait_for(wait, || seen("exit requested")));
-        assert!(!running.ended_within(Duration::from_millis(2500)), "the app quit during the install");
+        let still_running = running.step("destroy main", |app| {
+            app.get_webview_window("main").unwrap().destroy().unwrap()
+        });
+        assert!(still_running, "the app quit during the install");
+        assert!(seen("exit requested"), "the exit was never requested");
         assert!(!seen("exit"));
 
         // The install failed: windows close and the app quits again.
@@ -598,7 +600,7 @@ mod tests {
                 .unwrap();
             window.close().unwrap();
         });
-        assert!(running.ended_within(wait), "the app did not quit after the install failed");
+        assert!(running.ended_within(LOOP_LIMIT), "the app did not quit after the install failed");
         assert!(seen("close w-2") && seen("exit"));
     }
 
