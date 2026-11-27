@@ -174,7 +174,8 @@ describe('the editor lock (Rulings 349, 353)', () => {
     }
     for (const [name, init] of KEYS) edited.push(...edits(`key ${name}`, (v) => key(v, init)));
     expect(edited).toEqual([]);
-  });
+    // About 1,500 paths: 1.5 s here, longer on CI's Windows runner.
+  }, 60_000);
 
   it('refuses paste, cut, drop, typed input, undo, redo, find and replace, and lint fixes', () => {
     const edited: string[] = [];
