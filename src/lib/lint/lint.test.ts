@@ -103,6 +103,17 @@ describe('fixAll', () => {
     expect(v.state.selection.main.head).toBe(2);
   });
 
+  it('keeps a cursor before a fix on the same line where it was (Ruling 290)', () => {
+    const text = '# T\n\nSome text \n';
+    const v = editor(text);
+    v.dispatch({ selection: { anchor: 7 } });
+
+    fixAll(v, lintText(text, { default: true }));
+
+    expect(v.state.doc.toString()).toBe('# T\n\nSome text\n');
+    expect(v.state.selection.main.head).toBe(7);
+  });
+
   it('keeps a cursor between two fixes on its text (Ruling 279)', () => {
     const text = '# T\n\n- a\n* b\n* c\n';
     const v = editor(text);

@@ -98,7 +98,8 @@ fn apply<R: Runtime>(
     }
     for (key, repair) in replace {
         let held = store.get(&key).filter(|value| !value.is_null());
-        if held == repair.from.filter(|value| !value.is_null()) {
+        let read = repair.from.filter(|value| !value.is_null());
+        if same_json(held.as_ref(), read.as_ref()) {
             set(key, Some(repair.to).filter(|value| !value.is_null()));
         }
     }
@@ -119,6 +120,23 @@ fn apply<R: Runtime>(
         revision: *revision,
         entries: store.entries().into_iter().collect(),
     })
+}
+
+/// Equal as JSON data: numbers by value, so a stored 80.0 matches the 80 a window sends
+/// back, and objects whatever their key order (Ruling 290).
+fn same_json(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(Value::Number(a)), Some(Value::Number(b))) => a.as_f64() == b.as_f64(),
+        (Some(Value::Array(a)), Some(Value::Array(b))) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_json(Some(a), Some(b)))
+        }
+        (Some(Value::Object(a)), Some(Value::Object(b))) => {
+            a.len() == b.len() && a.iter().all(|(key, a)| same_json(Some(a), b.get(key)))
+        }
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Objects merge key by key, `null` deletes a key, and any other value replaces.
@@ -319,6 +337,33 @@ mod tests {
             "told windows of a write that changed nothing"
         );
         assert_eq!(write(json!({ "fontSize": 20 }), Vec::new()).revision, 2);
+    }
+
+    // The verifier's probe: a hand-written 80.0 must still match the 80 a window sends.
+    #[test]
+    fn a_hand_written_float_is_still_repaired() {
+        let app = app();
+        let file = temp_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let hand_written =
+            r#"{"version":1,"lint":{"enabled":"yes","rules":{"MD013":{"line_length":80.0}}}}"#;
+        std::fs::write(&file, hand_written).unwrap();
+        let from_window = r#"{"lint":{"from":{"enabled":"yes","rules":{"MD013":{"line_length":80}}},"to":{"enabled":true,"rules":{"line-length":{"line_length":80}}}}}"#;
+        let repairs = parse_repairs(serde_json::from_str(from_window).unwrap()).unwrap();
+
+        let written = apply(
+            app.handle(),
+            &app.state::<SettingsLock>(),
+            &file,
+            Map::new(),
+            &Map::new(),
+            repairs,
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(written.revision, 1);
+        assert_eq!(written.entries["lint"]["enabled"], json!(true));
     }
 
     // Tauri runs a sync command on the main thread, which a burst of saves would stall.

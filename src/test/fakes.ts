@@ -24,7 +24,7 @@ export class FakeStore {
     // The real command needs a value; JSON drops an undefined one, so the call fails.
     if (value === undefined) throw new Error(`invalid args \`value\` for set: missing required key`);
     calls.push(`set ${this.path} ${key}`);
-    this.data.set(key, viaJson(value));
+    this.data.set(key, sortedKeys(viaJson(value)));
   }
   async delete(key: string): Promise<boolean> {
     calls.push(`delete ${this.path} ${key}`);
@@ -47,6 +47,17 @@ export class FakeStore {
     calls.push(`save ${this.path}`);
     this.saves++;
   }
+}
+
+// Rust's serde_json keeps object keys sorted, so a value can come back in another order.
+function sortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortedKeys((value as Record<string, unknown>)[key])]),
+  );
 }
 
 const stores = new Map<string, FakeStore>();

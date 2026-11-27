@@ -78,5 +78,33 @@
     "replace": { "fontSize": { "from": "huge", "to": 16 } },
     "after": { "version": 1, "fontSize": 20 },
     "changes": {}
+  },
+  {
+    "name": "a repair matches a number written as 80.0 to the 80 a window sends",
+    "stored": { "version": 1, "lint": { "enabled": "yes", "rules": { "MD013": { "line_length": 80.0 } } } },
+    "patch": {},
+    "defaults": {},
+    "replace": {
+      "lint": {
+        "from": { "enabled": "yes", "rules": { "MD013": { "line_length": 80 } } },
+        "to": { "enabled": true, "rules": { "line-length": { "line_length": 80 } } }
+      }
+    },
+    "after": { "version": 1, "lint": { "enabled": true, "rules": { "line-length": { "line_length": 80 } } } },
+    "changes": { "version": 1, "lint": { "enabled": true, "rules": { "line-length": { "line_length": 80 } } } }
+  },
+  {
+    "name": "a repair matches whatever order the keys come in",
+    "stored": { "version": 1, "lint": { "enabled": "yes", "rules": { "default": true } } },
+    "patch": {},
+    "defaults": {},
+    "replace": {
+      "lint": {
+        "from": { "rules": { "default": true }, "enabled": "yes" },
+        "to": { "enabled": true, "rules": { "default": true } }
+      }
+    },
+    "after": { "version": 1, "lint": { "enabled": true, "rules": { "default": true } } },
+    "changes": { "version": 1, "lint": { "enabled": true, "rules": { "default": true } } }
   }
 ]

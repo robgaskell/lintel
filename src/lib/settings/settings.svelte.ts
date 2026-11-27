@@ -162,8 +162,18 @@ function repairsFor(stored: Map<string, unknown>): Repairs | null {
   return Object.keys(repairs).length ? repairs : null;
 }
 
-function repairQuietly(repairs: Repairs): Promise<void> {
-  return write({}, repairs).then(applySnapshot, (err) => console.error('Could not repair settings:', err));
+// True once the repair is saved and its snapshot, or anything newer, is in `settings`.
+function repairQuietly(repairs: Repairs): Promise<boolean> {
+  return write({}, repairs).then(
+    (written) => {
+      applySnapshot(written);
+      return true;
+    },
+    (err) => {
+      console.error('Could not repair settings:', err);
+      return false;
+    },
+  );
 }
 
 function defaultOf(key: string): unknown {
@@ -225,7 +235,8 @@ async function readStore(): Promise<Settings> {
   } else {
     next = readSettings(stored);
     const repairs = repairsFor(stored);
-    if (repairs) await repairQuietly(repairs);
+    // The read above may predate another window's save, which the repair's snapshot holds.
+    if (repairs && (await repairQuietly(repairs))) return $state.snapshot(settings) as Settings;
   }
   Object.assign(settings, next);
   return structuredClone(next);

@@ -420,6 +420,15 @@ describe('lint rules (Ruling 270)', () => {
   });
 });
 
+// A second window's settings module, sharing the fake store and events.
+async function otherWindowModule() {
+  vi.resetModules();
+  vi.doMock('@tauri-apps/plugin-store', () => fakes.storeModule);
+  vi.doMock('@tauri-apps/api/event', () => fakes.eventModule);
+  vi.doMock('@tauri-apps/api/core', () => fakes.coreModule);
+  return import('./settings.svelte');
+}
+
 describe('self-repair (Ruling 280)', () => {
   it('repairs a lint value it cannot read at load, so a rule toggle then takes effect', async () => {
     store().data.set('version', 1);
@@ -487,6 +496,72 @@ describe('self-repair (Ruling 280)', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(await store().get('fontSize')).toBe(20);
+  });
+});
+
+describe('self-repair, round 2 (Ruling 290)', () => {
+  it("keeps another window's write made while its load repair was saving", async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: 'yes', rules: { default: true } });
+    const other = await otherWindowModule();
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    const real = fakes.coreModule.invoke;
+    const invoke = vi.spyOn(fakes.coreModule, 'invoke').mockImplementationOnce(async (command, args) => {
+      await other.updateSettings({ fontSize: 20 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return real(command, args);
+    });
+
+    await loadSettings();
+    invoke.mockRestore();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(await store().get('fontSize')).toBe(20);
+    expect(settings.fontSize).toBe(20);
+    expect(settings.lint).toEqual({ enabled: true, rules: { default: true } });
+  });
+
+  it('writes nothing for a value that only comes back with its keys in another order', async () => {
+    await store().set('version', 1);
+    await store().set('palettes', structuredClone(DEFAULT_SETTINGS.palettes));
+    await store().set('lint', { rules: { default: true }, enabled: true });
+    const saves = store().saves;
+
+    await loadSettings();
+    await loadSettings();
+
+    expect(store().saves).toBe(saves);
+  });
+
+  it('ignores a change it heard that is no newer than what it holds', async () => {
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    await updateSettings({ fontSize: 20 });
+
+    await eventModule.emit('lintel://settings-changed', {
+      revision: fakes.settingsRevision.value,
+      changes: { fontSize: 12 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(settings.fontSize).toBe(20);
+  });
+
+  it('repairs nothing it hears while its own load has failed', async () => {
+    store().data.set('version', 2);
+    store().data.set('fontSize', 'huge');
+    vi.mocked(writeTextFile).mockRejectedValueOnce('disk full');
+    await expect(loadSettings()).rejects.toBe('disk full');
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    const saves = store().saves;
+
+    await eventModule.emit('lintel://settings-changed', { revision: 1e9, changes: { fontSize: 'huge' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(store().saves).toBe(saves);
+    expect(store().data.get('version')).toBe(2);
   });
 });
 
