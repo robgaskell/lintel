@@ -59,3 +59,14 @@ built. Mark each line pass or fail, and note what happened on a fail.
 - [ ] Windows, with the cursor in the editor: type a word, wait two seconds, type a second word, then press Ctrl+Z once. Only the second word goes, not both. Ctrl+Shift+Z once brings back only that word.
 - [ ] Windows, with the cursor in the editor: Ctrl+S saves, Ctrl+W closes the tab, and Ctrl+Q quits (asking first about unsaved edits).
 - [ ] Windows: dropping a `.md` file from Explorer on the window opens it in a tab. Dragging a tab into another group does not work, as docs/known-issues.md says; Split Right and Split Down in the tab's menu and the View menu move the tab instead.
+
+## Updating (M8.3)
+
+Run after v0.1.1 is published, on each system above with v0.1.0 installed (see "Testing
+the updater" in docs/releasing.md).
+
+- [ ] Windows and Linux: open Lintel 0.1.0. Once the update has downloaded, the status bar shows **Update ready: restart**, or **Settings > Updates > Check now** finds Lintel 0.1.1.
+- [ ] Windows and Linux: with an unsaved edit, choose **Update ready: restart**. Lintel asks about the edit first, and **Cancel** keeps Lintel running with the update still ready.
+- [ ] Windows: choose **Update ready: restart** and answer the prompt. The installer runs, and Lintel opens again as 0.1.1 (**Settings > Updates** shows **Lintel 0.1.1**) with the same windows and tabs.
+- [ ] Linux: choose **Update ready: restart** and answer the prompt. The system asks for your password, as docs/known-issues.md says. After it, Lintel opens again as 0.1.1 with the same windows and tabs.
+- [ ] Windows and Linux: on 0.1.1, **Settings > Updates > Check now** says Lintel is up to date.

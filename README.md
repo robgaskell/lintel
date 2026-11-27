@@ -56,6 +56,16 @@ On Linux the package also puts the program itself at `/usr/bin/lintel`. Running 
 a terminal keeps Lintel attached to it: closing the terminal closes Lintel without asking
 about unsaved changes. Use the installed command instead.
 
+## Updates
+
+Lintel checks github.com for a new version 10 seconds after it starts and then once a day,
+and downloads it in the background. When an update is ready, the status bar shows
+**Update ready: restart**. Lintel asks about unsaved changes before it installs.
+
+To stop these checks, open Lintel's Settings, go to **Updates**, and turn off **Check for
+updates automatically**. **Check now** still checks when you ask. Lintel makes no other
+network requests, except for web images you choose to load.
+
 ## Known issues
 
 See [docs/known-issues.md](docs/known-issues.md).

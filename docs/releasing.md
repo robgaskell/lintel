@@ -80,3 +80,55 @@ run `docs/smoke-test.md` with them.
 Then check the draft's notes and publish it on the Releases page. Only then do the
 download links in `latest.json` work, so installed copies of Lintel see the update only
 after you publish.
+
+## Testing the updater (v0.1.0 -> v0.1.1)
+
+The updater can only be tested once a release is published, because Lintel reads
+`latest.json` from the newest published release. So publish v0.1.0, then publish v0.1.1
+soon after and check that v0.1.0 updates itself to it, before you announce Lintel. If the
+update fails, people who installed v0.1.0 have no way to get a fix except by downloading
+it again.
+
+### 1. Install v0.1.0
+
+Publish v0.1.0 with steps 1 to 4 above. Install it from the published release on macOS,
+Windows and Linux, and open it once on each.
+
+### 2. Make v0.1.1
+
+Change the version from `0.1.0` to `0.1.1` in all three of these files:
+
+- `src-tauri/tauri.conf.json` (`"version"`): the tag and `latest.json` must match it
+- `src-tauri/Cargo.toml` (`version` under `[package]`)
+- `package.json` (`"version"`)
+
+Then update `src-tauri/Cargo.lock`, check that nothing else changed, and commit:
+
+```sh
+cargo check --manifest-path src-tauri/Cargo.toml
+git diff --stat    # the three files and src-tauri/Cargo.lock only
+git commit -am "Version 0.1.1"
+git push origin main
+```
+
+Wait for CI to pass on that commit, then tag `v0.1.1` and publish it with steps 1 to 4
+above (`git tag v0.1.1 "$sha"`).
+
+### 3. Check the update on each system
+
+On each system where v0.1.0 is installed:
+
+1. Open Lintel. It checks 10 seconds after it starts and downloads the update; the status
+   bar then shows **Update ready: restart**. To check at once, open **Settings > Updates**
+   and choose **Check now**.
+2. Type in a document without saving, then choose **Update ready: restart**. Lintel asks
+   about the unsaved change. Choose **Cancel**: Lintel keeps running and the update stays
+   ready.
+3. Choose **Update ready: restart** again and save the change. On Linux, enter your
+   password when asked. Lintel installs the update and opens again with the same windows
+   and tabs.
+4. **Settings > Updates** shows **Lintel 0.1.1**, and **Check now** says Lintel is up to
+   date.
+
+If a step fails, do not announce Lintel yet: fix the cause and test again with the next
+version.

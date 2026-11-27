@@ -19,11 +19,14 @@ refuse a quit from the Dock, a log out or a shut down, and on macOS these end th
 part way. Wait for Lintel to relaunch first. If Lintel then does not open, download it
 again from the GitHub releases page.
 
-## Saving breaks hard links
+## Saving breaks hard links and drops Finder tags
 
 Lintel saves by writing a new file and moving it over the old one, so a failed save never
 leaves half a file. If the file has hard links, they keep the old text: the save separates
 them. Symbolic links are fine, because Lintel saves to the file they point to.
+
+For the same reason, on macOS a save drops the file's Finder tags and any other extended
+attributes, because the new file does not have them. Add the tags again after saving.
 
 ## macOS: File > Open shows Markdown files only
 
@@ -36,12 +39,31 @@ Quit from the Dock, logging out, or a script's `quit` command closes Lintel at o
 asking about unsaved changes, and those changes are lost. Quit from the Lintel menu or with
 Cmd+Q to be asked first.
 
+## Windows and Linux: shutting down or logging out skips the unsaved changes prompt
+
+On Windows, shutting down, restarting or signing out closes Lintel at once, without asking
+about unsaved changes, and those changes are lost. On Linux, logging out can do the same.
+Save your documents, or quit Lintel, first.
+
 ## A damaged settings file is replaced with defaults
 
 If Lintel's `settings.json` cannot be read, Lintel starts with the default settings and
 keeps no copy of the damaged file. Settings are also written straight into the file, not
 through a temporary file, so a crash while saving them can damage it. Documents are never
 affected.
+
+If one value in `settings.json` is wrong, for example after a typo while editing the file
+by hand, Lintel resets the whole group that value belongs to. For example, a wrong value in
+the lint settings also resets your own lint rules.
+
+The same goes for `session.json`, where Lintel keeps the windows and tabs to reopen. If it
+cannot be read, Lintel starts without them and replaces the file the next time it quits.
+
+## Linux: installing an update asks for your password
+
+On Linux an update installs a new `.deb` or `.rpm` package, which needs administrator
+rights. When you choose **Update ready: restart**, your system asks for your password before
+the update installs.
 
 ## Linux: "All files" in the Open dialog needs a dot in the name
 
