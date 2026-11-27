@@ -37,6 +37,61 @@ pub fn mock_context() -> tauri::Context<MockRuntime> {
     mock_context_in(&temp_path("app"))
 }
 
+/// An app running the mock event loop on a thread of its own, which is its main thread.
+/// The mock loop takes one message a second.
+pub struct Running {
+    pub handle: tauri::AppHandle<MockRuntime>,
+    pub main_thread: std::thread::ThreadId,
+    finished: std::sync::mpsc::Receiver<()>,
+}
+
+pub fn run_app(
+    build: impl FnOnce() -> tauri::App<MockRuntime> + Send + 'static,
+    mut on_event: impl FnMut(&tauri::AppHandle<MockRuntime>, tauri::RunEvent) + Send + 'static,
+) -> Running {
+    let (ready, started) = std::sync::mpsc::channel();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let app = build();
+        let _ = ready.send((app.handle().clone(), std::thread::current().id()));
+        app.run(move |handle, event| on_event(handle, event));
+        let _ = done.send(());
+    });
+    let (handle, main_thread) = started.recv().unwrap();
+    Running {
+        handle,
+        main_thread,
+        finished,
+    }
+}
+
+impl Running {
+    /// Runs `work` on the app's main thread, at the loop's next turn.
+    pub fn on_main(&self, work: impl FnOnce(&tauri::AppHandle<MockRuntime>) + Send + 'static) {
+        let handle = self.handle.clone();
+        self.handle
+            .run_on_main_thread(move || work(&handle))
+            .unwrap();
+    }
+
+    /// Whether the loop ended within `wait`.
+    pub fn ended_within(&self, wait: std::time::Duration) -> bool {
+        self.finished.recv_timeout(wait).is_ok()
+    }
+}
+
+/// Waits up to `wait` for `done`.
+pub fn wait_for(wait: std::time::Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    while !done() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

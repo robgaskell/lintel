@@ -139,12 +139,18 @@ fn on_second_instance<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, cwd: St
 }
 
 fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
-    // Closing the last window waits for an update's install (Ruling 351). On macOS a Dock
-    // Quit or log out never comes here: tao offers no way to refuse them (known-issues.md).
-    if let RunEvent::ExitRequested { code, api, .. } = &event {
-        if updater::holds_exit(app, *code) {
+    // While an update installs, no window closes and the app does not quit (Rulings 351,
+    // 353). On macOS a Dock Quit or log out never comes here: tao offers no way to refuse
+    // them (known-issues.md).
+    match &event {
+        RunEvent::ExitRequested { code, api, .. } if updater::holds_exit(app, *code) => {
             api.prevent_exit();
         }
+        RunEvent::WindowEvent {
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if updater::installing(app) => api.prevent_close(),
+        _ => {}
     }
     // macOS passes files from Finder, `open` and the Dock here, not through argv.
     #[cfg(target_os = "macos")]
@@ -530,14 +536,70 @@ mod tests {
         );
     }
 
-    // ExitRequestApi cannot be made outside tauri, so the wiring is checked as written;
-    // holds_exit itself is tested in updater.rs.
+    // Through the mock event loop, which raises close and exit requests as a desktop does.
     #[test]
-    fn an_exit_request_during_an_install_is_refused() {
-        // Windows checks the file out with CRLF line ends.
-        let lib = include_str!("lib.rs").replace("\r\n", "\n");
-        let wiring = concat!("if updater::holds_exit(app, *code) {\n", "            api.prevent_exit();");
-        assert_eq!(lib.matches(wiring).count(), 1);
+    fn while_an_update_installs_no_window_closes_and_the_app_does_not_quit() {
+        use crate::test_support::{mock_context, run_app, wait_for};
+        use std::time::Duration;
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = Arc::clone(&seen);
+        let running = run_app(
+            || {
+                let app = tauri::test::mock_builder()
+                    .manage(Mutex::new(OpenQueue::default()))
+                    .build(mock_context())
+                    .unwrap();
+                let handle = app.handle();
+                updater::start(handle);
+                WebviewWindowBuilder::new(&app, "main", WebviewUrl::default())
+                    .build()
+                    .unwrap();
+                updater::set_installing(app.handle(), true);
+                app
+            },
+            move |app, event| {
+                let name = match &event {
+                    RunEvent::ExitRequested { .. } => Some("exit requested".to_owned()),
+                    RunEvent::Exit => Some("exit".to_owned()),
+                    RunEvent::WindowEvent {
+                        label,
+                        event: WindowEvent::CloseRequested { .. },
+                        ..
+                    } => Some(format!("close {label}")),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    log.lock().unwrap().push(name);
+                }
+                on_run_event(app, event);
+            },
+        );
+        let seen = |name: &str| seen.lock().unwrap().iter().any(|s| s == name);
+        let wait = Duration::from_secs(8);
+
+        // A closed last window would ask to exit; a refused close asks nothing.
+        running.on_main(|app| app.get_webview_window("main").unwrap().close().unwrap());
+        assert!(wait_for(wait, || seen("close main")));
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!seen("exit requested"), "the window closed during the install");
+
+        running.on_main(|app| app.get_webview_window("main").unwrap().destroy().unwrap());
+        assert!(wait_for(wait, || seen("exit requested")));
+        assert!(!running.ended_within(Duration::from_millis(2500)), "the app quit during the install");
+        assert!(!seen("exit"));
+
+        // The install failed: windows close and the app quits again.
+        running.on_main(|app| {
+            updater::set_installing(app, false);
+            let window = WebviewWindowBuilder::new(app, "w-2", WebviewUrl::default())
+                .build()
+                .unwrap();
+            window.close().unwrap();
+        });
+        assert!(running.ended_within(wait), "the app did not quit after the install failed");
+        assert!(seen("close w-2") && seen("exit"));
     }
 
     // The hook itself is tested in updater.rs.

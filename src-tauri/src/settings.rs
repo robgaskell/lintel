@@ -237,6 +237,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_temp_file_takes_its_folder_with_it() {
+        let file = temp_file();
+        let dir = file.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&*file, "{}").unwrap();
+        drop(file);
+        assert!(!dir.exists(), "{} was left behind", dir.display());
+    }
+
     fn temp_file() -> TempFile {
         TempFile(crate::test_support::temp_path("settings-test").join("settings.json"))
     }

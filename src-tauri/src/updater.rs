@@ -422,7 +422,9 @@ fn configure<R: Runtime, B: UpdaterSetup>(
     let builder = builder
         .timeout(options.check_timeout)
         // Windows only: its installer ends the process without RunEvent::Exit.
-        .on_before_exit(move || before_windows_install(&hook));
+        .on_before_exit(move || {
+            before_windows_install(&hook);
+        });
     match &options.test_url {
         Some(url) => builder.endpoints(vec![url.clone()]),
         None => Ok(builder),
@@ -431,25 +433,35 @@ fn configure<R: Runtime, B: UpdaterSetup>(
 
 const MAIN_THREAD_WAIT: Duration = Duration::from_secs(5);
 
-/// What exit would have saved. The session is saved already, by the quit rounds.
-pub fn before_windows_install<R: Runtime>(app: &AppHandle<R>) {
-    let handle = app.clone();
-    let saved = run_and_wait(
-        |job| app.run_on_main_thread(job).map_err(|err| err.to_string()),
-        move || {
-            crate::session::save_geometry_now(&handle);
-            // The plugin's own hook, which this one replaces.
-            handle.cleanup_before_exit();
-        },
-        MAIN_THREAD_WAIT,
-    );
+/// What exit would have saved. The session is saved already, by the quit rounds. False if
+/// the main thread did not finish it in time.
+pub fn before_windows_install<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let saved = on_main_thread(app, MAIN_THREAD_WAIT, |app| {
+        crate::session::save_geometry_now(app);
+        // The plugin's own hook, which this one replaces.
+        app.cleanup_before_exit();
+    });
     if !saved {
         eprintln!("Window sizes were not saved before the update: the app did not answer");
     }
+    saved
 }
 
 // The save runs on the main thread: off it, each window read waits for the main thread,
 // which may be waiting for a lock the save holds (Ruling 351). False if it did not finish.
+fn on_main_thread<R: Runtime>(
+    app: &AppHandle<R>,
+    wait: Duration,
+    work: impl FnOnce(&AppHandle<R>) + Send + 'static,
+) -> bool {
+    let handle = app.clone();
+    run_and_wait(
+        |job| app.run_on_main_thread(job).map_err(|err| err.to_string()),
+        move || work(&handle),
+        wait,
+    )
+}
+
 fn run_and_wait(
     dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), String>,
     work: impl FnOnce() + Send + 'static,
@@ -576,13 +588,27 @@ fn on_install_step<R: Runtime>(
     }
 }
 
+/// Whether an update is installing now; windows and the app then stay open.
+pub fn installing<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<InstallLock>()
+        .is_some_and(|lock| lock.0.load(Ordering::SeqCst))
+}
+
 /// Whether to refuse a quit the user asked for, such as closing the last window, while an
 /// update installs. The relaunch and Lintel's own exits name a `code`, and are not refused.
 pub fn holds_exit<R: Runtime>(app: &AppHandle<R>, code: Option<i32>) -> bool {
-    code.is_none()
-        && app
-            .try_state::<InstallLock>()
-            .is_some_and(|lock| lock.0.load(Ordering::SeqCst))
+    code.is_none() && installing(app)
+}
+
+/// Marks an install as started or failed, as the service does, for tests elsewhere.
+#[cfg(test)]
+pub(crate) fn set_installing<R: Runtime>(app: &AppHandle<R>, started: bool) {
+    let step = if started {
+        InstallStep::Started
+    } else {
+        InstallStep::Failed
+    };
+    on_install_step(app, step, &|_| {});
 }
 
 #[derive(Deserialize)]
@@ -1190,6 +1216,49 @@ mod tests {
             let (service, _, restarts, _app) = start_recorded(Plan::new(true, env(&[])));
             (service.hooks.on_install)(InstallStep::Installed);
             assert_eq!(*restarts.lock().unwrap(), 1);
+        }
+
+        // The mock runtime cannot exit: its request_exit is unimplemented!(), and that panic
+        // is how this test sees the relaunch being asked for.
+        #[test]
+        fn the_relaunch_asks_tauri_to_restart_the_app() {
+            let app = plain_app();
+            let service = start_from_env(app.handle(), env(&[]));
+            let relaunch = || (service.hooks.on_install)(InstallStep::Installed);
+            let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(relaunch));
+            let payload = asked.expect_err("the relaunch was not asked for");
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            assert!(message.contains("not implemented"), "{message}");
+        }
+
+        #[test]
+        fn the_windows_save_runs_on_the_main_thread_and_is_waited_for() {
+            use crate::test_support::run_app;
+            let dir = temp_dir("main-thread");
+            let state = dir.join("window-state.json");
+            let build_state = state.clone();
+            let running = run_app(move || geometry_app(&build_state), |_, _| {});
+
+            let ran_on = Shared::<Option<std::thread::ThreadId>>::default();
+            let record = ran_on.clone();
+            let finished = on_main_thread(&running.handle, Duration::from_secs(5), move |_| {
+                *record.lock().unwrap() = Some(std::thread::current().id());
+            });
+            assert!(finished);
+            assert_eq!(*ran_on.lock().unwrap(), Some(running.main_thread));
+
+            // The mock loop takes up to a second to get to it, well inside the limit.
+            note_size(&running.handle, "main", (640, 480));
+            assert!(before_windows_install(&running.handle), "the save was not waited for");
+            assert_eq!(saved_size(&state, "main"), Some((640, 480)));
+            assert!(MAIN_THREAD_WAIT >= Duration::from_secs(2));
+            std::fs::remove_dir_all(&dir).unwrap();
+            // The loop runs on until the test binary exits: ending it needs a window, and on
+            // macOS a mock window's frame cannot be read at exit.
         }
 
         #[test]
