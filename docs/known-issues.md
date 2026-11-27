@@ -140,7 +140,9 @@ In Export as Word, a link to a heading whose text is only emoji or punctuation, 
 In Export as HTML and Export as Word, a link to a network path (`\\server\share` or
 `//server/share`), any `file:` address, or an address that is not `http`, `https` or
 `mailto` keeps its text but is no longer a link. On Windows, opening such a link can send
-your sign-in details to another computer. Links to other files by relative path stay.
+your sign-in details to another computer. Links to other files by relative path stay. An
+address with a double quote mark in it, or one that starts with a quote mark, also loses
+its link, because Windows ignores the quotes.
 
 ### Links with a lone % lose their link
 

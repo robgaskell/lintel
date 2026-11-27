@@ -10,6 +10,7 @@ describe('keepsLink (Rulings 324, 330)', () => {
     '../up.md',
     '#intro',
     'C:/notes/x.md',
+    "o'brien.md",
   ])('keeps %s', (href) => {
     expect(keepsLink(href)).toBe(true);
   });
@@ -36,6 +37,10 @@ describe('keepsLink (Rulings 324, 330)', () => {
     ['a scheme with a replaced NUL in it', 'fi\ufffdle://host/x'],
     ['a scheme with a space in it', 'fi le://host/x'],
     ['a fullwidth scheme', '\uFF46\uFF49\uFF4C\uFF45://host/x'],
+    ['a quoted UNC path', '"\\\\host\\x"'],
+    ['a curly-quoted UNC path', '\u201C\\\\host\\x\u201D'],
+    ['a single-quoted network path', "'//host/x'"],
+    ['a quote inside', 'x"\\\\host\\x'],
   ])('drops %s', (_name, href) => {
     expect(keepsLink(href)).toBe(false);
   });
