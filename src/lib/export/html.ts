@@ -137,11 +137,16 @@ function dropCopiedHeadingIds(root: DocumentFragment, headings: Heading[]) {
   }
 }
 
+// A link left with no href, by this rule or by the sanitiser (file:), becomes its children,
+// so it reads as plain text (Ruling 345). An anchor with an id or name stays as a jump target.
 function unlinkNetworkPaths(root: DocumentFragment) {
   for (const link of root.querySelectorAll('a')) {
     for (const attr of [...link.attributes]) {
       if (attr.localName === 'href' && !keepsLink(attr.value)) link.removeAttributeNode(attr);
     }
+    const target = link.hasAttribute('id') || link.hasAttribute('name');
+    const linked = [...link.attributes].some((attr) => attr.localName === 'href');
+    if (!linked && !target) link.replaceWith(...link.childNodes);
   }
 }
 

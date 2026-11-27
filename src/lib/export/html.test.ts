@@ -410,12 +410,10 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
 describe('buildStandaloneHtml links (Ruling 321)', () => {
   it('keeps tel: and ftp: links as text only, as Word does (Ruling 324)', async () => {
     const text = '[call](tel:+441234) [files](ftp://x.example/f) [web](https://example.com/)\n';
-    const links = [...parse(await buildStandaloneHtml(doc(text), { theme: 'light' })).querySelectorAll('.content a')];
-    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      ['call', null],
-      ['files', null],
-      ['web', 'https://example.com/'],
-    ]);
+    const content = parse(await buildStandaloneHtml(doc(text), { theme: 'light' })).querySelector('.content')!;
+    const links = [...content.querySelectorAll('a')];
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['web', 'https://example.com/']]);
+    expect(content.textContent).toContain('call files web');
   });
 
   it('drops network-path and file: hrefs but keeps relative and web links', async () => {
@@ -430,17 +428,36 @@ describe('buildStandaloneHtml links (Ruling 321)', () => {
       '[up](../up.md)',
       '[web](https://example.com/)',
     ].join(' ');
-    const links = [...parse(await buildStandaloneHtml(doc(`${text}\n`), { theme: 'light' })).querySelectorAll('.content a')];
+    const content = parse(await buildStandaloneHtml(doc(`${text}\n`), { theme: 'light' })).querySelector('.content')!;
+    const links = [...content.querySelectorAll('a')];
 
+    expect(content.textContent).toContain('unc back mixed filehost filelocal rel');
     expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      ['unc', null],
-      ['back', null],
-      ['mixed', null],
-      ['filehost', null],
-      ['filelocal', null],
       ['rel', 'other.md'],
       ['up', '../up.md'],
       ['web', 'https://example.com/'],
+    ]);
+  });
+});
+
+describe('buildStandaloneHtml unlinked links (Ruling 345)', () => {
+  it('unwraps a link whose href it drops, so it reads as plain text', async () => {
+    const text = 'See [**unc**](//host/share), <a href="file:///x.md" title="t">file</a> and [web](https://example.com/).\n';
+    const content = parse(await buildStandaloneHtml(doc(text), { theme: 'light' })).querySelector('.content')!;
+
+    expect([...content.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['web']);
+    expect(content.querySelector('p')!.innerHTML).toBe(
+      'See <strong>unc</strong>, file and <a href="https://example.com/">web</a>.',
+    );
+  });
+
+  it('keeps a named anchor, which a #link may jump to', async () => {
+    const text = '<a name="top" href="//host/x">Top</a> [up](#top)\n';
+    const content = parse(await buildStandaloneHtml(doc(text), { theme: 'light' })).querySelector('.content')!;
+
+    expect([...content.querySelectorAll('a')].map((a) => [a.getAttribute('name'), a.getAttribute('href')])).toEqual([
+      ['top', null],
+      [null, '#top'],
     ]);
   });
 });
@@ -453,7 +470,7 @@ describe('buildStandaloneHtml file links (Ruling 321)', () => {
       html: '<p><a href="file://host/share">f</a> <a href=" FILE:///Users/alice/x.md">g</a> <a href="other.md">h</a></p>',
     }));
     const links = [...parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' })).querySelectorAll('.content a')];
-    expect(links.map((a) => a.getAttribute('href'))).toEqual([null, null, 'other.md']);
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['other.md']);
   });
 });
 
