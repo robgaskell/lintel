@@ -744,6 +744,35 @@ describe('a quit round before exit (Ruling 237)', () => {
   });
 });
 
+describe('a doc deleted on disk (Ruling 357)', () => {
+  function deletedDoc(path: string) {
+    const doc = createDoc({ path, raw: 'only copy\n', hash: 'h', mode: 'split' });
+    doc.external = 'deleted';
+    return doc;
+  }
+
+  it('is asked about before Quit exits, and Cancel stops the quit', async () => {
+    deletedDoc('/a.md');
+    messageDialog.mockResolvedValue('Cancel');
+
+    await quitApp();
+
+    expect(messageDialog).toHaveBeenCalledOnce();
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('is asked about before an update installs, and Cancel stops the install', async () => {
+    deletedDoc('/a.md');
+    messageDialog.mockResolvedValue('Cancel');
+    const install = vi.fn(async () => {});
+
+    expect(await runQuitRounds(undefined, install, 'update')).toBe('cancelled');
+
+    expect(messageDialog).toHaveBeenCalledOnce();
+    expect(install).not.toHaveBeenCalled();
+  });
+});
+
 describe('runQuitRounds for an update (Ruling 343)', () => {
   it('runs its own step, not exit, once every window has answered yes and saved', async () => {
     vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);

@@ -458,6 +458,51 @@ describe('closeDocWithPrompt', () => {
   });
 });
 
+describe('a doc deleted on disk counts as unsaved (Ruling 357)', () => {
+  function deleted(): DocState {
+    const doc = createDoc({ path: '/notes/plan.md', raw: 'only copy\n', hash: 'h', mode: 'split' });
+    doc.external = 'deleted';
+    return doc;
+  }
+
+  it('is dirty though its text is unchanged', () => {
+    expect(isDirty(deleted())).toBe(true);
+  });
+
+  it('asks before its tab closes, and Cancel keeps it', async () => {
+    const doc = deleted();
+    messageDialog.mockResolvedValue('Cancel');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+
+    expect(messageDialog).toHaveBeenCalledOnce();
+    expect(docs.has(doc.id)).toBe(true);
+  });
+
+  it('is asked about when closing all', async () => {
+    const doc = deleted();
+    messageDialog.mockResolvedValue("Don't Save");
+
+    expect(await confirmCloseAll([doc.id])).toBe(true);
+
+    expect(messageDialog).toHaveBeenCalledWith(
+      '"plan.md" was deleted on disk. Do you want to save it?',
+      expect.objectContaining({ buttons: { yes: 'Save', no: "Don't Save", cancel: 'Cancel' } }),
+    );
+  });
+
+  it('writes the file again on Save, then closes', async () => {
+    const doc = deleted();
+    messageDialog.mockResolvedValue('Save');
+    write.mockResolvedValue('h1');
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(true);
+
+    expect(write).toHaveBeenCalledWith('/notes/plan.md', 'only copy\n', 'h');
+    expect(docs.has(doc.id)).toBe(false);
+  });
+});
+
 describe('confirmCloseAll', () => {
   it('asks once per dirty doc, in the order given, and skips clean ones', async () => {
     const a = createDoc({ path: '/a.md', raw: '', hash: '', mode: 'split' });

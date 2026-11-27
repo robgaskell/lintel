@@ -250,6 +250,18 @@ describe('handleCloseRequested', () => {
     expect(readyForOpenFilesAgain).toHaveBeenCalledTimes(2);
   });
 
+  it('asks about a doc deleted on disk before the window closes (Ruling 357)', async () => {
+    const a = createDoc({ path: '/a.md', raw: 'only copy\n', hash: 'h', mode: 'split' });
+    a.external = 'deleted';
+    const event = { preventDefault: vi.fn() };
+    messageDialog.mockResolvedValue('Cancel');
+
+    await handleCloseRequested(event, { docIdsInOrder: () => [a.id], activate: vi.fn() });
+
+    expect(messageDialog).toHaveBeenCalledOnce();
+    expect(event.preventDefault).toHaveBeenCalled();
+  });
+
   it('lets the window close once every dirty doc is answered', async () => {
     const a = dirtyDoc('/a.md');
     const b = dirtyDoc('/b.md');

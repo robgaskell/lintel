@@ -14,7 +14,7 @@ import { lockExempt } from '../editor/setup';
 import { activeDocId, viewFor } from '../editor/views';
 import { handleConfigFileEvent } from '../lint/config';
 import type { Workspace } from '../layout/workspace';
-import { docs, findByPath, isDirty, type DocState } from './store.svelte';
+import { docs, findByPath, hasUnsavedEdits, type DocState } from './store.svelte';
 import { detectLineEnding, toBuffer, type LineEnding } from './text';
 
 let showNotice: (text: string) => void = () => {};
@@ -55,7 +55,7 @@ async function reloadFromDisk(doc: DocState, path: string): Promise<'done' | 'st
   const before = {
     diskHash: doc.diskHash,
     savedText: doc.savedText,
-    dirty: isDirty(doc),
+    dirty: hasUnsavedEdits(doc),
     external: doc.external,
   };
   let read;
@@ -70,14 +70,14 @@ async function reloadFromDisk(doc: DocState, path: string): Promise<'done' | 'st
   const changed =
     doc.diskHash !== before.diskHash ||
     doc.savedText !== before.savedText ||
-    isDirty(doc) !== before.dirty ||
+    hasUnsavedEdits(doc) !== before.dirty ||
     doc.external !== before.external;
   if (changed) return 'stale';
   if (read.hash === doc.diskHash) {
     if (doc.external === 'deleted') doc.external = 'none';
     return 'done';
   }
-  if (isDirty(doc)) {
+  if (hasUnsavedEdits(doc)) {
     doc.external = 'conflict';
     doc.diskText = toBuffer(read.text);
     // Kept by keepMine, so this disk version is not reported again.

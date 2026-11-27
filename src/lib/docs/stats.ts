@@ -23,8 +23,10 @@ export function readingMinutes(words: number): number {
   return Math.max(1, Math.ceil(words / 200));
 }
 
-/** Dirty wins over untitled (Ruling 111). */
-export function saveStateOf(doc: Pick<DocState, 'path' | 'text' | 'savedText'>): 'saved' | 'unsaved' | 'untitled' {
-  if (doc.text !== doc.savedText) return 'unsaved';
+/** Dirty wins over untitled (Ruling 111); a file deleted on disk is unsaved (Ruling 357). */
+export function saveStateOf(
+  doc: Pick<DocState, 'path' | 'text' | 'savedText' | 'external'>,
+): 'saved' | 'unsaved' | 'untitled' {
+  if (doc.text !== doc.savedText || doc.external === 'deleted') return 'unsaved';
   return doc.path === null ? 'untitled' : 'saved';
 }

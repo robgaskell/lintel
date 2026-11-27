@@ -199,7 +199,12 @@ export function setTabShower(show: (id: string) => void): void {
   showTab = show;
 }
 
+/** A doc whose file was deleted is unsaved too: its tab holds the only copy (Ruling 357). */
 export function isDirty(doc: DocState): boolean {
+  return hasUnsavedEdits(doc) || doc.external === 'deleted';
+}
+
+export function hasUnsavedEdits(doc: DocState): boolean {
   return doc.text !== doc.savedText;
 }
 
@@ -284,7 +289,7 @@ async function runSave(doc: DocState): Promise<boolean> {
   // Untitled docs always ask for a path, even when empty (Ruling 14).
   if (doc.path === null) return runSaveAs(doc);
   // A clean save must not touch the file, so its bytes stay identical.
-  if (!isDirty(doc) && doc.external !== 'deleted') return true;
+  if (!isDirty(doc)) return true;
   const path = doc.path;
   if (doc.external === 'conflict') {
     if (!(await mayReplace(doc))) return false;
@@ -390,7 +395,10 @@ const CANCEL = 'Cancel';
 
 async function mayClose(doc: DocState): Promise<boolean> {
   if (!isDirty(doc)) return true;
-  const answer = await message(`Do you want to save the changes you made to "${doc.title}"?`, {
+  const question = hasUnsavedEdits(doc)
+    ? `Do you want to save the changes you made to "${doc.title}"?`
+    : `"${doc.title}" was deleted on disk. Do you want to save it?`;
+  const answer = await message(question, {
     title: 'Lintel',
     kind: 'warning',
     buttons: { yes: SAVE, no: DONT_SAVE, cancel: CANCEL },

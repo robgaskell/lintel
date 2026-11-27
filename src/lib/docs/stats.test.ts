@@ -49,12 +49,16 @@ describe('readingMinutes', () => {
 
 describe('saveStateOf (Ruling 111)', () => {
   it('is unsaved when dirty, even if untitled', () => {
-    expect(saveStateOf({ path: '/a.md', text: 'b', savedText: 'a' })).toBe('unsaved');
-    expect(saveStateOf({ path: null, text: 'b', savedText: '' })).toBe('unsaved');
+    expect(saveStateOf({ path: '/a.md', text: 'b', savedText: 'a', external: 'none' })).toBe('unsaved');
+    expect(saveStateOf({ path: null, text: 'b', savedText: '', external: 'none' })).toBe('unsaved');
   });
 
   it('is untitled when clean with no path, else saved', () => {
-    expect(saveStateOf({ path: null, text: '', savedText: '' })).toBe('untitled');
-    expect(saveStateOf({ path: '/a.md', text: 'a', savedText: 'a' })).toBe('saved');
+    expect(saveStateOf({ path: null, text: '', savedText: '', external: 'none' })).toBe('untitled');
+    expect(saveStateOf({ path: '/a.md', text: 'a', savedText: 'a', external: 'none' })).toBe('saved');
+  });
+
+  it('is unsaved when the file was deleted on disk, as closing asks about it (Ruling 357)', () => {
+    expect(saveStateOf({ path: '/a.md', text: 'a', savedText: 'a', external: 'deleted' })).toBe('unsaved');
   });
 });
