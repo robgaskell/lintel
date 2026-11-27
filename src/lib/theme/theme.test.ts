@@ -380,12 +380,16 @@ describe('applyTheme', () => {
     osDark = true;
     applyTheme(settingsWith({ theme: 'system' }));
     applyTheme(withPalette('dark', NAVY));
+    // System under a light OS is light (Ruling 214).
+    osDark = false;
+    applyTheme(settingsWith({ theme: 'system' }));
 
     expect(fake.setBackgroundColor.mock.calls).toEqual([
       [DEFAULT_PALETTES.light.background],
       [DEFAULT_PALETTES.dark.background],
       [DEFAULT_PALETTES.dark.background],
       ['#0B1B33'],
+      [DEFAULT_PALETTES.light.background],
     ]);
   });
 
@@ -437,10 +441,14 @@ describe('followTheme for the Settings window (Ruling 158)', () => {
     applyTheme(withPalette('dark', NAVY));
     root.removeAttribute('style');
 
+    fake.setBackgroundColor.mockClear();
+
     restoreTheme({ defaultPalettes: true });
 
     expect(root.dataset.theme).toBe('dark');
     expect(root.style.getPropertyValue('--bg')).toBe(DEFAULT_PALETTES.dark.background);
+    // The Settings window's title bar too, not the custom navy (Ruling 214).
+    expect(fake.setBackgroundColor.mock.calls).toEqual([[DEFAULT_PALETTES.dark.background]]);
     expect(root.style.getPropertyValue('--text')).toBe(DEFAULT_PALETTES.dark.text);
   });
 });
@@ -451,11 +459,13 @@ describe('restoreTheme (Ruling 150)', () => {
     root.removeAttribute('style');
     delete root.dataset.theme;
     fake.setTheme.mockClear();
+    // Cleared, so only restoreTheme's own call can pass (Ruling 214).
+    fake.setBackgroundColor.mockClear();
 
     restoreTheme();
 
     expect(fake.setTheme).toHaveBeenCalledWith('dark');
-    expect(fake.setBackgroundColor).toHaveBeenLastCalledWith('#0B1B33');
+    expect(fake.setBackgroundColor.mock.calls).toEqual([['#0B1B33']]);
     expect(root.dataset.theme).toBe('dark');
     expect(root.style.colorScheme).toBe('dark');
     expect(root.style.getPropertyValue('--bg')).toBe('#0B1B33');
