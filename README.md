@@ -34,9 +34,11 @@ similar) that matches your computer: `amd64` or `x86_64` for Intel and AMD, `arm
 `aarch64` for ARM. Then install it from the folder you downloaded it to:
 
 ```sh
-sudo apt install ./Lintel_*_amd64.deb
+sudo apt install ./Lintel_*_amd64.deb       # Intel or AMD
+sudo apt install ./Lintel_*_arm64.deb       # ARM
 # or
-sudo dnf install ./Lintel-*.x86_64.rpm
+sudo dnf install ./Lintel-*.x86_64.rpm      # Intel or AMD
+sudo dnf install ./Lintel-*.aarch64.rpm     # ARM
 ```
 
 The packages are built on Ubuntu 22.04.
@@ -46,10 +48,13 @@ The packages are built on Ubuntu 22.04.
 `lintel notes.md` opens `notes.md` in Lintel from a terminal. If Lintel is already
 running, the file opens in a new tab.
 
-On macOS and Windows, to add the command, open Lintel's Settings, go to **Files**, and choose **Install
-command-line tool**. If the folder it uses is not on your PATH, Lintel says so.
+To add the command on any system, open Lintel's Settings, go to **Files**, and choose
+**Install command-line tool**. If the folder it uses is not on your PATH, Lintel says so.
+The command returns to the prompt at once, and closing the terminal leaves Lintel open.
 
-On Linux the package installs the `lintel` command for you.
+On Linux the package also puts the program itself at `/usr/bin/lintel`. Running that from
+a terminal keeps Lintel attached to it: closing the terminal closes Lintel without asking
+about unsaved changes. Use the installed command instead.
 
 ## Known issues
 

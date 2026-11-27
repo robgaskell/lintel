@@ -1,16 +1,22 @@
 # Smoke test: Windows and Linux
 
-Run once on Windows and on Ubuntu 24.04 (arm64) with an installed build from the draft
-release. macOS is checked in each step as it is built. Mark each line pass or fail, and note
-what happened on a fail.
+Run once, after the v0.1.0 tag, with builds installed from its draft release, on:
+
+- Windows 10 or 11 (x64), with the `.exe`
+- Ubuntu 24.04 arm64, with the `arm64` `.deb`
+- an x64 Linux machine or VM, with the `amd64` `.deb`
+- an RPM system such as a Fedora VM, with the `.rpm` for its architecture
+
+"Linux" lines apply to every Linux system above. macOS is checked in each step as it is
+built. Mark each line pass or fail, and note what happened on a fail.
 
 ## Installing (M8.2)
 
 - [ ] Windows: run the `.exe` installer. If SmartScreen shows "Windows protected your PC", **More info > Run anyway** lets it run, as the README says. Lintel installs and opens.
 - [ ] Ubuntu 24.04 arm64: `sudo apt install ./Lintel_*_arm64.deb` installs with no missing packages, and Lintel opens from the app list.
-- [ ] Ubuntu 24.04 arm64, after installing the `.deb`: `grep MimeType /usr/share/applications/Lintel.desktop` lists `text/markdown`, and `command -v lintel` prints `/usr/bin/lintel`.
-- [ ] Linux, `.rpm`: on an RPM system (for example a Fedora VM), `sudo dnf install ./Lintel-*.rpm` installs the file for that machine (`aarch64` or `x86_64`), and Lintel opens.
-- [ ] Linux x64: on an x64 machine or VM, install the `amd64` `.deb` (or the `x86_64` `.rpm`). Lintel opens and shows a `.md` file.
+- [ ] Linux, after installing the package and before Install command-line tool: `grep MimeType /usr/share/applications/Lintel.desktop` lists `text/markdown`, and `command -v lintel` prints `/usr/bin/lintel`.
+- [ ] x64 Linux: `sudo apt install ./Lintel_*_amd64.deb` installs with no missing packages, and Lintel opens and shows a `.md` file.
+- [ ] RPM system: `uname -m` names the architecture. `sudo dnf install ./Lintel-*.aarch64.rpm` (on `aarch64`) or `sudo dnf install ./Lintel-*.x86_64.rpm` (on `x86_64`) installs, and Lintel opens.
 
 ## Opening files (M5.1)
 
@@ -24,7 +30,8 @@ what happened on a fail.
 ## Command-line tool and default app (M5.2)
 
 - [ ] Windows: Install command-line tool, then `lintel x.md` in a new terminal works. Make default opens the Default apps settings page.
-- [ ] Linux: Install command-line tool works. After Make default, `xdg-mime query default text/markdown` prints `lintel.desktop`.
+- [ ] Linux: Install command-line tool, then in a new terminal `command -v lintel` prints `~/.local/bin/lintel` (expanded), and `lintel x.md` returns to the prompt at once. Closing that terminal leaves Lintel open.
+- [ ] Linux: after Make default, `xdg-mime query default text/markdown` prints `Lintel.desktop`, `ls ~/.local/share/applications/` lists no Lintel entry, and double-clicking a .md file opens it in Lintel.
 
 ## Printing (M7.1)
 
