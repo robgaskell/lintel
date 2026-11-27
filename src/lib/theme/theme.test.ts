@@ -17,6 +17,7 @@ import { setWindowAppearance } from '../ipc';
 const fake = vi.hoisted(() => ({
   settingsChanged: null as ((s: Settings) => void) | null,
   setTheme: vi.fn(async (_theme: string | null) => {}),
+  setBackgroundColor: vi.fn(async (_colour: string) => {}),
 }));
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
@@ -26,6 +27,10 @@ vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   },
 }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: fake.setTheme }) }));
+// The webview window's setter colours the window and its webview; the title bar shows both.
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ setBackgroundColor: fake.setBackgroundColor }),
+}));
 vi.mock('../ipc', () => ({ setWindowAppearance: vi.fn(async (_theme: string | null) => {}) }));
 
 function settingsWith(patch: Partial<Settings>): Settings {
@@ -299,6 +304,7 @@ beforeEach(() => {
   osListeners.clear();
   localStorage.clear();
   fake.setTheme.mockClear();
+  fake.setBackgroundColor.mockClear();
   vi.mocked(setWindowAppearance).mockClear();
   setsWindowAppearance(true);
   vi.spyOn(window, 'matchMedia').mockImplementation(
@@ -368,6 +374,21 @@ describe('applyTheme', () => {
     }
   });
 
+  it("paints the window's own background, which the macOS title bar shows, from the resolved palette (Ruling 202)", () => {
+    applyTheme(settingsWith({ theme: 'light' }));
+    applyTheme(settingsWith({ theme: 'dark' }));
+    osDark = true;
+    applyTheme(settingsWith({ theme: 'system' }));
+    applyTheme(withPalette('dark', NAVY));
+
+    expect(fake.setBackgroundColor.mock.calls).toEqual([
+      [DEFAULT_PALETTES.light.background],
+      [DEFAULT_PALETTES.dark.background],
+      [DEFAULT_PALETTES.dark.background],
+      ['#0B1B33'],
+    ]);
+  });
+
   it('leaves window appearance to the document windows in the Settings window (Rulings 160, 195)', () => {
     setsWindowAppearance(false);
 
@@ -434,6 +455,7 @@ describe('restoreTheme (Ruling 150)', () => {
     restoreTheme();
 
     expect(fake.setTheme).toHaveBeenCalledWith('dark');
+    expect(fake.setBackgroundColor).toHaveBeenLastCalledWith('#0B1B33');
     expect(root.dataset.theme).toBe('dark');
     expect(root.style.colorScheme).toBe('dark');
     expect(root.style.getPropertyValue('--bg')).toBe('#0B1B33');
@@ -504,6 +526,7 @@ describe('followTheme in a second window (Ruling 194)', () => {
     let current = settingsWith({ theme: 'dark' });
     const stop = followTheme(() => current, { remember: false });
     fake.setTheme.mockClear();
+    fake.setBackgroundColor.mockClear();
 
     // Another window turns the theme to dark, then to light.
     fake.settingsChanged!(current);
@@ -511,6 +534,10 @@ describe('followTheme in a second window (Ruling 194)', () => {
     fake.settingsChanged!(current);
 
     expect(fake.setTheme.mock.calls).toEqual([['dark'], ['light']]);
+    expect(fake.setBackgroundColor.mock.calls).toEqual([
+      [DEFAULT_PALETTES.dark.background],
+      [DEFAULT_PALETTES.light.background],
+    ]);
     stop();
   });
 });

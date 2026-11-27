@@ -231,6 +231,21 @@ mod tests {
     }
 
     #[test]
+    fn every_window_may_set_its_own_background() {
+        for capability in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/settings.json"),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(capability).unwrap();
+            let granted = value["permissions"].as_array().unwrap();
+            assert!(granted.contains(&serde_json::json!("core:window:allow-set-background-color")));
+            assert!(granted.contains(&serde_json::json!(
+                "core:webview:allow-set-webview-background-color"
+            )));
+        }
+    }
+
+    #[test]
     fn document_windows_may_set_every_windows_appearance() {
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();

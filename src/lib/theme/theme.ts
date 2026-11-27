@@ -1,5 +1,6 @@
 import { readonly, writable } from 'svelte/store';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { setWindowAppearance } from '../ipc';
 import {
   DEFAULT_SETTINGS,
@@ -88,6 +89,7 @@ export function applyTheme(s: Settings, remember = true): void {
   const vars = cssVariables(s, resolved);
   paint(resolved, vars);
   setWindowTheme(s.theme);
+  setWindowBackground(s.palettes[resolved].background);
   if (!remember) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ theme: resolved, choice: s.theme, vars }));
@@ -113,6 +115,7 @@ export function restoreTheme({ defaultPalettes = false } = {}): void {
     : saved.vars;
   paint(saved.theme, vars);
   setWindowTheme(saved.choice);
+  setWindowBackground(vars['--bg']);
 }
 
 /**
@@ -164,6 +167,15 @@ function setWindowTheme(choice: ThemeChoice): void {
   // On macOS setTheme sets the app's appearance only, which left title bars dark (Ruling 195).
   if (!ownsAppearance) return;
   setWindowAppearance(theme).catch((err) => console.error('Could not set the window appearance:', err));
+}
+
+// The macOS title bar shows the window's and the webview's background colours, which were
+// set only when the window opened; its appearance alone left the bar in the old theme
+// (Ruling 202). The webview window's setter sets both.
+function setWindowBackground(colour: string): void {
+  getCurrentWebviewWindow()
+    .setBackgroundColor(colour)
+    .catch((err) => console.error('Could not set the window background:', err));
 }
 
 function systemQuery(): MediaQueryList {

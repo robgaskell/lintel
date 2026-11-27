@@ -1,7 +1,6 @@
-//! Themes each window's own title bar on macOS (Ruling 195). Tauri 2.12.7's `setTheme`
-//! reaches tao 0.37.3's `set_ns_theme`, which sets only `NSApplication.appearance`; under
-//! macOS Dark a Light chosen at run time left the title bars dark. `NSWindow.appearance`
-//! on each window takes precedence over the app's.
+//! Sets each window's own appearance on macOS, so its title text and buttons follow the
+//! theme (Ruling 195): Tauri 2.12.7's `setTheme` sets only the app's appearance. The bar's
+//! colour comes from the window and webview background, which theme.ts sets (Ruling 202).
 
 /// What the page asks for: a forced theme, or the system's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

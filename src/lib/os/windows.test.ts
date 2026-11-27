@@ -79,6 +79,7 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
       }, 0);
     };
   }),
+  getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
 }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => fake.win,

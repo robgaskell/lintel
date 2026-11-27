@@ -21,6 +21,9 @@ vi.mock('../ipc', () => ({
   setWindowAppearance: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: async () => {} }) }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
   save: vi.fn(),

@@ -28,6 +28,9 @@ vi.mock('../os/open', () => ({ openPaths: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn() }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTheme: async () => {} }) }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
+}));
 // Real mermaid cannot lay out under jsdom.
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
 vi.mock('mermaid', () => ({ default: mermaid }));
