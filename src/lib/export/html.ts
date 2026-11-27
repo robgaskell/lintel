@@ -1,6 +1,6 @@
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { findByPath, normalizedOrAsGiven, opening, type DocState } from '../docs/store.svelte';
-import { claimPath, releasePath, writeTextFile } from '../ipc';
+import type { DocState } from '../docs/store.svelte';
+import { writeTextFile } from '../ipc';
 import articleCss from '../render/article.css?inline';
 import { classifyHref, classifyImageSrc, headingIdFor, resolveTarget, webImageUrl } from '../render/links';
 import { renderMarkdown, type Heading } from '../render/markdown';
@@ -11,6 +11,7 @@ import { cssVariables } from '../theme/theme';
 import tokensCss from '../theme/tokens.css?inline';
 import pageCss from './html.css?inline';
 import { renderFrozen } from './print';
+import { exportName, withoutMarkdownExtension, writeUnlessOpen } from './target';
 
 // The file loads nothing from anywhere; its images are data URIs (Ruling 307).
 const CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
@@ -27,36 +28,17 @@ export async function buildStandaloneHtml(doc: ExportDoc, opts: { theme: 'light'
 /** Asks where to save, then writes the doc as HTML in the light palette. */
 export async function exportHtml(doc: DocState): Promise<void> {
   const path = await save({
-    defaultPath: `${withoutMarkdownExtension(doc.path ?? doc.title)}.html`,
+    defaultPath: exportName(doc, 'html'),
     filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
   });
   if (path === null) return;
-  const chosen = await normalizedOrAsGiven(path);
-  // A tab showing the file would never hear of the export, and its next save would undo it (Ruling 309).
-  const openHere = findByPath(chosen) !== undefined || opening.has(chosen);
-  const built = openHere
-    ? null
-    : await whileClaimed(chosen, async () => {
-        const result = await build(doc, 'light');
-        await writeTextFile(path, result.html);
-        return result;
-      });
-  if (built === null) {
-    await message('That file is open in Lintel. Choose another name.', { title: 'Lintel', kind: 'error' });
-  } else if (built.unembedded) {
+  const built = await writeUnlessOpen(path, async () => {
+    const result = await build(doc, 'light');
+    await writeTextFile(path, result.html);
+    return result;
+  });
+  if (built?.unembedded) {
     await message('Save the document first to embed its local images.', { title: 'Export as HTML', kind: 'info' });
-  }
-}
-
-/** Runs `write` while this window claims `path`, so no window opens it meanwhile. Null if another window has it. */
-async function whileClaimed<T>(path: string, write: () => Promise<T>): Promise<T | null> {
-  opening.add(path);
-  try {
-    return (await claimPath(path)) === null ? await write() : null;
-  } finally {
-    opening.delete(path);
-    // Drops only this window's claim; another window's stays.
-    if (!findByPath(path)) releasePath(path).catch((err) => console.error(`Could not release ${path}:`, err));
   }
 }
 
@@ -151,10 +133,6 @@ function stripRemote(root: ParentNode) {
 function isRelativeImage(img: HTMLImageElement): boolean {
   const src = img.getAttribute('src') ?? '';
   return classifyImageSrc(src) === 'local' && resolveTarget(null, src) === null && resolveTarget('/doc.md', src) !== null;
-}
-
-function withoutMarkdownExtension(name: string): string {
-  return name.replace(/\.(md|markdown)$/i, '');
 }
 
 function escapeHtml(text: string): string {
