@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildNotices, chooseLicence, parseSpdx } from './notices.mjs';
+import { buildNotices, chooseLicence, parseSpdx, TARGETS } from './notices.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./notices.mjs', import.meta.url));
 const REPO = fileURLToPath(new URL('..', import.meta.url));
@@ -14,7 +14,7 @@ const temps = [];
 after(() => temps.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 /** A project folder with fake packages; `modules` lists the files the "build" used. */
-function fakeTree(packages, { crates = [], inlined = null } = {}) {
+function fakeTree(packages, { crates = [], inlined = null, holders = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'notices-'));
   temps.push(root);
   const modules = [join(root, 'src', 'main.ts')];
@@ -22,22 +22,31 @@ function fakeTree(packages, { crates = [], inlined = null } = {}) {
     const dir = join(root, 'node_modules', name);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', ...pkg }));
-    for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
+    writeFiles(dir, files);
     modules.push(join(dir, 'index.js'));
   }
   const crateList = crates.map(({ files = {}, ...c }) => {
     const dir = join(root, 'crates', c.name);
     mkdirSync(dir, { recursive: true });
-    for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
-    return { version: '1.0.0', licenseFile: null, authors: [], repository: null, dir, ...c };
+    writeFiles(dir, files);
+    return { version: '1.0.0', source: REGISTRY, licenseFile: null, authors: [], repository: null, dir, ...c };
   });
   writeFileSync(join(root, 'modules.json'), JSON.stringify(modules));
   writeFileSync(join(root, 'crates.json'), JSON.stringify(crateList));
-  if (inlined) {
-    mkdirSync(join(root, 'scripts'));
-    writeFileSync(join(root, 'scripts', 'notices-inlined.json'), JSON.stringify(inlined));
-  }
+  mkdirSync(join(root, 'scripts'));
+  if (inlined) writeFileSync(join(root, 'scripts', 'notices-inlined.json'), JSON.stringify(inlined));
+  if (holders) writeFileSync(join(root, 'scripts', 'notices-holders.json'), JSON.stringify(holders));
   return root;
+}
+
+const REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index';
+
+// Keys may name files in sub-folders, such as "vendor/x/LICENSE".
+function writeFiles(dir, files) {
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), text);
+  }
 }
 
 function run(root, ...args) {
@@ -230,6 +239,123 @@ test('buildNotices puts a text with backticks inside a longer fence', () => {
   assert.match(markdown, /````text\nUse ``` with care\n````/);
 });
 
+test('licence files in sub-folders and THIRD-PARTY files are read; tests and skipped files are not', () => {
+  const root = fakeTree([
+    {
+      ...mit,
+      files: {
+        LICENSE: MIT_TEXT,
+        'THIRD-PARTY-LICENSE': 'Bundled rollup text',
+        'vendor/tiny/LICENSE': 'Vendored tiny text',
+        'tests/COPYRIGHT': 'Test image text',
+      },
+    },
+    { name: 'dompurify', license: 'Apache-2.0', files: { LICENSE: 'Apache text', 'src/license_header': '/*! banner */' } },
+  ]);
+  run(root);
+  const text = notices(root);
+  assert.match(text, /Bundled rollup text/);
+  assert.match(text, /Vendored tiny text/);
+  assert.doesNotMatch(text, /Test image text/);
+  assert.doesNotMatch(text, /banner/);
+});
+
+test('a text an entry reaches twice is linked once', () => {
+  const root = fakeTree([{ ...mit, files: { LICENSE: MIT_TEXT, 'helpers/LICENSE': MIT_TEXT } }]);
+  run(root);
+  assert.match(notices(root), /^- \*\*plain 1\.0\.0\*\*: MIT\. \[text 1\]\(#text-1\)\.$/m);
+});
+
+test('inlined code can take its text from a file in its host package', () => {
+  const item = { name: 'spin', version: '0.5', license: 'MIT', textFrom: 'src/spin/LICENSE' };
+  const root = fakeTree([], {
+    crates: [{ name: 'host', license: 'MIT', files: { LICENSE: 'Host text', 'src/spin/LICENSE': 'Spin text' } }],
+    inlined: [{ in: 'host@1.0.0', ...item }],
+  });
+  assert.equal(run(root).code, 0);
+  assert.match(notices(root), /Used by: host 1\.0\.0, spin 0\.5 \(inside host@1\.0\.0\)\./);
+
+  const moved = fakeTree([], {
+    crates: [{ name: 'host', license: 'MIT', files: { LICENSE: 'Host text' } }],
+    inlined: [{ in: 'host@1.0.0', ...item }],
+  });
+  const r = run(moved);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /spin 0\.5 \(inside host@1\.0\.0\): src\/spin\/LICENSE is not in host@1\.0\.0/);
+});
+
+test('a package with no licence file and no author fails until its own copyright line is recorded', () => {
+  const anon = { name: 'anon', license: 'MIT' };
+  const bare = fakeTree([anon]);
+  run(bare);
+  const r = run(bare, '--check');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /anon 1\.0\.0: no licence file and no copyright holder/);
+  assert.doesNotMatch(notices(bare), /the anon authors/);
+
+  const known = fakeTree([anon], { holders: { 'anon@1.0.0': { line: 'Copyright 2020 Anon Org', from: 'dist header' } } });
+  assert.equal(run(known).code, 0);
+  assert.match(notices(known), /Copyright 2020 Anon Org\n\nPermission is hereby granted/);
+
+  const none = fakeTree([anon], { holders: { 'anon@1.0.0': { none: 'read by hand' } } });
+  assert.equal(run(none).code, 0);
+  assert.match(notices(none), /No copyright holder is named in this package's files\.\n\nPermission/);
+});
+
+test('inlined code with no copyright line and no text fails', () => {
+  const root = fakeTree([mit], { inlined: [{ in: 'plain@1.0.0', name: 'bit', version: '1', license: 'MIT' }] });
+  const r = run(root);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /bit 1 \(inside plain@1\.0\.0\): no licence file and no copyright holder/);
+});
+
+test('a package with a NOTICE but no licence file fails', () => {
+  const root = fakeTree([{ name: 'noticed', license: 'Apache-2.0', author: 'Nia', files: { NOTICE: 'Notice only' } }]);
+  const r = run(root);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /noticed 1\.0\.0: has a NOTICE but no licence file/);
+});
+
+test('a path crate with no registry source fails', () => {
+  const root = fakeTree([], { crates: [{ name: 'local', license: 'MIT', source: null, files: { LICENSE: MIT_TEXT } }] });
+  const r = run(root);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /local 1\.0\.0: a path crate, not from a registry/);
+});
+
+test('crates are listed for every release platform', () => {
+  assert.deepEqual(TARGETS, [
+    'aarch64-apple-darwin',
+    'x86_64-apple-darwin',
+    'x86_64-pc-windows-msvc',
+    'x86_64-unknown-linux-gnu',
+    'aarch64-unknown-linux-gnu',
+  ]);
+});
+
+test('licence file names are matched on whole words, and .git is cut from source links', () => {
+  const root = fakeTree([], {
+    crates: [
+      {
+        name: 'permits',
+        license: 'Apache-2.0',
+        repository: 'https://github.com/example/permits.git',
+        files: { 'LICENSE-APACHE': 'Apache text', 'LICENSE-PERMITS': 'Permits text' },
+      },
+    ],
+  });
+  run(root);
+  assert.match(notices(root), /Permits text/);
+  assert.match(notices(root), /Source: <https:\/\/github\.com\/example\/permits>\./);
+});
+
+test('the notices and licence texts keep LF line endings on every checkout', () => {
+  for (const file of ['THIRD_PARTY_NOTICES.md', 'scripts/licence-texts/MIT.txt']) {
+    const r = spawnSync('git', ['check-attr', 'eol', '--', file], { cwd: REPO, encoding: 'utf8' });
+    assert.equal(r.stdout.trim(), `${file}: eol: lf`);
+  }
+});
+
 // The committed file, as --check keeps it in step with the app (spec licence lines, Rulings 24, 274).
 test('the real notices name the licences the spec and rulings require', () => {
   const text = readFileSync(join(REPO, 'THIRD_PARTY_NOTICES.md'), 'utf8');
@@ -246,4 +372,9 @@ test('the real notices name the licences the spec and rulings require', () => {
   assert.match(text, /\(inside docx@/);
   assert.match(text, /\(inside @mermaid-js\/parser@/);
   assert.match(text, /\(inside mermaid@/);
+  assert.doesNotMatch(text, /Copyright \(c\) the \S+ authors/);
+  assert.match(text, /Copyright \(c\) 2023 Boshen/);
+  assert.match(text, /Copyright 2019-2023 Tauri Programme within The Commons Conservancy\n\nPermission/);
+  assert.match(text, /JamaJS/);
+  assert.match(text, /This software incorporates material from third parties/); // WebView2 SDK NOTICE
 });

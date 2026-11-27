@@ -1,0 +1,53 @@
+{
+  "@tauri-apps/plugin-clipboard-manager@2.5.0": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "@tauri-apps/plugin-dialog@2.8.4": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "@tauri-apps/plugin-opener@2.7.3": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "@tauri-apps/plugin-process@2.4.0": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "@tauri-apps/plugin-store@2.5.1": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "@tauri-apps/plugin-window-state@2.5.0": {
+    "line": "Copyright 2019-2023 Tauri Programme within The Commons Conservancy",
+    "from": "the header of every file in dist-js"
+  },
+  "objc2-app-kit@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-core-foundation@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-core-graphics@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-core-services@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-foundation@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-quartz-core@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "objc2-web-kit@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
+  "webview2-com@0.39.1": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README, CHANGELOG or sources"
+  },
+  "webview2-com-sys@0.39.1": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README, CHANGELOG or sources"
+  }
+}

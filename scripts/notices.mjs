@@ -27,7 +27,12 @@ export const ALLOWED = [
   'Unlicense',
 ];
 /** Weak-copyleft licences allowed only for the packages named (spec; human answer 6). */
-export const NAMED_EXCEPTIONS = { 'EPL-2.0': ['elkjs'], 'MPL-2.0': ['option-ext'] };
+export const NAMED_EXCEPTIONS = {
+  'EPL-2.0': ['elkjs'],
+  'MPL-2.0': ['option-ext'],
+  // Unicode's older data licence, for the tables generated into regex-syntax.
+  'Unicode-DFS-2016': ['Unicode Character Database tables'],
+};
 const ALLOWED_WITH = ['LLVM-exception'];
 const RANK = [...ALLOWED, ...Object.keys(NAMED_EXCEPTIONS)];
 
@@ -38,7 +43,8 @@ const STATED = { 'khroma@2.1.0': 'MIT' };
 // Vite's LICENSE.md goes on to list the Node-side tools inside Vite, none of which ship.
 const CUT_AT = { vite: '\n# Licenses of bundled dependencies' };
 
-const TARGETS = [
+/** Every platform a release is built for; each one's linked crates go in the notices. */
+export const TARGETS = [
   'aarch64-apple-darwin',
   'x86_64-apple-darwin',
   'x86_64-pc-windows-msvc',
@@ -258,11 +264,13 @@ export function cargoCrates(root) {
       maxBuffer: 256 << 20,
     }),
   );
+  const own = new Set(meta.workspace_members);
   return meta.packages
-    .filter((p) => p.source !== null && linked.has(`${p.name}@${p.version}`))
+    .filter((p) => !own.has(p.id) && linked.has(`${p.name}@${p.version}`))
     .map((p) => ({
       name: p.name,
       version: p.version,
+      source: p.source,
       license: p.license ?? null,
       licenseFile: p.license_file ?? null,
       authors: p.authors ?? [],
@@ -277,16 +285,17 @@ function crateEntry(c) {
     name: c.name,
     version: c.version,
     expression: STATED[`${c.name}@${c.version}`] ?? c.license,
-    source: c.repository ?? `https://crates.io/crates/${c.name}`,
+    source: repoUrl(c.repository) ?? `https://crates.io/crates/${c.name}`,
     holders: c.authors.map(stripContact).filter(Boolean),
     dir: c.dir,
+    pathOnly: c.source === null,
   };
 }
 
 // ---------- code inlined in other packages ----------
 
-function inlinedEntry(item, hosts, problems) {
-  if (!hosts.has(item.in)) {
+function inlinedEntry(item, hostDirs, problems) {
+  if (!hostDirs.has(item.in)) {
     problems.push(`notices-inlined.json lists code inside ${item.in}, which is no longer in the app -- check the new version's files and update the list`);
   }
   return {
@@ -297,46 +306,80 @@ function inlinedEntry(item, hosts, problems) {
     expression: item.license,
     source: item.source ?? null,
     holders: [],
-    copyright: item.copyright,
-    textFile: item.text ?? null,
+    copyright: item.copyright ?? null,
+    textFiles: [item.text ?? []].flat(),
+    hostFile: item.textFrom ? { dir: hostDirs.get(item.in), file: item.textFrom } : null,
     note: item.note ?? null,
   };
 }
 
 // ---------- licence texts ----------
 
-const NOT_TEXT = /\.(c|m)?[jt]sx?$|\.json$|\.spdx$|\.map$/i;
+const LICENCE_NAME = /^(licen[cs]e|copying|copyright)/i;
+const NOTICE_NAME = /^notice/i;
+const THIRD_PARTY_NAME = /^third[-_ ]?party/i;
+const NOT_TEXT =
+  /\.((c|m)?[jt]sx?|json|spdx|map|rs|[ch]|cc|cpp|py|sh|toml|ya?ml|html?|css|svg|png|gif|jpe?g)$/i;
+// Folders that never ship. Anything else below a package may hold code it carries.
+const SKIP_DIRS = new Set(['node_modules', '.git', 'test', 'tests', 'examples', 'benches', 'fuzz']);
+// Licence-like files read by hand and left out, by package name, with the reason.
+const SKIP_FILES = {
+  dompurify: ['src/license_header'], // the banner template its build stamps on dist files
+  petgraph: ['assets'], // images for its docs
+  'libdbus-sys': ['vendor'], // dbus sources, built only with the "vendored" feature Lintel leaves off
+  'security-framework': ['THIRD_PARTY'], // Apple's licence for adapted doc comments, which are not compiled
+};
+
+// Whole words in a file name after "LICENSE", such as LICENSE-MIT or LICENSE.apache.
 const HINTS = [
-  [/apache/i, 'Apache-2.0'],
-  [/mit/i, 'MIT'],
-  [/bsd/i, 'BSD'],
-  [/zlib/i, 'Zlib'],
-  [/boost|bsl/i, 'BSL-1.0'],
-  [/unicode/i, 'Unicode-3.0'],
-  [/isc/i, 'ISC'],
-  [/cc0/i, 'CC0-1.0'],
-  [/mpl/i, 'MPL-2.0'],
-  [/epl/i, 'EPL-2.0'],
+  [['apache'], 'Apache-2.0'],
+  [['mit'], 'MIT'],
+  [['bsd'], 'BSD'],
+  [['zlib'], 'Zlib'],
+  [['boost', 'bsl'], 'BSL-1.0'],
+  [['unicode'], 'Unicode-3.0'],
+  [['isc'], 'ISC'],
+  [['cc0'], 'CC0-1.0'],
+  [['mpl'], 'MPL-2.0'],
+  [['epl'], 'EPL-2.0'],
 ];
 
-function licenceFiles(dir) {
-  return readdirSync(dir)
-    .filter((f) => /^licen[cs]e/i.test(f) && !NOT_TEXT.test(f) && statSync(join(dir, f)).isFile())
-    .sort();
-}
-
-function noticeFiles(dir) {
-  return readdirSync(dir)
-    .filter((f) => /^notice/i.test(f) && !NOT_TEXT.test(f) && statSync(join(dir, f)).isFile())
-    .sort();
+/**
+ * A package's text files: `licences` and `notices` at its top level, and `nested`, the
+ * licence files of code it carries (in sub-folders, or in THIRD-PARTY files).
+ */
+export function textFiles(dir, name) {
+  const skip = SKIP_FILES[name] ?? [];
+  const licences = [];
+  const notices = [];
+  const nested = [];
+  const walk = (rel) => {
+    for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const path = rel ? `${rel}/${e.name}` : e.name;
+      if (skip.includes(path)) continue;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(path);
+        continue;
+      }
+      if (!e.isFile() || NOT_TEXT.test(e.name)) continue;
+      const top = rel === '';
+      if (top && LICENCE_NAME.test(e.name)) licences.push(path);
+      else if (top && NOTICE_NAME.test(e.name)) notices.push(path);
+      else if (THIRD_PARTY_NAME.test(e.name) || (!top && (LICENCE_NAME.test(e.name) || NOTICE_NAME.test(e.name)))) {
+        nested.push(path);
+      }
+    }
+  };
+  walk('');
+  return { licences: licences.sort(), notices: notices.sort(), nested: nested.sort() };
 }
 
 // For a dual-licensed package, keep the file for the licence chosen; files named for no licence stay.
 function filesForChoice(files, chosen) {
   const bases = chosen.map(baseId);
   return files.filter((f) => {
-    const rest = f.replace(/^licen[cs]e/i, '');
-    const hint = HINTS.find(([re]) => re.test(rest));
+    const words = f.replace(LICENCE_NAME, '').toLowerCase().split(/[^a-z0-9]+/);
+    const hint = HINTS.find(([names]) => names.some((n) => words.includes(n)));
     if (!hint) return true;
     return bases.some((id) => id === hint[1] || (hint[1] === 'BSD' && id.startsWith('BSD-')));
   });
@@ -344,7 +387,7 @@ function filesForChoice(files, chosen) {
 
 export function normalise(text) {
   return text
-    .replace(/^﻿/, '')
+    .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map((l) => l.replace(/[ \t]+$/, ''))
@@ -358,37 +401,63 @@ function template(id) {
   return readFileSync(file, 'utf8');
 }
 
-function copyrightLine(entry) {
+/**
+ * The copyright line printed above a standard text: the package's own authors, else a line
+ * read by hand from its files (notices-holders.json). Null when neither exists.
+ */
+function copyrightLine(entry, holders) {
   if (entry.copyright) return entry.copyright;
-  const who = entry.holders.length > 0 ? entry.holders.join(', ') : `the ${entry.name} authors`;
-  return `Copyright (c) ${who}`;
+  if (entry.holders.length > 0) return `Copyright (c) ${entry.holders.join(', ')}`;
+  const known = holders[`${entry.name}@${entry.version}`];
+  if (known?.line) return known.line;
+  if (known?.none) return "No copyright holder is named in this package's files.";
+  return null;
 }
 
-/** The texts that apply to one entry, or a problem when none can be found. */
-function textsFor(entry, problems) {
+const read = (dir, file) => normalise(readFileSync(join(dir, file), 'utf8'));
+
+/** The texts that apply to one entry. Missing texts and attributions become problems. */
+function textsFor(entry, holders, problems) {
   const label = entryLabel(entry);
-  if (entry.textFile) {
-    return [normalise(readFileSync(join(TEXTS_DIR, entry.textFile), 'utf8'))];
+  if (entry.textFiles?.length > 0) return entry.textFiles.map((f) => read(TEXTS_DIR, f));
+  if (entry.hostFile) {
+    const { dir, file } = entry.hostFile;
+    if (!dir) return [];
+    if (!existsSync(join(dir, file))) {
+      problems.push(`${label}: ${file} is not in ${entry.host} -- check its files and update notices-inlined.json`);
+      return [];
+    }
+    return [read(dir, file)];
   }
   const texts = [];
   if (entry.dir) {
-    const files = filesForChoice(licenceFiles(entry.dir), entry.chosen);
-    for (const f of files) {
+    const { licences, notices, nested } = textFiles(entry.dir, entry.name);
+    for (const f of filesForChoice(licences, entry.chosen)) {
       let text = readFileSync(join(entry.dir, f), 'utf8');
       if (entry.cut && text.includes(entry.cut)) text = text.slice(0, text.indexOf(entry.cut));
       texts.push(normalise(text));
     }
-    for (const f of noticeFiles(entry.dir)) texts.push(normalise(readFileSync(join(entry.dir, f), 'utf8')));
+    if (licences.length === 0 && notices.length > 0) {
+      problems.push(`${label}: has a NOTICE but no licence file -- read its files and say which text applies`);
+    }
+    for (const f of [...notices, ...nested]) texts.push(read(entry.dir, f));
+    if (licences.length > 0 || notices.length > 0) return texts;
   }
-  if (texts.length > 0) return texts;
-  // No licence file: the standard text with a copyright line from the package's own metadata.
+  // No licence file: the standard text under a copyright line taken from the package itself.
+  const line = copyrightLine(entry, holders);
+  if (!line) {
+    problems.push(
+      `${label}: no licence file and no copyright holder -- copy the line from the package's own files into scripts/notices-holders.json`,
+    );
+    return texts;
+  }
   for (const id of entry.chosen) {
     const body = template(id);
     if (!body) {
       problems.push(`${label}: no licence file and no standard text for ${id} in scripts/licence-texts`);
       continue;
     }
-    texts.push(normalise(`${copyrightLine(entry)}\n\n${body}`));
+    texts.unshift(normalise(`${line}\n\n${body}`));
   }
   return texts;
 }
@@ -407,20 +476,23 @@ const byName = (a, b) =>
   a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : a.version > b.version ? 1 : 0;
 
 /** Builds the notices text and lists every problem found. Pure apart from reading licence files. */
-export function buildNotices({ npm, crates, inlined }) {
+export function buildNotices({ npm, crates, inlined, holders = {} }) {
   const problems = [];
   const entries = [
     ...npm.map(npmEntry).sort(byName),
     ...crates.map(crateEntry).sort(byName),
   ];
-  const hosts = new Set(entries.map((e) => `${e.name}@${e.version}`));
+  const hostDirs = new Map(entries.map((e) => [`${e.name}@${e.version}`, e.dir]));
   const inner = inlined
-    .map((item) => inlinedEntry(item, hosts, problems))
+    .map((item) => inlinedEntry(item, hostDirs, problems))
     .sort((a, b) => (a.host < b.host ? -1 : a.host > b.host ? 1 : byName(a, b)));
   const all = [...entries, ...inner];
 
   const texts = new Map(); // text -> { n, users }
   for (const e of all) {
+    if (e.pathOnly) {
+      problems.push(`${entryLabel(e)}: a path crate, not from a registry -- its licence and source cannot be checked`);
+    }
     if (!e.expression) {
       problems.push(`${entryLabel(e)}: no licence stated -- read its files and add it to STATED in scripts/notices.mjs`);
       continue;
@@ -442,7 +514,7 @@ export function buildNotices({ npm, crates, inlined }) {
       for (const n of e.textIds) [...texts.values()].find((t) => t.n === n).users.push(entryLabel(e));
       continue;
     }
-    e.textIds = textsFor(e, problems).map((text) => {
+    e.textIds = [...new Set(textsFor(e, holders, problems))].map((text) => {
       if (!texts.has(text)) texts.set(text, { n: texts.size + 1, users: [] });
       const t = texts.get(text);
       t.users.push(entryLabel(e));
@@ -510,10 +582,11 @@ export async function main(args, log = console) {
   const npm = packagesFromModules(root, ids, problems);
   const cratesFile = option(args, '--crates');
   const crates = cratesFile ? readJson(cratesFile) : cargoCrates(root);
-  const inlinedFile = join(root, 'scripts', 'notices-inlined.json');
-  const inlined = existsSync(inlinedFile) ? readJson(inlinedFile) : [];
+  const optional = (file) => (existsSync(join(root, 'scripts', file)) ? readJson(join(root, 'scripts', file)) : null);
+  const inlined = optional('notices-inlined.json') ?? [];
+  const holders = optional('notices-holders.json') ?? {};
 
-  const result = buildNotices({ npm, crates, inlined });
+  const result = buildNotices({ npm, crates, inlined, holders });
   problems.push(...result.problems);
   const target = join(root, NOTICES_FILE);
   const { npm: n, crates: c, inlined: i, texts: t } = result.counts;
