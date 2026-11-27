@@ -306,7 +306,6 @@ pub fn make_default_handler() -> Result<(), String> {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn make_default_handler() -> Result<(), String> {
-    write_desktop_entry_if_missing(&home()?)?;
     let (program, args) = xdg_mime_default();
     let status = std::process::Command::new(program)
         .args(args)
@@ -362,31 +361,10 @@ mod launch_services {
     }
 }
 
+// Ruling 342: the entry the package installs, so no second launcher is written.
 #[cfg(any(test, not(any(target_os = "macos", windows))))]
 fn xdg_mime_default() -> (&'static str, [&'static str; 3]) {
-    ("xdg-mime", ["default", "lintel.desktop", "text/markdown"])
-}
-
-#[cfg(any(test, not(any(target_os = "macos", windows))))]
-fn desktop_entry() -> String {
-    format!(
-        "[Desktop Entry]\n{MARKER}\nType=Application\nName=Lintel\nComment=A markdown reader and editor\nExec={LINUX_PROGRAM} %F\nIcon=lintel\nTerminal=false\nCategories=Office;TextEditor;\nMimeType=text/markdown;text/x-markdown;\n"
-    )
-}
-
-#[cfg(any(test, not(any(target_os = "macos", windows))))]
-fn write_desktop_entry_if_missing(home: &Path) -> Result<(), String> {
-    let path = home.join(".local/share/applications/lintel.desktop");
-    let failed = |e: io::Error| format!("Could not write {}: {e}", path.display());
-    match fs::symlink_metadata(&path) {
-        Ok(_) => return Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(failed(e)),
-    }
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(failed)?;
-    }
-    write_atomic(&path, desktop_entry().as_bytes(), None).map_err(failed)
+    ("xdg-mime", ["default", "Lintel.desktop", "text/markdown"])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1093,40 +1071,15 @@ mod tests {
         assert_eq!(login_shell_path(shell.as_os_str(), PROBE_TIMEOUT), None);
     }
 
+    // The .deb and .rpm install the entry as <productName>.desktop; xdg-mime matches case.
     #[test]
-    fn linux_make_default_runs_xdg_mime_for_markdown() {
+    fn linux_make_default_points_markdown_at_the_packaged_desktop_entry() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let packaged = format!("{}.desktop", conf["productName"].as_str().unwrap());
         assert_eq!(
             xdg_mime_default(),
-            ("xdg-mime", ["default", "lintel.desktop", "text/markdown"])
-        );
-    }
-
-    #[test]
-    fn linux_desktop_entry_launches_lintel_with_its_files() {
-        let entry = desktop_entry();
-        assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
-        for line in [
-            "Type=Application",
-            "Name=Lintel",
-            "Exec=/usr/bin/lintel %F",
-            "MimeType=text/markdown;text/x-markdown;",
-        ] {
-            assert!(entry.lines().any(|l| l == line), "{line} in {entry}");
-        }
-    }
-
-    #[test]
-    fn linux_writes_a_desktop_entry_only_when_missing() {
-        let home = temp_dir();
-        write_desktop_entry_if_missing(&home).unwrap();
-        let path = home.join(".local/share/applications/lintel.desktop");
-        assert_eq!(fs::read_to_string(&path).unwrap(), desktop_entry());
-
-        fs::write(&path, "[Desktop Entry]\nExec=mine\n").unwrap();
-        write_desktop_entry_if_missing(&home).unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "[Desktop Entry]\nExec=mine\n"
+            ("xdg-mime", ["default", packaged.as_str(), "text/markdown"])
         );
     }
 
