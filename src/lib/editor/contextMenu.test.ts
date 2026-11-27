@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EditorState } from '@codemirror/state';
+import { history } from '@codemirror/commands';
+import { EditorState, StateEffect, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { Menu } from '@tauri-apps/api/menu';
+import { lockExtension } from './setup';
 
 // Models Tauri: one app-wide id -> handler map; a later item with the same id replaces
 // the handler, and closing a menu removes its ids whoever owns them now.
@@ -31,6 +33,16 @@ const views: EditorView[] = [];
 function editor(text: string): EditorView {
   const view = new EditorView({ parent: document.body, state: EditorState.create({ doc: text }) });
   view.dispatch({ selection: { anchor: 0, head: text.length } });
+  views.push(view);
+  return view;
+}
+
+/** An editor with history whose last edit added "!" to "alpha". */
+function edited(extensions: Extension[] = []): EditorView {
+  const state = EditorState.create({ doc: 'alpha', extensions: [history()] });
+  const view = new EditorView({ parent: document.body, state });
+  view.dispatch({ changes: { from: 5, insert: '!' } });
+  view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
   views.push(view);
   return view;
 }
@@ -88,6 +100,38 @@ describe('editor context menu', () => {
     click('italic');
 
     expect(b.state.doc.toString()).toBe('*beta*');
+  });
+
+  // Spec end state 6: undo and redo work from the context menu too.
+  it('undoes and redoes the last edit in the right-clicked editor', async () => {
+    const view = edited();
+    attachEditorContextMenu(view);
+
+    await rightClick(view);
+    click('undo');
+    expect(view.state.doc.toString()).toBe('alpha');
+    click('redo');
+    expect(view.state.doc.toString()).toBe('alpha!');
+  });
+
+  it('lists Undo and Redo first, then the clipboard items', async () => {
+    attachEditorContextMenu(editor('alpha'));
+
+    await rightClick(views[0]);
+
+    const items = vi.mocked(Menu.new).mock.calls[0][0]!.items as { text?: string; item?: string }[];
+    const names = items.map((i) => i.text ?? i.item);
+    expect(names.slice(0, 4)).toEqual(['Undo', 'Redo', 'Separator', 'Cut']);
+  });
+
+  it('undoes nothing while the editor is locked for an update', async () => {
+    const view = edited([lockExtension(true)]);
+    attachEditorContextMenu(view);
+
+    await rightClick(view);
+    click('undo');
+
+    expect(view.state.doc.toString()).toBe('alpha!');
   });
 
   it('builds one native menu and replaces the webview menu', async () => {

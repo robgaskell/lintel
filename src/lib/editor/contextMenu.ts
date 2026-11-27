@@ -1,4 +1,5 @@
 import { Menu } from '@tauri-apps/api/menu';
+import { redo, undo } from '@codemirror/commands';
 import type { EditorView } from '@codemirror/view';
 import { insertLink, toggleBold, toggleItalic } from './commands';
 
@@ -28,6 +29,10 @@ export function attachEditorContextMenu(view: EditorView): () => void {
 function sharedMenu(): Promise<Menu> {
   menu ??= Menu.new({
     items: [
+      // CodeMirror's own history: a native Undo item would not reach it on every OS.
+      { id: 'undo', text: 'Undo', action: () => onTarget(undo) },
+      { id: 'redo', text: 'Redo', action: () => onTarget(redo) },
+      { item: 'Separator' },
       { item: 'Cut' },
       { item: 'Copy' },
       { item: 'Paste' },
