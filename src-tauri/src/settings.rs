@@ -56,6 +56,24 @@ pub async fn update_settings<R: Runtime>(
     })
 }
 
+/// Settings > Updates' "Check automatically", on unless switched off.
+pub fn auto_check<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let updates = StoreBuilder::new(app, FILE)
+        .disable_auto_save()
+        .build()
+        .ok()
+        .and_then(|store| store.get("updates"));
+    auto_check_in(updates.as_ref())
+}
+
+// As the windows read it: anything but a stored boolean means the default.
+fn auto_check_in(updates: Option<&Value>) -> bool {
+    updates
+        .and_then(|updates| updates.get("autoCheck"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 fn parse_repairs(replace: Map<String, Value>) -> Result<Vec<(String, Repair)>, String> {
     replace
         .into_iter()
@@ -228,6 +246,15 @@ mod tests {
             |changed| app.emit(CHANGED, changed).map_err(|err| err.to_string()),
         )
         .map(|written| written.entries)
+    }
+
+    #[test]
+    fn updates_are_checked_unless_auto_check_is_stored_off() {
+        assert!(auto_check_in(None));
+        assert!(auto_check_in(Some(&json!({ "autoCheck": true }))));
+        assert!(!auto_check_in(Some(&json!({ "autoCheck": false }))));
+        assert!(auto_check_in(Some(&json!({ "autoCheck": "no" }))));
+        assert!(auto_check_in(Some(&json!(false))));
     }
 
     // The JS fake runs the same cases, so the two cannot drift apart (Ruling 280).

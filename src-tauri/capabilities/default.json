@@ -34,6 +34,8 @@
     "allow-find-lint-config",
     "allow-copy-notices",
     "allow-update-settings",
+    "allow-update-state",
+    "allow-install-update",
     "clipboard-manager:allow-write-text",
     "dialog:default",
     "opener:default",

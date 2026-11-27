@@ -36,6 +36,7 @@
     restoreWindow,
     scheduleWindowSave,
   } from './lib/os/session';
+  import { followUpdates, restartToUpdate, type UpdateState } from './lib/os/updater';
   import { handleCloseRequested } from './lib/os/window';
   import { listenForAdoption, listenForReveal } from './lib/os/windows';
   import { renderDelayMs } from './lib/render/scrollSync';
@@ -118,6 +119,14 @@
     window.addEventListener('pointerdown', clear, true);
   }
 
+  // Shown in the status bar, or in the notice bar when no doc is open (Ruling 343).
+  let update = $state<UpdateState | null>(null);
+  const updateReady = $derived(update?.status === 'ready');
+  let workspaceForUpdate: Workspace | undefined;
+  function restartForUpdate() {
+    void restartToUpdate(workspaceForUpdate);
+  }
+
   // Open Recent's first entries for the empty window; the stored list first, then the checked one.
   let recent = $state<string[]>([]);
   let recentRequest = 0;
@@ -169,6 +178,8 @@
       scheduleWindowSave(label);
     });
     const stopQuit = listenForQuitRequests();
+    const stopUpdateState = followUpdates((state) => (update = state));
+    workspaceForUpdate = workspace;
     const stopForgets = listenForForgets(label);
     const stopRecent = onRecentChanged(() => {
       if (docs.size === 0) loadRecent();
@@ -254,6 +265,7 @@
       fileEvents.stop();
       stopLayout();
       stopQuit();
+      stopUpdateState();
       stopForgets();
       stopRecent();
       stopReveal();
@@ -293,12 +305,18 @@
       {lintConfigStatus}
       {notice}
       {noticeDetails}
-      update="none"
+      update={updateReady ? 'ready' : 'none'}
+      onUpdate={restartForUpdate}
       reading={active.mode === 'read'}
     />
-  {:else if notice}
+  {:else if notice || updateReady}
     <!-- With nothing restored there is no status bar, but the notice still shows (Ruling 235). -->
-    <footer class="notice-bar"><span role="status" title={noticeDetails}>{notice}</span></footer>
+    <footer class="notice-bar">
+      {#if notice}<span role="status" title={noticeDetails}>{notice}</span>{/if}
+      {#if updateReady}
+        <button type="button" class="update" onclick={restartForUpdate}>Update ready: restart</button>
+      {/if}
+    </footer>
   {/if}
 </div>
 
@@ -330,6 +348,24 @@
     border-top: 1px solid var(--border);
     color: var(--muted-strong);
     font-size: 12px;
+    gap: 12px;
+  }
+
+  /* As in the status bar. */
+  .update {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .update:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   /* Dockview's theme classes force a color-scheme; take the resolved theme instead. */

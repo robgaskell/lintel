@@ -58,6 +58,7 @@
   },
   "plugins": {
     "updater": {
+      "endpoints": ["https://github.com/robgaskell/lintel/releases/latest/download/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEMDAzMzMyRDI5NEI5NzEKUldSeHVaVFNNak1BZlpWdXR3OXZqUlQyNE1wVElnVUYxY1V3eWhzUFFhaFBRZ3RodFJES1lmRU4K"
     }
   }

@@ -8,6 +8,7 @@ mod remote;
 mod session;
 mod settings;
 mod startup;
+mod updater;
 mod watch;
 mod windows;
 
@@ -72,7 +73,9 @@ pub fn run() {
             watch::unwatch_path,
             lint_config::find_lint_config,
             notices::copy_notices,
-            settings::update_settings
+            settings::update_settings,
+            updater::update_state,
+            updater::install_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lintel")
@@ -97,6 +100,7 @@ fn app_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
         ),
         Box::new(tauri_plugin_process::init()),
         Box::new(tauri_plugin_store::Builder::default().build()),
+        Box::new(tauri_plugin_updater::Builder::new().build()),
     ];
     for plugin in session::geometry_plugins() {
         plugins.push(Box::new(plugin));
@@ -117,6 +121,7 @@ fn setup_app<R: Runtime>(
         startup::prepare_main_window(&window);
     }
     os_integration::listen_for_os_actions(app.handle());
+    updater::start(app.handle());
     let cwd = cwd.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
     open_queue::open_from_outside(app.handle(), open_queue::paths_from_args(args, &cwd));
 }
@@ -270,6 +275,7 @@ mod tests {
         // The prune edits window-state's file before window-state reads it, and the size
         // keeper's exit hook runs after window-state's save.
         assert!(at("store") < at("prune-geometry"));
+        assert!(at("updater") < at("prune-geometry"));
         assert_eq!(
             names[at("prune-geometry")..],
             ["prune-geometry", "window-state", "keep-window-sizes"]
@@ -463,6 +469,43 @@ mod tests {
             let granted = value["permissions"].as_array().unwrap();
             assert!(granted.contains(&serde_json::json!("allow-update-settings")));
         }
+    }
+
+    // Ruling 343: the updater runs in Rust; windows only ask for its state and the install.
+    #[test]
+    fn no_window_may_call_the_updater_and_only_document_windows_may_install() {
+        let main = include_str!("../capabilities/default.json");
+        let settings = include_str!("../capabilities/settings.json");
+        for capability in [main, settings] {
+            assert!(!capability.contains("\"updater:"), "{capability}");
+        }
+        let build = include_str!("../build.rs");
+        for permission in ["allow-update-state", "allow-install-update"] {
+            assert!(main.contains(&format!("\"{permission}\"")));
+            assert!(!settings.contains(permission));
+        }
+        assert!(build.contains("\"update_state\"") && build.contains("\"install_update\""));
+    }
+
+    #[test]
+    fn updates_come_from_the_latest_github_release_at_a_fixed_url() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["plugins"]["updater"]["endpoints"],
+            serde_json::json!([
+                "https://github.com/robgaskell/lintel/releases/latest/download/latest.json"
+            ])
+        );
+    }
+
+    // Checked as written: the hook runs only inside the Windows installer path.
+    #[test]
+    fn the_updater_starts_with_the_app_and_saves_geometry_before_the_windows_installer() {
+        let lib = include_str!("lib.rs");
+        assert_eq!(lib.matches(concat!("updater::", "start(app.handle());")).count(), 1);
+        let hook = concat!(".on_before_exit(move || crate::session::", "save_geometry_now(&hook))");
+        assert_eq!(include_str!("updater.rs").matches(hook).count(), 1);
     }
 
     #[test]

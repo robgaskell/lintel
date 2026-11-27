@@ -4,13 +4,15 @@
   import EditorSection from './EditorSection.svelte';
   import FilesSection from './FilesSection.svelte';
   import LintSection from './LintSection.svelte';
+  import UpdatesSection from './UpdatesSection.svelte';
 
-  /** The sidebar, in order. A later step adds Updates. */
+  /** The sidebar, in order. */
   export const sections: { id: string; label: string; component: Component }[] = [
     { id: 'appearance', label: 'Appearance', component: AppearanceSection },
     { id: 'editor', label: 'Editor', component: EditorSection },
     { id: 'files', label: 'Files', component: FilesSection },
     { id: 'lint', label: 'Lint', component: LintSection },
+    { id: 'updates', label: 'Updates', component: UpdatesSection },
   ];
 </script>
 

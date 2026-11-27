@@ -38,6 +38,9 @@
   "objc2-foundation@0.3.2": {
     "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
   },
+  "objc2-osa-kit@0.3.2": {
+    "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
+  },
   "objc2-quartz-core@0.3.2": {
     "none": "no licence file, no authors in Cargo.toml, and no copyright line in its README or sources"
   },

@@ -16,6 +16,7 @@ import { listenForDrops, listenForOpenFiles, openPaths, setOpenNoticeShower } fr
 import { listenForQuitRequests } from './lib/os/quit';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
+import { restartToUpdate, type UpdateState } from './lib/os/updater';
 import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
 import App from './App.svelte';
 
@@ -94,6 +95,15 @@ vi.mock('./lib/docs/reload', async (importOriginal) => ({
   setReloadNoticeShower: vi.fn(),
 }));
 vi.mock('./lib/os/quit', () => ({ listenForQuitRequests: vi.fn(() => () => {}), quitApp: vi.fn() }));
+// Rust's update service, as the window hears it.
+const updates = vi.hoisted(() => ({ send: (_state: UpdateState) => {} }));
+vi.mock('./lib/os/updater', () => ({
+  followUpdates: vi.fn((onState: (state: UpdateState) => void) => {
+    updates.send = onState;
+    return () => {};
+  }),
+  restartToUpdate: vi.fn(async () => {}),
+}));
 vi.mock('./lib/os/session', async (importOriginal) => ({
   missingNotice: (await importOriginal<typeof import('./lib/os/session')>()).missingNotice,
   restoreWindow: vi.fn(async () => ({ restored: 0, missing: [] })),
@@ -326,6 +336,46 @@ describe('App empty state (Ruling 120)', () => {
     createDoc({ path: '/c.md', raw: '', hash: 'h', mode: 'edit' });
     flushSync();
     expect(queryByText('Recent')).toBeNull();
+  });
+});
+
+describe('App update ready (Ruling 343)', () => {
+  const ready: UpdateState = {
+    status: 'ready',
+    version: '0.1.1',
+    error: null,
+    appVersion: '0.1.0',
+    lastChecked: 1,
+    revision: 3,
+  };
+
+  it('shows "Update ready: restart" in the status bar, which restarts through the quit prompts', async () => {
+    const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { getByRole, queryByRole } = render(App);
+    expect(queryByRole('button', { name: 'Update ready: restart' })).toBeNull();
+
+    updates.send({ ...ready, status: 'downloading' });
+    flushSync();
+    expect(queryByRole('button', { name: 'Update ready: restart' })).toBeNull();
+    updates.send(ready);
+    flushSync();
+    await fireEvent.click(getByRole('button', { name: 'Update ready: restart' }));
+
+    expect(restartToUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('shows it in the empty window too, which has no status bar', async () => {
+    const { container, getByRole } = render(App);
+    expect(container.querySelector('footer')).toBeNull();
+
+    updates.send(ready);
+    flushSync();
+    const button = getByRole('button', { name: 'Update ready: restart' });
+    expect(button.closest('footer')?.classList.contains('notice-bar')).toBe(true);
+    await fireEvent.click(button);
+
+    expect(restartToUpdate).toHaveBeenCalledOnce();
   });
 });
 

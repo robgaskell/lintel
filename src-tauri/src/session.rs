@@ -3,12 +3,12 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, MutexGuard};
 
 use serde_json::Value;
 use tauri::plugin::TauriPlugin;
-use tauri::{Manager, RunEvent, Runtime, WindowEvent};
-use tauri_plugin_window_state::StateFlags;
+use tauri::{AppHandle, Manager, RunEvent, Runtime, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 /// Geometry only. VISIBLE would show and focus each hidden-start window as it is created,
 /// before its theme and docs are in (Rulings 154, 184).
@@ -79,38 +79,68 @@ fn prune_geometry<R: Runtime>() -> TauriPlugin<R> {
 /// Inspector shrinks (Ruling 222). This keeps each window's own content size, from its
 /// outer frame, whenever it can be read, and writes the last good one at exit (Ruling 235).
 fn keep_window_sizes<R: Runtime>() -> TauriPlugin<R> {
-    let kept = Arc::new(Mutex::new(LastGoodSizes::default()));
     tauri::plugin::Builder::new("keep-window-sizes")
-        .on_event(move |app, event| {
-            let mut kept = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            match event {
-                RunEvent::WindowEvent {
-                    label,
-                    event:
-                        WindowEvent::Resized(_)
-                        | WindowEvent::Moved(_)
-                        | WindowEvent::Focused(_)
-                        | WindowEvent::CloseRequested { .. },
-                    ..
-                } => {
-                    let window = app.get_webview_window(label);
-                    kept.note(label, window.and_then(|w| window_size(&w)));
-                }
-                RunEvent::Exit => {
-                    for (label, window) in app.webview_windows() {
-                        kept.note(&label, window_size(&window));
-                    }
-                    if let Ok(config) = app.path().app_config_dir() {
-                        let state = config.join(tauri_plugin_window_state::DEFAULT_FILENAME);
-                        if let Err(err) = kept.write(&state) {
-                            eprintln!("Could not save the window sizes: {err}");
-                        }
-                    }
-                }
-                _ => {}
+        .setup(|app, _| {
+            app.manage(KeptSizes::default());
+            Ok(())
+        })
+        .on_event(|app, event| match event {
+            RunEvent::WindowEvent {
+                label,
+                event:
+                    WindowEvent::Resized(_)
+                    | WindowEvent::Moved(_)
+                    | WindowEvent::Focused(_)
+                    | WindowEvent::CloseRequested { .. },
+                ..
+            } => {
+                let window = app.get_webview_window(label);
+                kept_sizes(app).note(label, window.and_then(|w| window_size(&w)));
             }
+            RunEvent::Exit => write_kept_sizes(app),
+            _ => {}
         })
         .build()
+}
+
+/// What exit saves, for an exit that skips RunEvent::Exit: the Windows updater's, which
+/// runs its installer and ends the process (Ruling 343).
+pub fn save_geometry_now<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(err) = app.save_window_state(GEOMETRY) {
+        eprintln!("Could not save the window positions: {err}");
+    }
+    // After window-state's save, as at exit.
+    write_kept_sizes(app);
+}
+
+#[derive(Default)]
+struct KeptSizes(Mutex<LastGoodSizes>);
+
+fn kept_sizes<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, LastGoodSizes> {
+    let kept = app.state::<KeptSizes>().inner();
+    kept.0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// Sizes are read before the lock: off the main thread a read waits for the main thread,
+// which may itself be waiting for the lock.
+fn write_kept_sizes<R: Runtime>(app: &AppHandle<R>) {
+    let sizes: Vec<_> = app
+        .webview_windows()
+        .into_iter()
+        .map(|(label, window)| (label, window_size(&window)))
+        .collect();
+    let mut kept = kept_sizes(app);
+    for (label, size) in sizes {
+        kept.note(&label, size);
+    }
+    if let Ok(config) = app.path().app_config_dir() {
+        let state = config.join(tauri_plugin_window_state::DEFAULT_FILENAME);
+        if let Err(err) = kept.write(&state) {
+            eprintln!("Could not save the window sizes: {err}");
+        }
+    }
 }
 
 /// Each window's last readable content size. An unreadable frame keeps the one before,
@@ -249,6 +279,7 @@ fn pruned(saved: &str, keep: &HashSet<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn labels(session: &str) -> Vec<String> {
         let mut labels: Vec<_> = restored_labels(Some(session)).into_iter().collect();

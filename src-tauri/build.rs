@@ -22,6 +22,8 @@ fn main() {
         "find_lint_config",
         "copy_notices",
         "update_settings",
+        "update_state",
+        "install_update",
     ]);
     let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);
     if is_windows_msvc() {

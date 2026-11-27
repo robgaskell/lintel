@@ -50,6 +50,10 @@ vi.mock('@tauri-apps/api/event', () => import('../test/fakes').then((f) => f.eve
 const win = vi.hoisted(() => ({ destroy: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }));
 vi.mock('../lib/os/platform', () => ({ isMac: vi.fn(() => true) }));
+vi.mock('../lib/os/updater', () => ({
+  followUpdatesInSettings: vi.fn(() => () => {}),
+  checkForUpdates: vi.fn(async () => {}),
+}));
 
 beforeEach(() => {
   resetFakes();
@@ -69,13 +73,22 @@ function controls(container: HTMLElement): boolean {
 }
 
 describe('SettingsApp', () => {
-  it('lists Appearance, Editor, Files and Lint, for later steps to extend', () => {
+  it('lists Appearance, Editor, Files, Lint and Updates', () => {
     expect(sections.map((s) => [s.id, s.label])).toEqual([
       ['appearance', 'Appearance'],
       ['editor', 'Editor'],
       ['files', 'Files'],
       ['lint', 'Lint'],
+      ['updates', 'Updates'],
     ]);
+  });
+
+  it('opens on Updates when asked, with Check now (Ruling 343)', () => {
+    history.replaceState(null, '', '/?view=settings&section=updates');
+    const { getByRole } = render(SettingsApp);
+
+    expect(getByRole('button', { name: 'Updates' }).getAttribute('aria-current')).toBe('page');
+    expect(getByRole('button', { name: 'Check now' })).toBeTruthy();
   });
 
   it('loads settings, follows the theme and listens for changes before enabling controls (Ruling 140)', async () => {
@@ -145,7 +158,7 @@ describe('SettingsApp', () => {
   });
 
   it('ignores a section it does not have', () => {
-    history.replaceState(null, '', '/?view=settings&section=updates');
+    history.replaceState(null, '', '/?view=settings&section=nonsense');
     const { queryByLabelText } = render(SettingsApp);
 
     expect(queryByLabelText('Reading font')).toBeTruthy();
