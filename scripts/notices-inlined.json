@@ -28,7 +28,7 @@
   {"in": "@mermaid-js/parser@2.0.1", "name": "vscode-languageserver-types", "version": "3.18.4", "license": "MIT", "copyright": "Copyright (c) Microsoft Corporation", "source": "https://github.com/microsoft/vscode-languageserver-node"},
   {"in": "@mermaid-js/parser@2.0.1", "name": "vscode-languageserver-textdocument", "version": "1.0.15", "license": "MIT", "copyright": "Copyright (c) Microsoft Corporation", "source": "https://github.com/microsoft/vscode-languageserver-node"},
   {"in": "@mermaid-js/parser@2.0.1", "name": "vscode-uri", "version": "3.1.0", "license": "MIT", "copyright": "Copyright (c) Microsoft", "source": "https://github.com/microsoft/vscode-uri"},
-  {"in": "mermaid@12.3.0", "name": "fastdom", "version": "1.0.12 (patched by mermaid)", "license": "MIT", "copyright": "Copyright (c) 2016 Wilson Page <wilsonpage@me.com>", "source": "https://github.com/wilsonpage/fastdom"},
+  {"in": "mermaid@12.3.0", "name": "fastdom", "version": "1.0.12 (patched by mermaid)", "license": "MIT", "copyright": "Copyright (c) Wilson Page <wilsonpage@me.com>", "source": "https://github.com/wilsonpage/fastdom"},
   {"in": "mermaid@12.3.0", "name": "js-yaml", "version": "4.3.2", "license": "MIT", "copyright": "Copyright (C) 2011-2015 by Vitaly Puzrin", "source": "https://github.com/nodeca/js-yaml"},
   {"in": "dompurify@3.5.0", "name": "Babel helpers (regenerator-runtime)", "version": "as built by dompurify", "license": "MIT", "copyright": "Copyright (c) 2014-present, Facebook, Inc.", "source": "https://github.com/babel/babel"},
   {"in": "cytoscape@3.35.0", "name": "Thenable (Promises/A+)", "version": "1.1.1", "license": "MIT", "copyright": "Copyright (c) 2013-2014 Ralf S. Engelschall (http://engelschall.com)", "source": "https://github.com/rse/thenable"},

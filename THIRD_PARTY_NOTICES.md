@@ -11059,7 +11059,7 @@ The adapted code names no copyright holder; it comes from https://github.com/dra
 Used by: fastdom 1.0.12 (patched by mermaid) (inside mermaid@12.3.0).
 
 ```text
-Copyright (c) 2016 Wilson Page <wilsonpage@me.com>
+Copyright (c) Wilson Page <wilsonpage@me.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
