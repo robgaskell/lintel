@@ -27,21 +27,32 @@ export function parseLintConfig(r: LintConfigResult): ParsedLintConfig {
   const text = r.text.startsWith('\uFEFF') ? r.text.slice(1) : r.text;
   let value: unknown;
   try {
-    value = r.format === 'yaml' ? parseYaml(text) : parseJson(text);
+    value = withoutProto(r.format === 'yaml' ? parseYaml(text) : parseJson(text));
   } catch (err) {
     return { config: null, error: err instanceof Error ? err.message : String(err), note: null };
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return { config: null, error: 'Expected a set of rules, such as MD013: false.', note: null };
   }
-  const { extends: followed, ...rest } = withoutProto(value) as Record<string, unknown>;
+  const { extends: followed, ...rest } = value as Record<string, unknown>;
   const note = followed == null ? null : `${baseName(r.path)}: extends is not followed`;
   return { config: rest, error: null, note };
 }
 
-// A parsed "__proto__" key can become the object's prototype; JSON.parse keeps it as a key.
-function withoutProto(value: object): object {
-  return JSON.parse(JSON.stringify(value), (key, v) => (key === '__proto__' ? undefined : v));
+/**
+ * A plain copy without "__proto__" keys, which a parser can turn into the object's
+ * prototype. Throws for a loop, which YAML aliases can make and no config needs.
+ */
+function withoutProto(value: unknown, parents: object[] = []): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (parents.includes(value)) throw new Error('The file refers to itself in a loop.');
+  const inside = [...parents, value];
+  if (Array.isArray(value)) return value.map((item) => withoutProto(item, inside));
+  const copy: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key !== '__proto__') copy[key] = withoutProto(item, inside);
+  }
+  return copy;
 }
 
 function parseJson(text: string): unknown {
@@ -68,8 +79,8 @@ interface Failure {
 const cache = new SvelteMap<string, CachedConfig>();
 // Why find_lint_config failed, by doc id.
 const failures = new SvelteMap<string, Failure>();
-// The config each doc uses, and the docs using each config, which keep it watched.
-const configOf = new Map<string, string>();
+// The config files each doc keeps watched, and the docs keeping each one watched.
+const watchedFor = new Map<string, Set<string>>();
 const usersOf = new Map<string, Set<string>>();
 // The latest refresh of each doc; an older one that ends later is dropped.
 const latest = new Map<string, number>();
@@ -79,6 +90,7 @@ let refreshes = 0;
 // A focus looks again at most this often, as each look reaches the disk (Ruling 298).
 export const FOCUS_REFRESH_MS = 5000;
 let lastFocusRefresh = -Infinity;
+let trailingFocusRefresh: ReturnType<typeof setTimeout> | null = null;
 
 /** The rules from Settings, or null while linting is off (Ruling 268). */
 export function settingsLintConfig(): object | null {
@@ -144,11 +156,16 @@ export async function refreshConfig(doc: DocState, view?: EditorView): Promise<v
   }
   if (failure === null) {
     failures.delete(doc.id);
-    use(doc, found);
+    doc.lintConfigPath = found?.path ?? null;
+    watchOnly(doc.id, found ? new Map([[found.path, found.hash]]) : new Map());
   } else {
     failures.set(doc.id, { name: failure.path === null ? null : baseName(failure.path), message: failure.message });
-    // Settings rules apply, but the old config stays watched, so its repair is heard.
     doc.lintConfigPath = null;
+    // Settings rules apply. The old config and the failing file stay watched, so a repair
+    // to either is heard (Rulings 298, 310). The failing file's hash is unknown.
+    const kept = new Map([...(watchedFor.get(doc.id) ?? [])].map((path) => [path, '']));
+    if (failure.path !== null && !kept.has(failure.path)) kept.set(failure.path, '');
+    watchOnly(doc.id, kept);
   }
   const key = found ? `${found.path}\n${found.hash}` : `none\n${failure?.path}\n${failure?.message}`;
   if (linted.get(doc.id) === key) return;
@@ -157,28 +174,23 @@ export async function refreshConfig(doc: DocState, view?: EditorView): Promise<v
   if (target) relint(target);
 }
 
-function use(doc: DocState, found: LintConfigResult | null): void {
-  const next = found?.path ?? null;
-  const previous = configOf.get(doc.id) ?? null;
-  doc.lintConfigPath = next;
-  if (next === previous) return;
-  if (found) {
-    configOf.set(doc.id, found.path);
-    addUser(found, doc.id);
-  } else {
-    configOf.delete(doc.id);
-  }
-  if (previous !== null) dropUser(previous, doc.id);
+/** Makes `next` (config path to known hash) the set of files the doc keeps watched. */
+function watchOnly(id: string, next: Map<string, string>): void {
+  const current = watchedFor.get(id) ?? new Set<string>();
+  for (const [path, hash] of next) if (!current.has(path)) addUser(path, hash, id);
+  for (const path of current) if (!next.has(path)) dropUser(path, id);
+  if (next.size > 0) watchedFor.set(id, new Set(next.keys()));
+  else watchedFor.delete(id);
 }
 
 // One watch per config file per window, however many docs use it (Ruling 284).
-function addUser(found: LintConfigResult, id: string): void {
-  const users = usersOf.get(found.path) ?? new Set<string>();
-  usersOf.set(found.path, users);
+function addUser(path: string, hash: string, id: string): void {
+  const users = usersOf.get(path) ?? new Set<string>();
+  usersOf.set(path, users);
   users.add(id);
   if (users.size !== 1) return;
   Promise.resolve()
-    .then(() => watchPath(found.path, found.hash))
+    .then(() => watchPath(path, hash))
     .catch(watchFailed);
 }
 
@@ -195,10 +207,7 @@ function forget(id: string): void {
   latest.delete(id);
   linted.delete(id);
   failures.delete(id);
-  const path = configOf.get(id);
-  if (path === undefined) return;
-  configOf.delete(id);
-  dropUser(path, id);
+  watchOnly(id, new Map());
 }
 
 /** A config file changed or went away on disk: the docs using it look again. */
@@ -214,11 +223,28 @@ export function refreshAllConfigs(): void {
   for (const doc of docs.values()) runRefresh(doc);
 }
 
-/** As refreshAllConfigs, but at most once in FOCUS_REFRESH_MS; for each window focus. */
-export function refreshConfigsOnFocus(now = Date.now()): void {
-  if (now - lastFocusRefresh < FOCUS_REFRESH_MS) return;
+/**
+ * As refreshAllConfigs, but at most once in FOCUS_REFRESH_MS; for each window focus. A
+ * focus inside that time gets one look at its end, so a config made then is found.
+ * `now` is monotonic, so a clock set back cannot hold the looks off (Ruling 310).
+ */
+export function refreshConfigsOnFocus(now = performance.now()): void {
+  const wait = lastFocusRefresh + FOCUS_REFRESH_MS - now;
+  if (wait > 0) {
+    trailingFocusRefresh ??= setTimeout(() => {
+      trailingFocusRefresh = null;
+      refreshConfigsOnFocus(lastFocusRefresh + FOCUS_REFRESH_MS);
+    }, wait);
+    return;
+  }
+  stopTrailingFocusRefresh();
   lastFocusRefresh = now;
   refreshAllConfigs();
+}
+
+function stopTrailingFocusRefresh(): void {
+  if (trailingFocusRefresh !== null) clearTimeout(trailingFocusRefresh);
+  trailingFocusRefresh = null;
 }
 
 function asFindError(err: unknown): LintConfigError {
@@ -249,8 +275,12 @@ export function followDocConfigs(): () => void {
     },
   });
   lastFocusRefresh = -Infinity;
+  stopTrailingFocusRefresh();
   refreshAllConfigs();
-  return () => setDocHooks(null);
+  return () => {
+    setDocHooks(null);
+    stopTrailingFocusRefresh();
+  };
 }
 
 function runRefresh(doc: DocState): void {

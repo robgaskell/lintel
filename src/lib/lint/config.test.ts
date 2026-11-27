@@ -160,6 +160,18 @@ describe('parseLintConfig', () => {
     expect((config as { MD013?: boolean }).MD013).toBeUndefined();
   });
 
+  it('reports a config that loops back on itself as an error (Ruling 310)', () => {
+    const parsed = parseLintConfig(result('MD004: &rules\n  again: *rules\n', '/r/.markdownlint.yaml', 'yaml'));
+
+    expect(parsed).toEqual({ config: null, error: 'The file refers to itself in a loop.', note: null });
+  });
+
+  it('keeps a YAML alias used twice, which is no loop', () => {
+    const parsed = parseLintConfig(result('MD004: &style\n  style: dash\nMD005: *style\n', '/r/c.yaml', 'yaml'));
+
+    expect(parsed.config).toEqual({ MD004: { style: 'dash' }, MD005: { style: 'dash' } });
+  });
+
   it('drops extends, with a note, since it could read any file', () => {
     const parsed = parseLintConfig(result('{ "extends": "../../base.json", "MD013": false }'));
     expect(parsed).toEqual({
@@ -319,6 +331,18 @@ describe('currentConfig and refreshConfig', () => {
     expect(configStatus(doc)).toEqual({
       text: 'Lint config error',
       details: '/repo/.markdownlint.json is not UTF-8 text.',
+    });
+  });
+
+  it('shows a looping config in the status bar and resolves (Ruling 310)', async () => {
+    const doc = open();
+    vi.mocked(findLintConfig).mockResolvedValue(result('a: &x\n  b: *x\n', '/repo/.markdownlint.yaml', 'yaml'));
+
+    await expect(refreshConfig(doc)).resolves.toBeUndefined();
+
+    expect(configStatus(doc)).toEqual({
+      text: 'Lint config error: .markdownlint.yaml',
+      details: 'The file refers to itself in a loop.',
     });
   });
 
@@ -606,5 +630,103 @@ describe('watching config files', () => {
     refreshConfigsOnFocus(100_000 + FOCUS_REFRESH_MS);
     expect(findLintConfig).toHaveBeenCalledTimes(2);
     expect(FOCUS_REFRESH_MS).toBe(5000);
+  });
+
+  it('gives a focus inside the 5 s one look at their end, however many come (Ruling 310)', async () => {
+    vi.useFakeTimers();
+    try {
+      stop = followDocConfigs();
+      open();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(findLintConfig).mockClear();
+
+      refreshConfigsOnFocus(100_000);
+      refreshConfigsOnFocus(102_000);
+      refreshConfigsOnFocus(103_000);
+      expect(findLintConfig).toHaveBeenCalledTimes(1);
+
+      // Scheduled by the focus at 102,000 for the end of the window at 105,000.
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(findLintConfig).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(findLintConfig).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(findLintConfig).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('times the focus looks by a clock that is never set back (Ruling 310)', async () => {
+    stop = followDocConfigs();
+    open();
+    await settled();
+    vi.mocked(findLintConfig).mockClear();
+    const wall = vi.spyOn(Date, 'now');
+    const monotonic = vi.spyOn(performance, 'now');
+    try {
+      wall.mockReturnValue(2_000_000_000_000);
+      monotonic.mockReturnValue(50_000);
+      refreshConfigsOnFocus();
+      // The wall clock goes back an hour; the monotonic one moves on.
+      wall.mockReturnValue(2_000_000_000_000 - 3_600_000);
+      monotonic.mockReturnValue(50_000 + FOCUS_REFRESH_MS);
+      refreshConfigsOnFocus();
+
+      expect(findLintConfig).toHaveBeenCalledTimes(2);
+    } finally {
+      wall.mockRestore();
+      monotonic.mockRestore();
+    }
+  });
+
+  it('watches a nearer broken config that replaced the one in use, so its repair is heard (Ruling 310)', async () => {
+    stop = followDocConfigs();
+    const near = '/repo/docs/.markdownlint.yaml';
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+    const doc = open();
+    await settled();
+
+    vi.mocked(findLintConfig).mockRejectedValue({ path: near, message: 'Could not read the file', timedOut: false });
+    handleConfigFileEvent(REPO);
+    await settled();
+    expect(watchPath).toHaveBeenCalledWith(near, '');
+    expect(unwatchPath).not.toHaveBeenCalledWith(REPO);
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('MD004: true', near, 'yaml'));
+    handleConfigFileEvent(near);
+    await settled();
+    expect(configStatus(doc)).toBeNull();
+    expect(currentConfig(doc)).toEqual({ MD004: true });
+    expect(unwatchPath).toHaveBeenCalledWith(REPO);
+  });
+
+  it('watches a config that is broken when the doc opens, so its repair is heard (Ruling 310)', async () => {
+    stop = followDocConfigs();
+    vi.mocked(findLintConfig).mockRejectedValue({ path: REPO, message: 'Could not read the file', timedOut: false });
+    const doc = open();
+    await settled();
+    expect(watchPath).toHaveBeenCalledWith(REPO, '');
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": true }'));
+    handleConfigFileEvent(REPO);
+    await settled();
+
+    expect(configStatus(doc)).toBeNull();
+    expect(currentConfig(doc)).toEqual({ MD004: true });
+    expect(vi.mocked(watchPath).mock.calls.filter(([path]) => path === REPO)).toHaveLength(1);
+  });
+
+  it('lets go of the failing file once the doc moves to another config or closes', async () => {
+    stop = followDocConfigs();
+    const near = '/repo/docs/.markdownlint.yaml';
+    vi.mocked(findLintConfig).mockRejectedValue({ path: near, message: 'Could not read the file', timedOut: false });
+    const doc = open();
+    await settled();
+
+    removeDoc(doc.id);
+    await settled();
+
+    expect(unwatchPath).toHaveBeenCalledWith(near);
   });
 });
