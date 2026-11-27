@@ -24,6 +24,7 @@
     "allow-transfer-path",
     "allow-complete-handoff",
     "allow-cancel-handoff",
+    "allow-handoff-status",
     "allow-set-window-appearance",
     "clipboard-manager:allow-write-text",
     "dialog:default",

@@ -48,6 +48,10 @@ vi.mock('@tauri-apps/api/event', () => ({
     },
   ),
 }));
+// What Rust reports about hand-overs app-wide.
+const status = vi.hoisted(() => ({
+  current: { pending: 0, completed: 0, adopters: [] as string[] },
+}));
 const win = vi.hoisted(() => ({
   label: 'main',
   isMinimized: vi.fn(async () => false),
@@ -65,6 +69,7 @@ vi.mock('../ipc', () => ({
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),
   cancelHandoff: vi.fn(async () => true),
+  handoffStatus: vi.fn(async () => status.current),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -126,6 +131,7 @@ beforeEach(() => {
   writeFile.mockReset();
   bus.listeners.clear();
   win.label = 'main';
+  status.current = { pending: 0, completed: 0, adopters: [] };
   vi.mocked(docWindowLabels).mockResolvedValue(['main']);
   vi.mocked(saveWindowSession).mockClear();
   vi.mocked(forgetWindowSession).mockClear();
@@ -247,27 +253,116 @@ describe('quitApp across windows (Ruling 211)', () => {
     expect(exitApp).toHaveBeenCalledTimes(1);
   });
 
-  it('waits without a limit while the other window shows a prompt, then 5 s again', async () => {
+  it('keeps waiting while the other window beats during its prompt (Ruling 235)', async () => {
     vi.useFakeTimers();
     vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
     let request = '';
+    let beat: ReturnType<typeof setInterval> | undefined;
     fakeWindow('w-1', (requestId) => {
       request = requestId;
-      send(QUIT_PROGRESS, { requestId, label: 'w-1', prompting: true });
+      const progress = () => send(QUIT_PROGRESS, { requestId, label: 'w-1', prompting: true });
+      progress();
+      beat = setInterval(progress, 2000);
     });
 
     const quitting = quitApp();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(messageDialog).not.toHaveBeenCalled();
 
-    send(QUIT_PROGRESS, { requestId: request, label: 'w-1', prompting: false });
-    await vi.advanceTimersByTimeAsync(4000);
+    clearInterval(beat);
     send(QUIT_REPLY, { requestId: request, label: 'w-1', ok: true });
     await vi.advanceTimersByTimeAsync(10);
     await quitting;
 
     expect(messageDialog).not.toHaveBeenCalled();
     expect(exitApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a window that said its prompt was open and then fell silent (Ruling 235)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    messageDialog.mockResolvedValue('Cancel');
+    fakeWindow('w-1', (requestId) => send(QUIT_PROGRESS, { requestId, label: 'w-1', prompting: true }));
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(messageDialog).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+    await quitting;
+
+    expect(messageDialog).toHaveBeenCalledWith(NOT_RESPONDING, expect.anything());
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('quits from the not-responding alert only on Quit Anyway; Return and Escape keep the app (Ruling 235)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    // Escape or closing the alert answers its Cancel button, or nothing at all.
+    for (const answer of ['Cancel', undefined, null, 'Ok']) {
+      messageDialog.mockReset();
+      messageDialog.mockResolvedValue(answer as never);
+      const quitting = quitApp();
+      await vi.advanceTimersByTimeAsync(5100);
+      await quitting;
+      expect(exitApp, String(answer)).not.toHaveBeenCalled();
+    }
+    const options = messageDialog.mock.calls[0][1] as { buttons: { ok: string; cancel: string } };
+    // AppKit gives the button titled Cancel the Escape key and no default; it must come first,
+    // or the other button becomes the default and Return quits.
+    expect(options.buttons).toEqual({ ok: 'Cancel', cancel: 'Quit Anyway' });
+
+    messageDialog.mockResolvedValue('Quit Anyway');
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(5100);
+    await quitting;
+    expect(exitApp).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a quit round and hand-overs (Ruling 235)', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it('waits until no hand-over is pending app-wide, then asks about the doc that landed', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-c', 'w-b']);
+    windowAnswering('w-c');
+    windowAnswering('w-b');
+    status.current = { pending: 1, completed: 0, adopters: [] };
+    messageDialog.mockResolvedValue('Cancel');
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(exitApp).not.toHaveBeenCalled();
+    // The hand-over w-b -> w-c completes and the doc lands dirty in w-c.
+    dirtyDoc('/landed.md');
+    status.current = { pending: 0, completed: 1, adopters: ['w-c'] };
+    await vi.advanceTimersByTimeAsync(1000);
+    await quitting;
+
+    expect(String(messageDialog.mock.calls[0]?.[0])).toContain('landed.md');
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('asks a window that took a doc in after it answered again, and only about that doc', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-c', 'w-b']);
+    windowAnswering('w-c');
+    dirtyDoc('/main.md');
+    // w-b's hand-over to w-c completes while w-b is asked, after w-c has answered ok.
+    fakeWindow('w-b', (requestId) => {
+      dirtyDoc('/landed.md');
+      status.current = { pending: 0, completed: 1, adopters: ['w-c'] };
+      send(QUIT_REPLY, { requestId, label: 'w-b', ok: true });
+    });
+    messageDialog.mockResolvedValueOnce("Don't Save").mockResolvedValue('Cancel');
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(1000);
+    await quitting;
+
+    expect(messageDialog.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('main.md'),
+      expect.stringContaining('landed.md'),
+    ]);
+    expect(exitApp).not.toHaveBeenCalled();
   });
 });
 

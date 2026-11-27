@@ -155,7 +155,8 @@ async function moveToNewWindow(docId: string): Promise<void> {
 export function listenForAdoption(): () => void {
   const label = getCurrentWindow().label;
   const stop = listenHere<AdoptDocEvent>(label, ADOPT_DOC, (event) => {
-    adopt(label, event).catch((err) => console.error('Could not take in the document:', err));
+    // Counted as a hand-over, so a quit round waits until the doc is in (Ruling 235).
+    trackHandoff(adopt(label, event).catch((err) => console.error('Could not take in the document:', err)));
   });
   void stop.ready
     .then(() => emit(WINDOW_READY, { label } satisfies WindowReadyEvent))

@@ -27,6 +27,19 @@ struct Claims {
     paths: HashMap<String, String>,
     handoffs: HashMap<u64, Handoff>,
     next_handoff: u64,
+    /// The window each completed hand-over went to, oldest first.
+    adopters: Vec<String>,
+}
+
+/// Where hand-overs stand app-wide, for a quit round (Ruling 235).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct HandoffStatus {
+    /// Hand-overs not yet decided.
+    pending: usize,
+    /// Hand-overs completed so far; pass it back as `since` next time.
+    completed: usize,
+    /// Windows that took in a doc after `since`, each once.
+    adopters: Vec<String>,
 }
 
 struct Handoff {
@@ -94,6 +107,7 @@ impl PathRegistry {
         let Some(handoff) = claims.handoffs.remove(&id) else {
             return false;
         };
+        claims.adopters.push(handoff.to.clone());
         if let Some(path) = handoff.path {
             // A third window may have the file if the opener closed meanwhile; it keeps it.
             let owner = claims.paths.get(&path);
@@ -102,6 +116,21 @@ impl PathRegistry {
             }
         }
         true
+    }
+
+    fn status(&self, since: usize) -> HandoffStatus {
+        let claims = self.claims();
+        let mut adopters: Vec<String> = Vec::new();
+        for label in claims.adopters.iter().skip(since) {
+            if !adopters.contains(label) {
+                adopters.push(label.clone());
+            }
+        }
+        HandoffStatus {
+            pending: claims.handoffs.len(),
+            completed: claims.adopters.len(),
+            adopters,
+        }
     }
 
     /// True when `label` may keep the doc: the hand-over was from it and is not completed.
@@ -206,6 +235,12 @@ pub fn cancel_handoff<R: Runtime>(
     id: u64,
 ) -> bool {
     registry.cancel_handoff(window.label(), id)
+}
+
+/// Pending hand-overs and the windows that took a doc in since `since`, for a quit round.
+#[tauri::command]
+pub fn handoff_status(registry: State<'_, PathRegistry>, since: usize) -> HandoffStatus {
+    registry.status(since)
 }
 
 fn claim_or_reveal(
@@ -381,6 +416,27 @@ mod tests {
         assert!(!registry.complete_handoff("w-1", id));
         assert!(registry.cancel_handoff("main", id));
         assert_eq!(registry.pending(), 0);
+    }
+
+    #[test]
+    fn reports_pending_hand_overs_and_the_windows_that_took_docs_in() {
+        let registry = PathRegistry::default();
+        let first = registry.begin_handoff("main", "w-1", None);
+        let second = registry.begin_handoff("main", "w-2", None);
+        assert_eq!(
+            registry.status(0),
+            HandoffStatus { pending: 2, completed: 0, adopters: vec![] }
+        );
+        assert!(registry.complete_handoff("w-1", first));
+        let mark = registry.status(0);
+        assert_eq!(mark.pending, 1);
+        assert_eq!(mark.adopters, ["w-1"]);
+        assert!(registry.cancel_handoff("main", second));
+        let third = registry.begin_handoff("w-2", "w-1", None);
+        assert!(registry.complete_handoff("w-1", third));
+        let later = registry.status(mark.completed);
+        assert_eq!((later.pending, later.completed), (0, 2));
+        assert_eq!(later.adopters, ["w-1"], "only since the mark, each window once");
     }
 
     #[test]

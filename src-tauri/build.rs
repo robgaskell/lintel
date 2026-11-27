@@ -13,6 +13,7 @@ fn main() {
         "transfer_path",
         "complete_handoff",
         "cancel_handoff",
+        "handoff_status",
         "set_window_appearance",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

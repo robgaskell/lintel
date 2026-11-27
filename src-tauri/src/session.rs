@@ -23,17 +23,22 @@ const MAIN: &str = "main";
 /// in order and window-state reads its file in its own setup, so the prune comes first;
 /// the size keeper comes last, so its exit hook runs after window-state's save.
 pub fn geometry_plugins<R: Runtime>() -> Vec<TauriPlugin<R>> {
+    plugins_with(tauri_plugin_window_state::Builder::new())
+}
+
+fn plugins_with<R: Runtime, B: StateBuilder>(window_state: B) -> Vec<TauriPlugin<R>> {
     vec![
         prune_geometry(),
-        configure(tauri_plugin_window_state::Builder::new()).build(),
+        configure(window_state).build(),
         keep_window_sizes(),
     ]
 }
 
-/// The two window-state settings Lintel relies on, behind a trait so a test can see them.
+/// The window-state calls Lintel makes, behind a trait so a test can record them.
 pub trait StateBuilder: Sized {
     fn with_state_flags(self, flags: StateFlags) -> Self;
     fn with_denylist(self, denylist: &[&str]) -> Self;
+    fn build<R: Runtime>(self) -> TauriPlugin<R>;
 }
 
 impl StateBuilder for tauri_plugin_window_state::Builder {
@@ -42,6 +47,9 @@ impl StateBuilder for tauri_plugin_window_state::Builder {
     }
     fn with_denylist(self, denylist: &[&str]) -> Self {
         tauri_plugin_window_state::Builder::with_denylist(self, denylist)
+    }
+    fn build<R: Runtime>(self) -> TauriPlugin<R> {
+        tauri_plugin_window_state::Builder::build(self)
     }
 }
 
@@ -68,36 +76,33 @@ fn prune_geometry<R: Runtime>() -> TauriPlugin<R> {
 }
 
 /// On macOS, window-state reads a window's size from its web view, which a docked Web
-/// Inspector shrinks (Ruling 222). At exit this writes each window's own content size,
-/// taken from its outer frame, over what window-state saved.
+/// Inspector shrinks (Ruling 222). This keeps each window's own content size, from its
+/// outer frame, whenever it can be read, and writes the last good one at exit (Ruling 235).
 fn keep_window_sizes<R: Runtime>() -> TauriPlugin<R> {
-    let closed = Arc::new(Mutex::new(HashMap::new()));
+    let kept = Arc::new(Mutex::new(LastGoodSizes::default()));
     tauri::plugin::Builder::new("keep-window-sizes")
         .on_event(move |app, event| {
-            let mut sizes = closed
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut kept = kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match event {
-                // window-state also reads the size as a window closes.
                 RunEvent::WindowEvent {
                     label,
-                    event: WindowEvent::CloseRequested { .. },
+                    event:
+                        WindowEvent::Resized(_)
+                        | WindowEvent::Moved(_)
+                        | WindowEvent::Focused(_)
+                        | WindowEvent::CloseRequested { .. },
                     ..
                 } => {
                     let window = app.get_webview_window(label);
-                    if let Some(size) = window.and_then(|w| window_size(&w)) {
-                        sizes.insert(label.clone(), size);
-                    }
+                    kept.note(label, window.and_then(|w| window_size(&w)));
                 }
                 RunEvent::Exit => {
                     for (label, window) in app.webview_windows() {
-                        if let Some(size) = window_size(&window) {
-                            sizes.insert(label, size);
-                        }
+                        kept.note(&label, window_size(&window));
                     }
                     if let Ok(config) = app.path().app_config_dir() {
                         let state = config.join(tauri_plugin_window_state::DEFAULT_FILENAME);
-                        if let Err(err) = write_sizes(&state, &sizes) {
+                        if let Err(err) = kept.write(&state) {
                             eprintln!("Could not save the window sizes: {err}");
                         }
                     }
@@ -106,6 +111,23 @@ fn keep_window_sizes<R: Runtime>() -> TauriPlugin<R> {
             }
         })
         .build()
+}
+
+/// Each window's last readable content size. An unreadable frame keeps the one before,
+/// so a window never falls back to window-state's own reading or the default size.
+#[derive(Default)]
+struct LastGoodSizes(HashMap<String, (u32, u32)>);
+
+impl LastGoodSizes {
+    fn note(&mut self, label: &str, size: Option<(u32, u32)>) {
+        if let Some(size) = size {
+            self.0.insert(label.to_owned(), size);
+        }
+    }
+
+    fn write(&self, state: &Path) -> io::Result<()> {
+        write_sizes(state, &self.0)
+    }
 }
 
 /// Content size in physical pixels. None for Settings and for a maximised, minimised or
@@ -293,46 +315,74 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // Records every window-state call, in order, and builds a stand-in plugin.
     #[derive(Default)]
-    struct Recorded {
-        flags: Option<StateFlags>,
-        denylist: Vec<String>,
-    }
+    struct Recorder(Arc<Mutex<Vec<String>>>);
 
-    impl StateBuilder for Recorded {
-        fn with_state_flags(mut self, flags: StateFlags) -> Self {
-            self.flags = Some(flags);
+    impl StateBuilder for Recorder {
+        fn with_state_flags(self, flags: StateFlags) -> Self {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("flags {}", flags.bits()));
             self
         }
-        fn with_denylist(mut self, denylist: &[&str]) -> Self {
-            self.denylist = denylist.iter().map(|l| l.to_string()).collect();
+        fn with_denylist(self, denylist: &[&str]) -> Self {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("denylist {}", denylist.join(",")));
             self
+        }
+        fn build<R: Runtime>(self) -> TauriPlugin<R> {
+            self.0.lock().unwrap().push("build".to_owned());
+            tauri::plugin::Builder::new("window-state").build()
         }
     }
 
     #[test]
-    fn window_state_restores_geometry_only_and_never_settings() {
-        let set = configure(Recorded::default());
-        let flags = set.flags.expect("flags set, not left at all()");
-        assert!(
-            !flags.contains(StateFlags::VISIBLE),
-            "VISIBLE would show and focus hidden windows"
-        );
-        assert!(flags.contains(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED));
-        assert_eq!(set.denylist, [crate::SETTINGS]);
-    }
-
-    #[test]
-    fn the_prune_comes_before_window_state_and_the_size_keeper_after() {
+    fn window_state_is_set_up_for_geometry_only_without_settings_and_in_order() {
         use tauri::plugin::Plugin;
-        let names: Vec<String> = geometry_plugins::<tauri::test::MockRuntime>()
+        let recorder = Recorder::default();
+        let calls = Arc::clone(&recorder.0);
+        let names: Vec<String> = plugins_with::<tauri::test::MockRuntime, _>(recorder)
             .iter()
             .map(|plugin| plugin.name().to_owned())
             .collect();
+        let geometry = (StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED).bits();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                format!("flags {geometry}"),
+                format!("denylist {}", crate::SETTINGS),
+                "build".to_owned()
+            ]
+        );
         assert_eq!(
             names,
             ["prune-geometry", "window-state", "keep-window-sizes"]
         );
+    }
+
+    #[test]
+    fn keeps_the_last_good_size_when_the_frame_cannot_be_read() {
+        let dir = std::env::temp_dir().join(format!("lintel-sizes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("state.json");
+        std::fs::write(&state, r#"{"w-1":{"width":2200,"height":1520,"x":1}}"#).unwrap();
+        let mut kept = LastGoodSizes::default();
+
+        kept.note("w-1", Some((1760, 1280)));
+        kept.note("w-1", None);
+        kept.write(&state).unwrap();
+
+        let states: serde_json::Map<String, Value> =
+            serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(
+            (&states["w-1"]["width"], &states["w-1"]["height"]),
+            (&1760.into(), &1280.into())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

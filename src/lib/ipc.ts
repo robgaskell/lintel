@@ -75,3 +75,14 @@ export function completeHandoff(id: number): Promise<boolean> {
 export function cancelHandoff(id: number): Promise<boolean> {
   return invoke<boolean>('cancel_handoff', { id });
 }
+
+/** Where hand-overs stand app-wide; `since` is the `completed` count from an earlier call. */
+export interface HandoffStatus {
+  pending: number;
+  completed: number;
+  adopters: string[];
+}
+
+export function handoffStatus(since: number): Promise<HandoffStatus> {
+  return invoke<HandoffStatus>('handoff_status', { since });
+}

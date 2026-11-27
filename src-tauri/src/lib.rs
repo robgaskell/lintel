@@ -61,6 +61,7 @@ pub fn run() {
             windows::transfer_path,
             windows::complete_handoff,
             windows::cancel_handoff,
+            windows::handoff_status,
             appearance::set_window_appearance
         ])
         .run(tauri::generate_context!())

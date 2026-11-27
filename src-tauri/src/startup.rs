@@ -87,13 +87,28 @@ pub const NO_APPKIT_RESTORATION: [(&str, bool); 2] = [
     ("ApplePersistenceIgnoreState", true),
 ];
 
+/// Where the AppKit keys go; a test records them instead of writing the user's defaults.
+pub trait BoolDefaults {
+    fn set_bool(&mut self, key: &str, value: bool);
+}
+
+pub fn disable_appkit_restoration_in(defaults: &mut impl BoolDefaults) {
+    for (key, value) in NO_APPKIT_RESTORATION {
+        defaults.set_bool(key, value);
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn disable_appkit_restoration() {
-    use objc2_foundation::{NSString, NSUserDefaults};
-    let defaults = NSUserDefaults::standardUserDefaults();
-    for (key, value) in NO_APPKIT_RESTORATION {
-        defaults.setBool_forKey(value, &NSString::from_str(key));
+    struct Standard(objc2::rc::Retained<objc2_foundation::NSUserDefaults>);
+    impl BoolDefaults for Standard {
+        fn set_bool(&mut self, key: &str, value: bool) {
+            self.0
+                .setBool_forKey(value, &objc2_foundation::NSString::from_str(key));
+        }
     }
+    let mut defaults = Standard(objc2_foundation::NSUserDefaults::standardUserDefaults());
+    disable_appkit_restoration_in(&mut defaults);
 }
 
 pub fn prepare_main_window<R: Runtime>(window: &WebviewWindow<R>) {
@@ -272,8 +287,17 @@ mod tests {
 
     #[test]
     fn appkit_neither_keeps_nor_restores_windows() {
-        assert!(NO_APPKIT_RESTORATION.contains(&("NSQuitAlwaysKeepsWindows", false)));
-        assert!(NO_APPKIT_RESTORATION.contains(&("ApplePersistenceIgnoreState", true)));
+        #[derive(Default)]
+        struct Written(std::collections::HashMap<String, bool>);
+        impl BoolDefaults for Written {
+            fn set_bool(&mut self, key: &str, value: bool) {
+                self.0.insert(key.to_owned(), value);
+            }
+        }
+        let mut written = Written::default();
+        disable_appkit_restoration_in(&mut written);
+        assert_eq!(written.0.get("NSQuitAlwaysKeepsWindows"), Some(&false));
+        assert_eq!(written.0.get("ApplePersistenceIgnoreState"), Some(&true));
     }
 
     #[test]
