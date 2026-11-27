@@ -9,6 +9,7 @@ import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { printDoc } from '../export/print';
+import { exportHtml } from '../export/html';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -18,6 +19,7 @@ vi.mock('./quit', () => ({ quitApp: vi.fn() }));
 vi.mock('./recent', () => ({ clearRecent: vi.fn(), recentMayHaveChanged: vi.fn() }));
 vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
 vi.mock('../export/print', () => ({ printDoc: vi.fn(async () => {}) }));
+vi.mock('../export/html', () => ({ exportHtml: vi.fn(async () => {}) }));
 vi.mock('../../settings/settingsWindow', () => ({
   focusedSettingsWindow: vi.fn(async () => null),
   openSettingsWindow: vi.fn(async () => {}),
@@ -212,8 +214,33 @@ describe('makeMenuHandlers', () => {
     expect(message).not.toHaveBeenCalled();
   });
 
-  it('says so when an item without a handler yet is chosen', async () => {
+  it('exports the active doc as HTML, and nothing with no doc open (Ruling 305)', async () => {
+    const doc = { id: 'doc-1', mode: 'read' } as DocState;
+    docs.set(doc.id, doc);
+    const d = deps();
+    makeMenuHandlers(d).exportHtml();
+    await vi.waitFor(() => expect(exportHtml).toHaveBeenCalledWith(doc));
+
+    vi.mocked(d.workspace.activeDocId).mockReturnValue(null);
+    makeMenuHandlers(d).exportHtml();
+    await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exportHtml).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a failed HTML export in an error dialog', async () => {
+    docs.set('doc-1', { id: 'doc-1', mode: 'read' } as DocState);
+    vi.mocked(exportHtml).mockRejectedValueOnce(new Error('This file is read-only.'));
+
     makeMenuHandlers(deps()).exportHtml();
+
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith('Error: This file is read-only.', { title: 'Lintel', kind: 'error' }),
+    );
+  });
+
+  it('says so when an item without a handler yet is chosen', async () => {
+    makeMenuHandlers(deps()).exportDocx();
     await vi.waitFor(() =>
       expect(String(vi.mocked(message).mock.calls[0]?.[0])).toContain('Not implemented yet'),
     );

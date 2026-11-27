@@ -1,0 +1,8 @@
+/* The exported page: the article (article.css) scrolls as an ordinary web page. */
+html {
+  background: var(--editor-bg);
+}
+
+body {
+  margin: 0;
+}

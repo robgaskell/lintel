@@ -27,3 +27,7 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 ## Unsaved edits (M7.1)
 
 - [ ] Windows: type in a document without saving, then press F5 and then Ctrl+R. The window does not reload, and the unsaved edits are still there.
+
+## HTML export (M7.2)
+
+- [ ] Windows and Linux: File > Export as HTML… offers `<name>.html`. Change the name to one without `.html` and save. Note whether the saved file ends in `.html`; if it does not, add that to docs/known-issues.md.

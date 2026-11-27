@@ -380,7 +380,7 @@ async function mayClose(doc: DocState): Promise<boolean> {
 
 // The file is already written, so failing here would lose track of it; the chosen
 // spelling only weakens duplicate detection in openPaths.
-async function normalizedOrAsGiven(path: string): Promise<string> {
+export async function normalizedOrAsGiven(path: string): Promise<string> {
   try {
     return await normalizePath(path);
   } catch {

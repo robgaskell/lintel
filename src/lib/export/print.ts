@@ -2,7 +2,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import { message } from '@tauri-apps/plugin-dialog';
 import type { DocState } from '../docs/store.svelte';
 import { currentPlatform, type Platform } from '../os/platform';
-import { renderMarkdown } from '../render/markdown';
+import { renderMarkdown, type RenderResult } from '../render/markdown';
+import type { DiagramTheme } from '../render/mermaid';
 import { settings } from '../settings/settings.svelte';
 import { cssVariables } from '../theme/theme';
 import Preview from '../ui/Preview.svelte';
@@ -60,12 +61,16 @@ export async function printDoc(doc: DocState, opts: { pdfHint: boolean }): Promi
 /**
  * Renders the doc's preview in print mode into `host`, which must be in the page so Mermaid
  * draws, then leaves only a static copy there: no effects, loaders or fetches. Returns its HTML.
+ * `result` replaces the doc's own render; `theme` is the diagrams' theme.
  */
-export async function renderFrozen(doc: Pick<DocState, 'id' | 'path' | 'text'>, host: HTMLElement): Promise<string> {
-  const result = renderMarkdown(doc.text);
+export async function renderFrozen(
+  doc: Pick<DocState, 'id' | 'path' | 'text'>,
+  host: HTMLElement,
+  { result = renderMarkdown(doc.text), theme = 'light' }: { result?: RenderResult; theme?: DiagramTheme } = {},
+): Promise<string> {
   const preview = mount(Preview, {
     target: host,
-    props: { result, docId: doc.id, docPath: doc.path, reading: true, print: true },
+    props: { result, docId: doc.id, docPath: doc.path, reading: true, print: true, printTheme: theme },
   });
   let copy: Node[];
   try {

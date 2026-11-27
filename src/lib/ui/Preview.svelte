@@ -38,6 +38,7 @@
     reading = false,
     lineCount,
     print = false,
+    printTheme = 'light',
   }: {
     result: RenderResult;
     onLineVisible?: (line: number) => void;
@@ -45,7 +46,8 @@
     docPath?: string | null; // relative images and links resolve against its folder
     reading?: boolean; // Read mode: 720 px column, larger text
     lineCount?: number; // source lines; lets the last block sync to the end
-    print?: boolean; // the print root: light diagrams, no banner or scroll sync (Ruling 293)
+    print?: boolean; // the print root: no banner or scroll sync (Ruling 293)
+    printTheme?: DiagramTheme; // diagrams in print mode: light, but dark for a dark HTML export
   } = $props();
 
   let scroller: HTMLDivElement;
@@ -53,7 +55,7 @@
   let content: HTMLDivElement;
 
   // The theme diagrams are drawn in; follows the theme engine (Ruling 128).
-  let theme: DiagramTheme = untrack(() => (print ? 'light' : $resolvedTheme));
+  let theme: DiagramTheme = untrack(() => (print ? printTheme : $resolvedTheme));
   // A hidden tab draws its diagrams when it is shown, not while out of sight (Ruling 115).
   let diagramsWaiting = false;
   // What drawn() waits for; images only in print mode.

@@ -326,7 +326,7 @@ export function menuEntries(
         action: () => h.print(),
       },
       { id: 'export-pdf', text: 'Export as PDF…', action: () => h.exportPdf() },
-      { id: 'export-html', text: 'Export as HTML…', enabled: false, action: () => h.exportHtml() },
+      { id: 'export-html', text: 'Export as HTML…', action: () => h.exportHtml() },
       { id: 'export-docx', text: 'Export as Word…', enabled: false, action: () => h.exportDocx() },
       ...(mac ? [] : [separator, settings, separator, quit]),
     ],
