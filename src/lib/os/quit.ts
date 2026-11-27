@@ -54,6 +54,9 @@ export interface QuitProgressEvent {
 export const NOT_RESPONDING =
   'A Lintel window is not responding. Quit anyway? Unsaved changes in it may be lost.';
 const QUIT_ANYWAY = 'Quit Anyway';
+export const NOT_RESPONDING_UPDATE =
+  'A Lintel window is not responding. Install the update anyway? Unsaved changes in it may be lost.';
+const INSTALL_ANYWAY = 'Install Anyway';
 export const HANDOFF_STUCK =
   'Lintel could not finish moving a document between windows, so it did not quit.';
 const REPLY_TIMEOUT_MS = 5000;
@@ -66,10 +69,14 @@ const HANDOFF_WAIT_MS = 30_000;
 
 type QuitOrder = Pick<Workspace, 'docIdsInOrder' | 'activate'>;
 
-/** 'proceed': the round passed every prompt and ran the `then` it started with. */
+/** 'proceed': the round passed every prompt and its step ran. */
 export type QuitOutcome = 'cancelled' | 'proceed';
+/** What the round is for, which the hung-window question names. */
+export type QuitPurpose = 'quit' | 'update';
+// 'failed': every prompt passed, then the round's own step failed.
+type RoundResult = QuitOutcome | 'failed';
 
-let quitting: Promise<QuitOutcome> | null = null;
+let quitting: Promise<RoundResult> | null = null;
 // The window running a quit round elsewhere, as announced by QUIT_ROUND.
 let roundElsewhere: string | null = null;
 
@@ -81,21 +88,43 @@ export async function quitApp(workspace?: QuitOrder): Promise<void> {
 /**
  * Asks every document window, this one first, about its dirty docs and saves its session,
  * then runs `then`: exit, or install an update (Ruling 343). Cancel in any window stops the
- * round and closes nothing. A call while a round runs joins it; its own `then` never runs
- * (Ruling 219).
+ * round and closes nothing. A call while a round runs joins it (Ruling 219); its own `then`
+ * runs only if the round's step failed (Ruling 349).
  */
 export async function runQuitRounds(
   workspace: QuitOrder | undefined,
   then: () => Promise<unknown>,
+  purpose: QuitPurpose = 'quit',
 ): Promise<QuitOutcome> {
-  if (quitting) return quitting;
+  if (quitting) return joinRound(quitting, then);
   if (answering) {
     await answering.catch(() => {});
     return 'cancelled';
   }
   if (await roundRunsElsewhere()) return 'cancelled';
-  quitting ??= runQuit(workspace, then).finally(() => (quitting = null));
-  return quitting;
+  if (quitting) return joinRound(quitting, then);
+  const round = runQuit(workspace, then, purpose).finally(() => (quitting = null));
+  quitting = round;
+  const result = await round;
+  return result === 'failed' ? 'cancelled' : result;
+}
+
+// The prompts passed even when the step failed, so a Quit that joined an update round
+// whose install failed still quits.
+async function joinRound(round: Promise<RoundResult>, then: () => Promise<unknown>): Promise<QuitOutcome> {
+  const result = await round;
+  return result === 'failed' ? runStep(then) : result;
+}
+
+// Neither exit nor an update's relaunch raises close-requested, so no prompt runs again.
+async function runStep(then: () => Promise<unknown>): Promise<QuitOutcome> {
+  try {
+    await then();
+    return 'proceed';
+  } catch (err) {
+    await message(String(err), { title: 'Lintel', kind: 'error' });
+    return 'cancelled';
+  }
 }
 
 /** Answers quit requests from other windows. Returns a function that stops listening. */
@@ -123,38 +152,48 @@ export function listenForQuitRequests(): () => void {
 async function runQuit(
   workspace: QuitOrder | undefined,
   then: () => Promise<unknown>,
-): Promise<QuitOutcome> {
+  purpose: QuitPurpose,
+): Promise<RoundResult> {
   const self = getCurrentWindow().label;
   const round = crypto.randomUUID();
   await announceRound(self, true);
   try {
-    // Docs on their way between windows land first, and the window list is read after.
-    if (!(await handoffsQuiet())) return 'cancelled';
-    // After the first pass, every window is asked again until a pass shows no prompt, so a
-    // doc taken in, edited or made dirty after its window answered is asked about (Ruling 237).
-    const abandoned = new Set<string>();
-    for (let pass = 0; ; pass++) {
-      const labels = [self, ...(await docWindowLabels()).filter((label) => label !== self)];
-      let asked = false;
-      for (const label of labels.filter((label) => !abandoned.has(label))) {
-        const answer = label === self ? await answerQuit(self, round, workspace) : await askWindow(label, round);
-        if (!answer.ok) return 'cancelled';
-        if (answer.abandoned) abandoned.add(label);
-        asked ||= answer.asked;
-      }
-      if (!(await handoffsQuiet())) return 'cancelled';
-      if (pass > 0 && !asked) break;
-    }
+    if (!(await promptEveryWindow(self, round, workspace, purpose))) return 'cancelled';
     // Size stays with Rust: on macOS a docked Web Inspector shrinks the size read here.
     await saveWindowState(GEOMETRY).catch((err) => console.error('Could not save window positions:', err));
-    // Neither exit nor an update's relaunch raises close-requested, so no prompt runs again.
-    await then();
-    return 'proceed';
+    return (await runStep(then)) === 'proceed' ? 'proceed' : 'failed';
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
     return 'cancelled';
   } finally {
     await announceRound(self, false);
+  }
+}
+
+// False once a prompt is cancelled or a hand-over is stuck.
+async function promptEveryWindow(
+  self: string,
+  round: string,
+  workspace: QuitOrder | undefined,
+  purpose: QuitPurpose,
+): Promise<boolean> {
+  // Docs on their way between windows land first, and the window list is read after.
+  if (!(await handoffsQuiet())) return false;
+  // After the first pass, every window is asked again until a pass shows no prompt, so a
+  // doc taken in, edited or made dirty after its window answered is asked about (Ruling 237).
+  const abandoned = new Set<string>();
+  for (let pass = 0; ; pass++) {
+    const labels = [self, ...(await docWindowLabels()).filter((label) => label !== self)];
+    let asked = false;
+    for (const label of labels.filter((label) => !abandoned.has(label))) {
+      const answer =
+        label === self ? await answerQuit(self, round, workspace) : await askWindow(label, round, purpose);
+      if (!answer.ok) return false;
+      if (answer.abandoned) abandoned.add(label);
+      asked ||= answer.asked;
+    }
+    if (!(await handoffsQuiet())) return false;
+    if (pass > 0 && !asked) return true;
   }
 }
 
@@ -312,15 +351,17 @@ async function bringForward(): Promise<void> {
   }
 }
 
-async function askWindow(label: string, round: string): Promise<Answer> {
+async function askWindow(label: string, round: string, purpose: QuitPurpose): Promise<Answer> {
   const requestId = crypto.randomUUID();
   const answer = await waitForAnswer(requestId, label);
   try {
     await emitTo(label, QUIT_REQUEST, { requestId, round } satisfies QuitRequestEvent);
     const result = await answer.result;
     if (result === 'silent') {
-      const quitAnyway = (await message(NOT_RESPONDING, notRespondingOptions)) === QUIT_ANYWAY;
-      return { ok: quitAnyway, asked: false, abandoned: true };
+      const [question, anyway] =
+        purpose === 'update' ? [NOT_RESPONDING_UPDATE, INSTALL_ANYWAY] : [NOT_RESPONDING, QUIT_ANYWAY];
+      const choice = await message(question, notRespondingOptions(anyway));
+      return { ok: choice === anyway, asked: false, abandoned: true };
     }
     return result;
   } finally {
@@ -330,11 +371,12 @@ async function askWindow(label: string, round: string): Promise<Answer> {
 
 // AppKit gives a button titled Cancel the Escape key and leaves Return unbound, so Return
 // does nothing and Escape keeps the app running (Ruling 235).
-const notRespondingOptions = {
-  title: 'Lintel',
-  kind: 'warning',
-  buttons: { ok: 'Cancel', cancel: QUIT_ANYWAY },
-} as const;
+const notRespondingOptions = (anyway: string) =>
+  ({
+    title: 'Lintel',
+    kind: 'warning',
+    buttons: { ok: 'Cancel', cancel: anyway },
+  }) as const;
 
 // Listens before the request goes out, so a quick answer cannot be missed.
 async function waitForAnswer(

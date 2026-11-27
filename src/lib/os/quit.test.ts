@@ -9,6 +9,7 @@ import {
   HANDOFF_STUCK,
   listenForQuitRequests,
   NOT_RESPONDING,
+  NOT_RESPONDING_UPDATE,
   QUIT_PROGRESS,
   QUIT_REPLY,
   QUIT_REQUEST,
@@ -791,6 +792,38 @@ describe('runQuitRounds for an update (Ruling 343)', () => {
 
     expect(install).toHaveBeenCalledOnce();
     expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('a Quit that joined an update round still quits when the install fails (Ruling 349)', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    windowAnswering('w-1');
+    const install = vi.fn(async () => {
+      throw 'Could not install the update: denied';
+    });
+
+    const [updated] = await Promise.all([runQuitRounds(undefined, install, 'update'), quitApp()]);
+
+    expect(updated).toBe('cancelled');
+    expect(messageDialog).toHaveBeenCalledWith('Could not install the update: denied', expect.anything());
+    expect(exitApp).toHaveBeenCalledOnce();
+    expect(vi.mocked(saveWindowSession).mock.calls).toEqual([['main'], ['w-1']]);
+  });
+
+  it('asks whether to install anyway when a window says nothing for 5 s (Ruling 349)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    messageDialog.mockResolvedValue('Install Anyway');
+    const install = vi.fn(async () => {});
+
+    const updating = runQuitRounds(undefined, install, 'update');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(await updating).toBe('proceed');
+    expect(messageDialog).toHaveBeenCalledWith(
+      NOT_RESPONDING_UPDATE,
+      expect.objectContaining({ buttons: { ok: 'Cancel', cancel: 'Install Anyway' } }),
+    );
+    expect(install).toHaveBeenCalledOnce();
   });
 
   it('quitApp still exits, once', async () => {
