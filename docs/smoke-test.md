@@ -1,6 +1,7 @@
 # Smoke test: Windows and Linux
 
-Run once, after the v0.1.0 tag, with builds installed from its draft release, on:
+Run once, after the v0.1.0 tag, with builds installed from its draft release (see
+docs/releasing.md), on:
 
 - Windows 10 or 11 (x64), with the `.exe`
 - Ubuntu 24.04 arm64, with the `arm64` `.deb`

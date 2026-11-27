@@ -60,6 +60,10 @@ about unsaved changes. Use the installed command instead.
 
 See [docs/known-issues.md](docs/known-issues.md).
 
+## Releasing
+
+Maintainers: see [docs/releasing.md](docs/releasing.md).
+
 ## Licence
 
 Lintel is released under the MIT licence. The licences of the software it includes are in
