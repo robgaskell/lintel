@@ -328,6 +328,30 @@ describe('saving a window with no tabs (Ruling 220)', () => {
   });
 });
 
+describe('a save still writing when its window is forgotten (Ruling 235)', () => {
+  it('runs the forget after the save, so the key stays deleted', async () => {
+    store().data.set('version', 1);
+    await restoreWindow('w-60');
+    fileDoc('/notes/a.md');
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const realSet = store().set.bind(store());
+    vi.spyOn(store(), 'set').mockImplementationOnce(async (key, value) => {
+      await held;
+      return realSet(key, value);
+    });
+
+    const saving = saveWindowSession('w-60');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const forgetting = forgetWindowSession('w-60');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    await Promise.all([saving, forgetting]);
+
+    expect(store().data.has('window:w-60')).toBe(false);
+  });
+});
+
 describe('forgetting a closed window (Ruling 220)', () => {
   async function closedWindowKey(label: string) {
     store().data.set('version', 1);

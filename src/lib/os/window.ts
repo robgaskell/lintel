@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
-import { confirmCloseAll, docs, handoffsSettled } from '../docs/store.svelte';
+import { arrivalKey, confirmCloseAll, docs, handoffsSettled } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { docWindowLabels } from './windows';
@@ -20,9 +20,9 @@ export async function handleCloseRequested(
     const asked = new Set<string>();
     for (;;) {
       await handoffsSettled();
-      const ids = workspace.docIdsInOrder().filter((id) => !asked.has(id));
+      const ids = workspace.docIdsInOrder().filter((id) => !asked.has(arrivalKey(id)));
       if (ids.length === 0) break;
-      for (const id of ids) asked.add(id);
+      for (const id of ids) asked.add(arrivalKey(id));
       if (!(await confirmCloseAll(ids, (id) => workspace.activate(id)))) {
         event.preventDefault();
         return;

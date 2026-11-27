@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
-import { createDoc, docs, trackHandoff, untitledCounter } from '../docs/store.svelte';
+import { adoptDoc, createDoc, docs, trackHandoff, untitledCounter } from '../docs/store.svelte';
 import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { closeTabOrWindow, handleCloseRequested } from './window';
 import { docWindowLabels } from './windows';
@@ -161,6 +161,35 @@ describe('handleCloseRequested', () => {
     ]);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(docs.has(a.id) && docs.has(back.id)).toBe(true);
+  });
+
+  it('asks about a doc that left during its turn and came back with the same id (Ruling 235)', async () => {
+    const a = dirtyDoc('/a.md');
+    const y = dirtyDoc('/y.md');
+    let answer: (choice: string) => void = () => {};
+    messageDialog.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    messageDialog.mockResolvedValue('Cancel');
+    const event = { preventDefault: vi.fn() };
+    const order = [a.id, y.id];
+
+    const closing = handleCloseRequested(event, { docIdsInOrder: () => order, activate: vi.fn() });
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalledOnce());
+    // y leaves on a hand-over while a's prompt is open, which then fails and brings y back.
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const leaving = { ...y };
+    docs.delete(y.id);
+    answer("Don't Save");
+    await tick();
+    adoptDoc(leaving);
+    settle();
+    await closing;
+
+    expect(messageDialog.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('a.md'),
+      expect.stringContaining('y.md'),
+    ]);
+    expect(event.preventDefault).toHaveBeenCalled();
   });
 
   it('waits for a hand-over that starts while its prompt is open before it closes (Ruling 216)', async () => {

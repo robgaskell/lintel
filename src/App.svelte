@@ -157,7 +157,11 @@
     async function restoreSession() {
       try {
         const { missing } = await restoreWindow(label);
-        if (missing.length > 0 && !disposed) showNotice(missingNotice(missing.length));
+        if (disposed) return;
+        if (missing.length > 0) showNotice(missingNotice(missing.length));
+        // The tick follows the focused window; this one may have taken focus before its
+        // restore set the outline (Ruling 235).
+        if (await getCurrentWindow().isFocused()) await setOutlineChecked(outline.visible);
         if (label === 'main') await restoreAllWindows();
       } catch (err) {
         console.error('Could not restore the last session:', err);
@@ -221,6 +225,9 @@
       update="none"
       reading={active.mode === 'read'}
     />
+  {:else if notice}
+    <!-- With nothing restored there is no status bar, but the notice still shows (Ruling 235). -->
+    <footer class="notice-bar"><span role="status">{notice}</span></footer>
   {/if}
 </div>
 
@@ -239,6 +246,19 @@
 
   .dock {
     height: 100%;
+  }
+
+  .notice-bar {
+    display: flex;
+    flex: 0 0 28px;
+    align-items: center;
+    justify-content: flex-end;
+    box-sizing: border-box;
+    padding: 0 12px;
+    background: var(--chrome);
+    border-top: 1px solid var(--border);
+    color: var(--muted-strong);
+    font-size: 12px;
   }
 
   /* Dockview's theme classes force a color-scheme; take the resolved theme instead. */

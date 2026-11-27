@@ -21,6 +21,7 @@ const fake = vi.hoisted(() => ({
   alone: new Set<string>(),
   focusHandler: null as ((event: { payload: boolean }) => void) | null,
   label: 'main',
+  focused: true,
 }));
 
 vi.mock('./lib/layout/workspace', () => ({
@@ -47,6 +48,7 @@ vi.mock('@tauri-apps/api/window', () => ({
       return () => {};
     },
     setTheme: async () => {},
+    isFocused: async () => fake.focused,
   }),
 }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
@@ -114,6 +116,7 @@ beforeEach(() => {
   fake.alone.clear();
   fake.focusHandler = null;
   fake.label = 'main';
+  fake.focused = true;
   outline.visible = true;
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
@@ -371,5 +374,45 @@ describe('App session (Rulings 205, 209, 212)', () => {
     flushSync();
     expect(save).toHaveBeenCalledTimes(4);
     expect(save).toHaveBeenLastCalledWith('main');
+  });
+});
+
+describe('App after a restore (Ruling 235)', () => {
+  beforeEach(() => {
+    vi.mocked(loadSettings).mockImplementation(async () => settings);
+  });
+
+  it('shows the not-found notice in an empty window, where there is no status bar', async () => {
+    vi.mocked(restoreWindow).mockResolvedValueOnce({ restored: 0, missing: ['/gone.md'] });
+    const { container } = render(App);
+
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        '1 file from last session was not found',
+      ),
+    );
+  });
+
+  it('ticks View > Show Outline with the outline the restore brought back', async () => {
+    vi.mocked(restoreWindow).mockImplementationOnce(async () => {
+      outline.visible = false;
+      return { restored: 1, missing: [] };
+    });
+    render(App);
+
+    await vi.waitFor(() => expect(setOutlineChecked).toHaveBeenLastCalledWith(false));
+  });
+
+  it('leaves the tick to the focused window when this one is in the background', async () => {
+    fake.focused = false;
+    vi.mocked(restoreWindow).mockImplementationOnce(async () => {
+      outline.visible = false;
+      return { restored: 1, missing: [] };
+    });
+    render(App);
+    await vi.waitFor(() => expect(restoreWindow).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(setOutlineChecked).not.toHaveBeenCalledWith(false);
   });
 });

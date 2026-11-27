@@ -101,8 +101,24 @@ function insertDoc(
 /** Inserts a doc handed over from another window as it is, unsaved edits included (Ruling 186). */
 export function adoptDoc(state: DocState): DocState {
   const doc = $state<DocState>({ ...state });
+  arrivals.set(doc.id, arrivalOf(doc.id) + 1);
   docs.set(doc.id, doc);
   return doc;
+}
+
+// A doc keeps its id across windows, so a doc back from a failed hand-over needs this.
+const arrivals = new Map<string, number>();
+
+/**
+ * The doc's id plus how many times it has arrived in this window, so a doc that left and
+ * came back is not taken for one already asked about (Ruling 235).
+ */
+export function arrivalKey(id: string): string {
+  return `${id}#${arrivalOf(id)}`;
+}
+
+function arrivalOf(id: string): number {
+  return arrivals.get(id) ?? 0;
 }
 
 /**
