@@ -320,6 +320,22 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
     expect(page.querySelector('.content q')!.hasAttribute('cite')).toBe(false);
   });
 
+  it('drops a plain value with leading control characters before its scheme, as URL parsers skip them (Ruling 334)', async () => {
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({
+      ...actual(text),
+      html: '<p><object data="&#1;http://x.example/o"></object><q cite=" &#31;//x.example/q">q</q></p>',
+    }));
+    const page = parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' }));
+    expect(page.querySelector('.content object')!.hasAttribute('data')).toBe(false);
+    expect(page.querySelector('.content q')!.hasAttribute('cite')).toBe(false);
+  });
+
+  it('keeps aria-describedby text that looks like a scheme and a call (Ruling 334)', async () => {
+    const page = parse(await buildStandaloneHtml(doc('<span aria-describedby="Note: see (1)">s</span>\n'), { theme: 'light' }));
+    expect(page.querySelector('.content span[aria-describedby]')!.getAttribute('aria-describedby')).toBe('Note: see (1)');
+  });
+
   it('keeps alt, title and aria-* text, which never loads (Ruling 331)', async () => {
     const text = '![Note: see (1)](img/a.png) <abbr title="Note: see (1)">n</abbr> <span aria-label="Note: see (1)">s</span>\n';
     const page = parse(await buildStandaloneHtml(doc(text), { theme: 'light' }));

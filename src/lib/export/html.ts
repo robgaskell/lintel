@@ -145,8 +145,9 @@ function unlinkNetworkPaths(root: DocumentFragment) {
   }
 }
 
-// Drops raw styles and every attribute that could load something (Rulings 320, 329, 331).
-// With tab, LF and CR removed first, as URL parsers do, a value goes if it starts with a
+// Drops raw styles and every attribute that could load something (Rulings 320, 329, 331, 334).
+// With tab, LF and CR removed, and control characters and spaces at either end, as URL
+// parsers do, a value goes if it starts with a
 // scheme other than data:, `//` or `\\`; or if it has a parenthesis and holds such a scheme,
 // a backslash or `//` anywhere, or a url() not within the page. Other hrefs keep only a
 // #fragment. alt, title and aria-* never load, so they stay. Links are unlinkNetworkPaths'
@@ -169,7 +170,7 @@ function stripRemote(root: DocumentFragment) {
 }
 
 function pointsOffPage(value: string): boolean {
-  const target = value.replace(/[\t\n\r]/g, '').trim();
+  const target = value.replace(/[\t\n\r]/g, '').replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '');
   if (!target.includes('(')) return /^([a-z][a-z0-9+.-]*:\S|[\\/]{2})/i.test(target) && !isInPage(target);
   // Any letter case, and even inside a data: URI.
   const schemes = target.match(/[a-z][a-z0-9+.-]*:/gi) ?? [];
