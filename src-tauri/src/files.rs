@@ -385,7 +385,21 @@ pub async fn write_text_file<R: Runtime>(
     watcher.saving(window.label(), &path, || write_text(&path, &text))
 }
 
+/// Writes an export such as a .docx, sent as base64 (Ruling 314).
+#[tauri::command]
+pub async fn write_binary_file(path: String, base64: String) -> Result<(), String> {
+    let bytes = BASE64_STANDARD
+        .decode(base64.as_bytes())
+        .map_err(|e| format!("Could not save {path}: {e}"))?;
+    write_bytes(&path, &bytes)
+}
+
 pub(crate) fn write_text(path: &str, text: &str) -> Result<String, String> {
+    write_bytes(path, text.as_bytes())?;
+    Ok(sha256_hex(text.as_bytes()))
+}
+
+fn write_bytes(path: &str, bytes: &[u8]) -> Result<(), String> {
     let fail = |e: io::Error| format!("Could not save {path}: {e}");
     let target = resolve_symlinks(Path::new(path)).map_err(fail)?;
     let existing = match fs::metadata(&target) {
@@ -396,8 +410,7 @@ pub(crate) fn write_text(path: &str, text: &str) -> Result<String, String> {
     if existing.as_ref().is_some_and(Permissions::readonly) {
         return Err(READ_ONLY.to_owned());
     }
-    write_atomic(&target, text.as_bytes(), existing).map_err(fail)?;
-    Ok(sha256_hex(text.as_bytes()))
+    write_atomic(&target, bytes, existing).map_err(fail)
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -688,6 +701,77 @@ mod tests {
             perms.set_readonly(false);
             fs::set_permissions(&file, perms).unwrap();
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_binary_file_writes_the_decoded_bytes_and_no_temp_file() {
+        let dir = temp_dir();
+        let file = dir.join("out.docx");
+        fs::write(&file, "old").unwrap();
+        let bytes = [b'P', b'K', 3, 4, 0, 0xFF, 0xFE];
+
+        block_on(write_binary_file(
+            path_str(&file),
+            BASE64_STANDARD.encode(bytes),
+        ))
+        .unwrap();
+
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert_eq!(file_names(&dir), vec!["out.docx"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_binary_file_refuses_bad_base64_and_writes_nothing() {
+        let dir = temp_dir();
+        let file = dir.join("out.docx");
+
+        let err = block_on(write_binary_file(path_str(&file), "not base64!".to_owned()))
+            .unwrap_err();
+
+        assert!(err.contains("out.docx"), "{err}");
+        assert!(file_names(&dir).is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_binary_file_refuses_a_read_only_file() {
+        let dir = temp_dir();
+        let file = dir.join("locked.docx");
+        fs::write(&file, "old").unwrap();
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&file, perms).unwrap();
+
+        let err = block_on(write_binary_file(path_str(&file), BASE64_STANDARD.encode("new")))
+            .unwrap_err();
+
+        assert_eq!(err, "This file is read-only.");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "old");
+        #[cfg(windows)]
+        {
+            let mut perms = fs::metadata(&file).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            fs::set_permissions(&file, perms).unwrap();
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_binary_file_writes_through_a_symlink() {
+        let dir = temp_dir();
+        let real = dir.join("real.docx");
+        fs::write(&real, "old").unwrap();
+        let link = dir.join("link.docx");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        block_on(write_binary_file(path_str(&link), BASE64_STANDARD.encode("new"))).unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
         fs::remove_dir_all(dir).unwrap();
     }
 

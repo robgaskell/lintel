@@ -15,6 +15,11 @@ export function writeTextFile(path: string, text: string): Promise<string> {
   return invoke<string>('write_text_file', { path, text });
 }
 
+/** Writes `base64`'s bytes atomically, as Save does; for exports such as .docx (Ruling 314). */
+export function writeBinaryFile(path: string, base64: string): Promise<void> {
+  return invoke<void>('write_binary_file', { path, base64 });
+}
+
 /** The canonical path of an existing file (symlinks and `.` resolved). Rejects if it is missing. */
 export function normalizePath(path: string): Promise<string> {
   return invoke<string>('normalize_path', { path });

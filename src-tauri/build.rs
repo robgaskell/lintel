@@ -7,6 +7,7 @@ fn main() {
         "read_image_as_data_uri",
         "read_text_file",
         "write_text_file",
+        "write_binary_file",
         "fetch_remote_image",
         "claim_path",
         "release_path",

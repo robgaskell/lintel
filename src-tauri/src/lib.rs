@@ -57,6 +57,7 @@ pub fn run() {
             files::read_image_as_data_uri,
             files::read_text_file,
             files::write_text_file,
+            files::write_binary_file,
             remote::fetch_remote_image,
             windows::claim_path,
             windows::release_path,
@@ -460,6 +461,18 @@ mod tests {
             let permission = format!("allow-{}", command.replace('_', "-"));
             assert!(granted.contains(&serde_json::json!(permission)));
         }
+    }
+
+    #[test]
+    fn only_document_windows_may_write_exports() {
+        assert!(include_str!("../build.rs").contains("\"write_binary_file\""));
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        let write = serde_json::json!("allow-write-binary-file");
+        assert!(main["permissions"].as_array().unwrap().contains(&write));
+        assert!(!settings["permissions"].as_array().unwrap().contains(&write));
     }
 
     #[test]

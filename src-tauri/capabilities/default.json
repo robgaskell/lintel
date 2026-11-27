@@ -19,6 +19,7 @@
     "allow-read-image-as-data-uri",
     "allow-read-text-file",
     "allow-write-text-file",
+    "allow-write-binary-file",
     "allow-fetch-remote-image",
     "allow-claim-path",
     "allow-release-path",
