@@ -186,20 +186,10 @@ describe('lint surfaces (Rulings 152, 272)', () => {
     expect(getComputedStyle(off).borderTopColor).toBe(rgb(TOKENS['--border']));
   });
 
-  it("styles the linter's own list, actions and point marker from tokens", () => {
+  it('marks a problem with no width in the warning colour', () => {
     const v = mount('text', withLint);
-    const panels = inside(v, 'div', 'cm-panels cm-panels-bottom');
-    const panel = inside(v, 'div', 'cm-panel cm-panel-lint', panels);
-    const list = inside(v, 'ul', '', panel);
-    const item = inside(v, 'li', 'cm-diagnostic cm-diagnostic-warning', list);
-    item.setAttribute('aria-selected', 'true');
-    const action = inside(v, 'button', 'cm-diagnosticAction', item);
     const point = inside(v, 'span', 'cm-lintPoint cm-lintPoint-warning', v.contentDOM);
 
-    expect(getComputedStyle(item).borderLeftColor).toBe(rgb(TOKENS['--lint-warning']));
-    expect(getComputedStyle(item).backgroundColor).toBe(rgb(TOKENS['--selection-unfocused']));
-    expect(getComputedStyle(action).backgroundColor).toBe(rgb(TOKENS['--accent']));
-    expect(getComputedStyle(action).color).toBe(rgb(TOKENS['--bg']));
     expect(getComputedStyle(point, '::after').borderBottomColor).toBe(rgb(TOKENS['--lint-warning']));
   });
 });

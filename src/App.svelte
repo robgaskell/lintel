@@ -13,7 +13,7 @@
   import { docs, setWatchFailureReporter } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
   import { outline } from './lib/layout/outline.svelte';
-  import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
+  import { followLintSettings, lintIssues, settingsLintConfig } from './lib/lint/lintState.svelte';
   import { Workspace } from './lib/layout/workspace';
   import {
     setOutlineChecked,
@@ -60,8 +60,10 @@
     const view = activeId === null ? null : viewFor(activeId);
     const list = issues;
     if (!view || !list) return;
-    // Loaded already: there are issues only once markdownlint has run.
-    void import('./lib/lint/lint').then(({ fixAll }) => fixAll(view, list));
+    // Loaded already: there are issues only once markdownlint has run. The config lets a
+    // result from before the latest typing be redone now (Ruling 281).
+    const config = settingsLintConfig();
+    void import('./lib/lint/lint').then(({ fixAll }) => fixAll(view, list, config));
   }
 
   // Counted at once on a tab switch, then debounced like the preview (Ruling 109).

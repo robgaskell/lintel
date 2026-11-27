@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { history } from '@codemirror/commands';
 import { setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { EditorState, type RangeSet } from '@codemirror/state';
-import { EditorView, gutterLineClass, type GutterMarker } from '@codemirror/view';
+import { EditorView, activateHover, gutterLineClass, hasHoverTooltips, type GutterMarker } from '@codemirror/view';
 import { disableRule } from './ruleSettings';
 import type { LintIssue } from './lint';
 import {
@@ -203,6 +203,28 @@ describe('hover card (Ruling 273)', () => {
     cardActions(v).fix(md004);
 
     expect(v.state.doc.toString()).toBe('# T\n\n- a\n- b\n');
+  });
+
+  it('opens over a problem and closes on any edit, so it never offers a stale fix', async () => {
+    const v = editor(TEXT);
+    await lintNow(v);
+
+    activateHover(v, 9, 1);
+    expect(hasHoverTooltips(v.state)).toBe(true);
+    expect(document.querySelector('.cm-lintCard-rule')?.textContent).toBe('MD004 ul-style');
+
+    v.dispatch({ changes: { from: 0, insert: 'x' } });
+    expect(hasHoverTooltips(v.state)).toBe(false);
+  });
+
+  it('closes when the problems are linted again', async () => {
+    const v = editor(TEXT);
+    await lintNow(v);
+    activateHover(v, 9, 1);
+
+    v.dispatch(setDiagnostics(v.state, []));
+
+    expect(hasHoverTooltips(v.state)).toBe(false);
   });
 
   it('Turn off this rule writes its alias to the settings', async () => {

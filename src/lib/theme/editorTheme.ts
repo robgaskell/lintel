@@ -98,13 +98,6 @@ const view = EditorView.theme({
     fontWeight: '600',
   },
   '.cm-lintCard-actions button:focus-visible': { outline: '2px solid var(--accent)', outlineOffset: '2px' },
-  '.cm-diagnostic-warning': { borderLeftColor: 'var(--lint-warning)' },
-  '.cm-diagnosticAction': { backgroundColor: 'var(--accent)', color: 'var(--bg)' },
-  '.cm-panel.cm-panel-lint ul [aria-selected]': { backgroundColor: 'var(--selection-unfocused)' },
-  '.cm-panel.cm-panel-lint ul:focus [aria-selected]': {
-    backgroundColor: 'var(--selection)',
-    color: 'var(--text)',
-  },
 });
 
 // Markdown marks are muted and headings bold, as in the Main artboard; code inside fences

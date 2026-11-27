@@ -231,7 +231,7 @@ describe('App lint count (M6.1)', () => {
     expect(statusText(container)).not.toContain('lint');
   });
 
-  it("fixes the active doc's issues in its own editor", async () => {
+  it("fixes the active doc's issues in its own editor, linting again if they are stale", async () => {
     const a = createDoc({ path: '/a.md', raw: 'x', hash: 'h', mode: 'edit' });
     const view = { dispatch: vi.fn() } as unknown as Parameters<typeof registerView>[1];
     const stop = registerView(a.id, view);
@@ -242,7 +242,7 @@ describe('App lint count (M6.1)', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Fix all' }));
 
-    await vi.waitFor(() => expect(fixAll).toHaveBeenCalledWith(view, issues));
+    await vi.waitFor(() => expect(fixAll).toHaveBeenCalledWith(view, issues, { default: true }));
     stop();
   });
 });

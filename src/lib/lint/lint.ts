@@ -34,9 +34,15 @@ export function fixOne(view: EditorView, issue: LintIssue): void {
   applyRaw(view, [issue]);
 }
 
-/** Applies every fix in one transaction, so one undo reverts them all. */
-export function fixAll(view: EditorView, issues: LintIssue[]): void {
-  applyRaw(view, issues.filter((issue) => issue.fixable));
+/**
+ * Applies every fix in one transaction, so one undo reverts them all. If `issues` came
+ * from text since edited, and `config` is given, lints the text now and fixes that instead.
+ */
+export function fixAll(view: EditorView, issues: LintIssue[], config?: object | null): void {
+  const text = view.state.doc.toString();
+  const current = issues.every((issue) => lintedText.get(issue) === text);
+  const fresh = current || !config ? issues : lintText(text, config);
+  applyRaw(view, fresh.filter((issue) => issue.fixable));
 }
 
 function applyRaw(view: EditorView, issues: LintIssue[]): void {
@@ -46,25 +52,144 @@ function applyRaw(view: EditorView, issues: LintIssue[]): void {
   const fixed = applyFixes(text, issues.map((issue) => issue.raw as LintError));
   if (fixed === text) return;
   view.dispatch({
-    changes: changedSpan(text, fixed),
+    // One change per fixed region, so text between fixes, and a cursor in it, stay put (Ruling 279).
+    changes: changesBetween(text, fixed),
     // Else a fix made just after typing joins the typing's undo step.
     annotations: isolateHistory.of('full'),
   });
 }
 
-// The smallest single replacement that turns `before` into `after`.
-function changedSpan(before: string, after: string): { from: number; to: number; insert: string } {
-  let start = 0;
-  while (start < before.length && start < after.length && before[start] === after[start]) start++;
-  let end = 0;
+type Change = { from: number; to: number; insert: string };
+
+/** Changes that turn `before` into `after`: one per differing region, in order, none overlapping. */
+export function changesBetween(before: string, after: string): Change[] {
+  const a = lines(before);
+  const b = lines(after);
+  const aStarts = starts(a);
+  const bStarts = starts(b);
+  return lineHunks(a, b)
+    .flatMap(byLine)
+    .map(([a0, a1, b0, b1]) => trimmed(before, aStarts[a0], aStarts[a1], after.slice(bStarts[b0], bStarts[b1])))
+    .filter((change) => change.from < change.to || change.insert !== '');
+}
+
+// Changed lines next to each other are still separate fixes.
+function byLine([a0, a1, b0, b1]: Hunk): Hunk[] {
+  if (a1 - a0 !== b1 - b0) return [[a0, a1, b0, b1]];
+  return Array.from({ length: a1 - a0 }, (_, i): Hunk => [a0 + i, a0 + i + 1, b0 + i, b0 + i + 1]);
+}
+
+// Each line with its line break, so joining them gives the text back.
+function lines(text: string): string[] {
+  return text === '' ? [] : text.split(/(?<=\n)/);
+}
+
+function starts(pieces: string[]): number[] {
+  const out = [0];
+  for (const piece of pieces) out.push(out[out.length - 1] + piece.length);
+  return out;
+}
+
+// The replacement of before[from, to) by `insert`, less the text both ends share.
+function trimmed(before: string, from: number, to: number, insert: string): Change {
+  let head = 0;
+  while (from + head < to && head < insert.length && before[from + head] === insert[head]) head++;
+  let tail = 0;
   while (
-    end < before.length - start &&
-    end < after.length - start &&
-    before[before.length - 1 - end] === after[after.length - 1 - end]
+    to - tail > from + head &&
+    insert.length - tail > head &&
+    before[to - 1 - tail] === insert[insert.length - 1 - tail]
   ) {
-    end++;
+    tail++;
   }
-  return { from: start, to: before.length - end, insert: after.slice(start, after.length - end) };
+  return { from: from + head, to: to - tail, insert: insert.slice(head, insert.length - tail) };
+}
+
+type Hunk = [a0: number, a1: number, b0: number, b1: number];
+
+// Myers' diff stores O(D²) state, so past this many edits a rougher split is used.
+const MAX_EDITS = 500;
+
+// Line ranges that differ, as [a0, a1) in `a` replaced by [b0, b1) in `b`.
+function lineHunks(a: string[], b: string[]): Hunk[] {
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  if (start === endA && start === endB) return [];
+  const matched = matchingRuns(a, start, endA, b, start, endB);
+  if (matched) return gapsBetween(matched, start, endA, start, endB);
+  // Too many edits for that: one span, which byLine splits if no lines were added or removed.
+  return [[start, endA, start, endB]];
+}
+
+function gapsBetween(runs: [number, number, number][], a0: number, a1: number, b0: number, b1: number): Hunk[] {
+  const hunks: Hunk[] = [];
+  let x = a0;
+  let y = b0;
+  for (const [rx, ry, length] of [...runs, [a1, b1, 0] as [number, number, number]]) {
+    if (rx > x || ry > y) hunks.push([x, rx, y, ry]);
+    x = rx + length;
+    y = ry + length;
+  }
+  return hunks;
+}
+
+// Runs of equal lines [x, y, length] in order (Myers), or null past MAX_EDITS.
+function matchingRuns(
+  a: string[],
+  a0: number,
+  a1: number,
+  b: string[],
+  b0: number,
+  b1: number,
+): [number, number, number][] | null {
+  const n = a1 - a0;
+  const m = b1 - b0;
+  const limit = Math.min(n + m, MAX_EDITS);
+  const offset = limit + 1;
+  const v = new Int32Array(2 * limit + 3);
+  // trace[d] holds v for diagonals -d-1..d+1 before step d.
+  const trace: Int32Array[] = [];
+  let edits = -1;
+  search: for (let d = 0; d <= limit; d++) {
+    trace.push(v.slice(offset - d - 1, offset + d + 2));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[a0 + x] === b[b0 + y]) {
+        x++;
+        y++;
+      }
+      v[offset + k] = x;
+      if (x >= n && y >= m) {
+        edits = d;
+        break search;
+      }
+    }
+  }
+  if (edits < 0) return null;
+  const runs: [number, number, number][] = [];
+  let x = n;
+  let y = m;
+  for (let d = edits; d > 0; d--) {
+    const before = trace[d];
+    const at = (k: number) => before[k + d + 1];
+    const k = x - y;
+    const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
+    const prevK = down ? k + 1 : k - 1;
+    const prevX = at(prevK);
+    const runX = down ? prevX : prevX + 1;
+    if (x > runX) runs.push([a0 + runX, b0 + runX - k, x - runX]);
+    x = prevX;
+    y = prevX - prevK;
+  }
+  if (x > 0) runs.push([a0, b0, x]);
+  return runs.reverse();
 }
 
 function toIssue(result: LintError, text: string, starts: number[]): LintIssue {
