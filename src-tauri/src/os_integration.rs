@@ -20,6 +20,10 @@ const BUNDLE_ID: &str = "com.robgaskell.lintel";
 const MARKER: &str = "# Installed by Lintel";
 #[cfg(unix)]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(unix)]
+const PATH_START: &str = "<<lintel-path>>";
+#[cfg(unix)]
+const PATH_END: &str = "<</lintel-path>>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetOs {
@@ -51,15 +55,12 @@ pub fn cli_script(os: TargetOs, exe_path: &Path, appimage: Option<&Path>) -> (Pa
         // `start` returns at once, so a first launch does not hold the terminal.
         TargetOs::Windows => (
             PathBuf::from("AppData/Local/Microsoft/WindowsApps/lintel.cmd"),
-            format!(
-                "@echo off\r\nrem {MARKER}\r\nstart \"\" \"{}\" %*\r\n",
-                exe_path.display().to_string().replace('%', "%%")
-            ),
+            windows_cmd(exe_path, &windows_profile_dirs()),
         ),
         TargetOs::Linux => (
             PathBuf::from(".local/bin/lintel"),
             format!(
-                "#!/bin/sh\n{MARKER}\nexec {} \"$@\"\n",
+                "#!/bin/sh\n{MARKER}\nprogram={}\n{LINUX_LAUNCH}",
                 shell_quote(&linux_program(appimage))
             ),
         ),
@@ -74,6 +75,61 @@ const ABSOLUTE_ARGS: &str = r#"for arg do
     *) set -- "$@" "$PWD/$arg" ;;
   esac
 done
+"#;
+
+/// The profile folders a per-user install sits under, most specific first.
+fn windows_profile_dirs() -> Vec<(&'static str, OsString)> {
+    ["LOCALAPPDATA", "USERPROFILE"]
+        .into_iter()
+        .filter_map(|name| Some((name, std::env::var_os(name)?)))
+        .collect()
+}
+
+// cmd.exe reads a .cmd in the console's code page, so a non-ASCII path breaks. A profile
+// folder is named by its variable; any other path runs under code page 65001 (Ruling 252).
+fn windows_cmd(exe_path: &Path, profile_dirs: &[(&str, OsString)]) -> String {
+    let exe = exe_path.to_string_lossy();
+    let in_profile = profile_dirs.iter().find_map(|(name, dir)| {
+        let rest = strip_folder(&exe, &dir.to_string_lossy())?;
+        Some(format!("%{name}%{}", rest.replace('%', "%%")))
+    });
+    let head = format!("@echo off\r\nrem {MARKER}\r\n");
+    match in_profile {
+        Some(path) if path.is_ascii() => format!("{head}start \"\" \"{path}\" %*\r\n"),
+        in_profile => {
+            let path = in_profile.unwrap_or_else(|| exe.replace('%', "%%"));
+            format!(
+                "{head}setlocal\r\n\
+                 for /f \"tokens=2 delims=:.\" %%c in ('chcp') do set \"LINTEL_CP=%%c\"\r\n\
+                 chcp 65001 >nul\r\n\
+                 start \"\" \"{path}\" %*\r\n\
+                 chcp %LINTEL_CP% >nul\r\n"
+            )
+        }
+    }
+}
+
+/// The rest of `path` after the folder `dir`, from its separator on. Case is ignored for
+/// ASCII letters only, which covers the drive and the usual folder names.
+fn strip_folder<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
+    let dir = dir.trim_end_matches(['\\', '/']);
+    let head = path.as_bytes().get(..dir.len())?;
+    if dir.is_empty() || !head.eq_ignore_ascii_case(dir.as_bytes()) {
+        return None;
+    }
+    let rest = path.get(dir.len()..)?;
+    rest.starts_with(['\\', '/']).then_some(rest)
+}
+
+// Ruling 253: Lintel runs detached, so closing the terminal never takes it down.
+const LINUX_LAUNCH: &str = r#"if [ ! -x "$program" ]; then
+  echo "lintel: Lintel is not installed at $program" >&2
+  exit 127
+fi
+if command -v setsid >/dev/null 2>&1; then
+  exec setsid -f "$program" "$@" >/dev/null 2>&1
+fi
+nohup "$program" "$@" >/dev/null 2>&1 &
 "#;
 
 fn linux_program(appimage: Option<&Path>) -> PathBuf {
@@ -91,6 +147,12 @@ pub fn install_cli() -> Result<String, String> {
     let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
     let path = install_cli_in(&home()?, TargetOs::current(), &exe, appimage.as_deref())?;
     Ok(path.display().to_string())
+}
+
+/// The folder the command goes in for this user.
+fn cli_folder(home: &Path, os: TargetOs) -> PathBuf {
+    let (relative, _) = cli_script(os, Path::new(""), None);
+    home.join(relative.parent().unwrap_or(Path::new("")))
 }
 
 fn install_cli_in(
@@ -177,12 +239,17 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn install_message(path: &str, hint: Option<String>) -> String {
-    let installed = format!("Installed the lintel command at {path}.");
-    match hint {
-        Some(hint) => format!("{installed} {hint}"),
-        None => installed,
+/// `made_folder` is whether this install created the command's folder.
+fn install_message(os: TargetOs, path: &str, hint: Option<String>, made_folder: bool) -> String {
+    let mut message = format!("Installed the lintel command at {path}.");
+    // Ruling 253: a Linux desktop session's PATH was set before the folder existed.
+    let new_terminal = (os == TargetOs::Linux && made_folder)
+        .then(|| "Open a new terminal (or log in again) to use it.".to_owned());
+    for extra in [hint, new_terminal].into_iter().flatten() {
+        message.push(' ');
+        message.push_str(&extra);
     }
+    message
 }
 
 /// The PATH a terminal gets. On macOS and Linux an app started from the desktop has a bare
@@ -200,8 +267,11 @@ fn user_search_path() -> Option<OsString> {
 #[cfg(unix)]
 fn login_shell_path(shell: &OsStr, timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
+    // Interactive too, since zsh reads ~/.zshrc only then (Ruling 253).
+    let command = format!("printf '{PATH_START}%s{PATH_END}' \"$PATH\"");
     let mut child = Command::new(shell)
-        .args(["-l", "-c", "printf %s \"$PATH\""])
+        .args(["-l", "-i", "-c", &command])
+        .env("TERM", "dumb")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -217,9 +287,11 @@ fn login_shell_path(shell: &OsStr, timeout: Duration) -> Option<String> {
     let output = received.recv_timeout(timeout).ok().and_then(Result::ok);
     let _ = child.kill();
     let _ = child.wait();
-    let text = String::from_utf8(output?).ok()?;
-    // Login files may print first; printf adds no newline, so PATH is the last line.
-    let path = text.rsplit('\n').next()?;
+    let text = String::from_utf8_lossy(&output?).into_owned();
+    // The markers set PATH apart from whatever rc files print.
+    let start = text.rfind(PATH_START)? + PATH_START.len();
+    let len = text[start..].find(PATH_END)?;
+    let path = &text[start..start + len];
     (!path.is_empty()).then(|| path.to_owned())
 }
 
@@ -428,6 +500,7 @@ where
 fn run_action(action: OsAction) -> Result<String, String> {
     match action {
         OsAction::InstallCli => {
+            let made_folder = !cli_folder(&home()?, TargetOs::current()).is_dir();
             let path = install_cli()?;
             let dir = Path::new(&path).parent().unwrap_or(Path::new(""));
             let shown = match TargetOs::current() {
@@ -435,7 +508,12 @@ fn run_action(action: OsAction) -> Result<String, String> {
                 _ => "~/.local/bin".to_owned(),
             };
             let hint = path_hint(dir, &shown, user_search_path().as_deref());
-            Ok(install_message(&path, hint))
+            Ok(install_message(
+                TargetOs::current(),
+                &path,
+                hint,
+                made_folder,
+            ))
         }
         // Settings words the success itself (Default apps opens on Windows).
         OsAction::MakeDefault => make_default_handler().map(|()| String::new()),
@@ -449,8 +527,23 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    /// A fresh empty folder per test, so tests can run in parallel.
-    fn temp_dir() -> PathBuf {
+    /// A fresh empty folder per test, so tests can run in parallel. Removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir() -> TempDir {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "lintel-os-test-{}-{}",
@@ -459,7 +552,25 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
+    }
+
+    #[test]
+    fn test_folders_are_removed_afterwards() {
+        let dir = temp_dir();
+        fs::write(dir.join("file"), "x").unwrap();
+        let path = dir.to_path_buf();
+        drop(dir);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn settings_and_rust_use_the_same_event_names() {
+        assert_eq!(OS_ACTION, "lintel://os-action");
+        assert_eq!(OS_ACTION_RESULT, "lintel://os-action-result");
+        let ipc = include_str!("../../src/lib/ipc.ts");
+        assert!(ipc.contains("export const OS_ACTION = 'lintel://os-action';"));
+        assert!(ipc.contains("export const OS_ACTION_RESULT = 'lintel://os-action-result';"));
     }
 
     fn mac_script() -> String {
@@ -496,16 +607,78 @@ mod tests {
             path,
             PathBuf::from("AppData/Local/Microsoft/WindowsApps/lintel.cmd")
         );
+        assert!(script.starts_with("@echo off\r\nrem # Installed by Lintel\r\n"));
+        assert!(script.contains("start \"\" \"C:\\Program Files\\Lintel\\lintel.exe\" %*\r\n"));
+    }
+
+    fn profile_dirs() -> Vec<(&'static str, OsString)> {
+        vec![
+            ("LOCALAPPDATA", r"C:\Users\José\AppData\Local".into()),
+            ("USERPROFILE", r"C:\Users\José".into()),
+        ]
+    }
+
+    // cmd.exe reads a .cmd in the console's code page, not UTF-8 (Ruling 252).
+    #[test]
+    fn windows_script_names_a_per_user_exe_through_localappdata() {
+        let exe = Path::new(r"C:\Users\José\AppData\Local\Lintel\lintel.exe");
         assert_eq!(
-            script,
-            "@echo off\r\nrem # Installed by Lintel\r\nstart \"\" \"C:\\Program Files\\Lintel\\lintel.exe\" %*\r\n"
+            windows_cmd(exe, &profile_dirs()),
+            "@echo off\r\nrem # Installed by Lintel\r\nstart \"\" \"%LOCALAPPDATA%\\Lintel\\lintel.exe\" %*\r\n"
         );
     }
 
     #[test]
+    fn windows_script_names_an_exe_elsewhere_in_the_profile_through_userprofile() {
+        let exe = Path::new(r"c:\users\josé\Apps\Lintel\lintel.exe");
+        let script = windows_cmd(exe, &profile_dirs());
+        assert!(script.is_ascii(), "{script}");
+        assert!(
+            script.contains("start \"\" \"%USERPROFILE%\\Apps\\Lintel\\lintel.exe\" %*\r\n"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn windows_script_switches_to_utf8_for_an_exe_outside_the_profile() {
+        let exe = Path::new(r"D:\Programme\Lintel – Éditeur\lintel.exe");
+        assert_eq!(
+            windows_cmd(exe, &profile_dirs()),
+            concat!(
+                "@echo off\r\n",
+                "rem # Installed by Lintel\r\n",
+                "setlocal\r\n",
+                "for /f \"tokens=2 delims=:.\" %%c in ('chcp') do set \"LINTEL_CP=%%c\"\r\n",
+                "chcp 65001 >nul\r\n",
+                "start \"\" \"D:\\Programme\\Lintel – Éditeur\\lintel.exe\" %*\r\n",
+                "chcp %LINTEL_CP% >nul\r\n",
+            )
+        );
+    }
+
+    #[test]
+    fn windows_script_does_not_take_a_lookalike_folder_for_the_profile() {
+        let exe = Path::new(r"C:\Users\JoséX\lintel.exe");
+        let script = windows_cmd(exe, &profile_dirs());
+        assert!(
+            script.contains(r#""C:\Users\JoséX\lintel.exe" %*"#),
+            "{script}"
+        );
+        assert!(script.contains("chcp 65001"), "{script}");
+    }
+
+    #[test]
     fn windows_script_keeps_a_percent_sign_in_the_exe_path() {
-        let (_, script) = cli_script(TargetOs::Windows, Path::new(r"C:\100%\lintel.exe"), None);
+        let script = windows_cmd(Path::new(r"C:\100%\lintel.exe"), &profile_dirs());
         assert!(script.contains(r#""C:\100%%\lintel.exe" %*"#), "{script}");
+        let script = windows_cmd(
+            Path::new(r"C:\Users\José\AppData\Local\100%\lintel.exe"),
+            &profile_dirs(),
+        );
+        assert!(
+            script.contains(r#""%LOCALAPPDATA%\100%%\lintel.exe" %*"#),
+            "{script}"
+        );
     }
 
     #[test]
@@ -517,19 +690,18 @@ mod tests {
             Some(appimage),
         );
         assert_eq!(path, PathBuf::from(".local/bin/lintel"));
-        assert_eq!(
-            script,
-            "#!/bin/sh\n# Installed by Lintel\nexec '/home/me/Apps/Lintel 1.0.AppImage' \"$@\"\n"
+        assert!(
+            script.starts_with(
+                "#!/bin/sh\n# Installed by Lintel\nprogram='/home/me/Apps/Lintel 1.0.AppImage'\n"
+            ),
+            "{script}"
         );
     }
 
     #[test]
     fn linux_script_calls_the_deb_program_otherwise() {
         let (_, script) = cli_script(TargetOs::Linux, Path::new("/usr/bin/lintel"), None);
-        assert!(
-            script.ends_with("\nexec '/usr/bin/lintel' \"$@\"\n"),
-            "{script}"
-        );
+        assert!(script.contains("\nprogram='/usr/bin/lintel'\n"), "{script}");
     }
 
     #[test]
@@ -540,8 +712,104 @@ mod tests {
             Some(Path::new("/a/it's.AppImage")),
         );
         assert!(
-            script.contains(r#"exec '/a/it'\''s.AppImage' "$@""#),
+            script.contains(r#"program='/a/it'\''s.AppImage'"#),
             "{script}"
+        );
+    }
+
+    // Runs the Linux script against a stand-in Lintel that records its arguments.
+    #[cfg(unix)]
+    struct LinuxRun {
+        dir: TempDir,
+        program: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl LinuxRun {
+        fn new() -> Self {
+            let dir = temp_dir();
+            fs::create_dir_all(dir.join("bin")).unwrap();
+            let program = dir.join("Lintel.AppImage");
+            let record =
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG.tmp\"\n/bin/mv \"$LOG.tmp\" \"$LOG\"\n";
+            write_program(&program, record);
+            Self { dir, program }
+        }
+
+        fn run(&self, program: &Path, path: &str) -> std::process::Output {
+            let script = self.dir.join("lintel");
+            fs::write(
+                &script,
+                cli_script(TargetOs::Linux, Path::new("x"), Some(program)).1,
+            )
+            .unwrap();
+            std::process::Command::new("/bin/sh")
+                .arg(&script)
+                .arg("a b.md")
+                .env("PATH", path)
+                .env("LOG", self.log())
+                .output()
+                .unwrap()
+        }
+
+        fn log(&self) -> PathBuf {
+            self.dir.join("log")
+        }
+
+        fn wait_for_log(&self) -> String {
+            let start = Instant::now();
+            while !self.log().exists() && start.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::read_to_string(self.log()).unwrap_or_default()
+        }
+    }
+
+    // Ruling 253: detached, so closing the terminal never takes Lintel with it.
+    #[cfg(unix)]
+    #[test]
+    fn linux_script_starts_lintel_in_its_own_session_through_setsid() {
+        let run = LinuxRun::new();
+        let setsid = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG\"\n";
+        write_program(&run.dir.join("bin/setsid"), setsid);
+        let path = format!("{}:/usr/bin:/bin", run.dir.join("bin").display());
+        let output = run.run(&run.program, &path);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            fs::read_to_string(run.log()).unwrap(),
+            format!("-f\n{}\na b.md\n", run.program.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_script_falls_back_to_nohup_in_the_background() {
+        let run = LinuxRun::new();
+        // Only nohup on PATH, so the script cannot find setsid.
+        let nohup = ["/usr/bin/nohup", "/bin/nohup"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .unwrap();
+        std::os::unix::fs::symlink(nohup, run.dir.join("bin/nohup")).unwrap();
+        let output = run.run(&run.program, &run.dir.join("bin").display().to_string());
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{output:?}"
+        );
+        assert_eq!(run.wait_for_log(), "a b.md\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_script_says_when_lintel_is_missing() {
+        let run = LinuxRun::new();
+        let missing = run.dir.join("Gone.AppImage");
+        let output = run.run(&missing, "/usr/bin:/bin");
+        assert_eq!(output.status.code(), Some(127));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("lintel: Lintel is not installed at {}\n", missing.display())
         );
     }
 
@@ -581,6 +849,19 @@ mod tests {
 
     fn install(home: &Path) -> Result<PathBuf, String> {
         install_cli_in(home, TargetOs::MacOs, Path::new("/x/lintel"), None)
+    }
+
+    #[test]
+    fn cli_folder_is_where_install_puts_the_command() {
+        let home = temp_dir();
+        for os in [TargetOs::MacOs, TargetOs::Windows, TargetOs::Linux] {
+            let path = install_cli_in(&home, os, Path::new("x"), None).unwrap();
+            assert_eq!(
+                Some(cli_folder(&home, os).as_path()),
+                path.parent(),
+                "{os:?}"
+            );
+        }
     }
 
     #[test]
@@ -701,24 +982,37 @@ mod tests {
 
     #[test]
     fn install_message_names_the_path_then_the_hint() {
+        let hint = || Some("Add ~/.local/bin to your PATH.".to_owned());
         assert_eq!(
-            install_message(
-                "/h/.local/bin/lintel",
-                Some("Add ~/.local/bin to your PATH.".into())
-            ),
+            install_message(TargetOs::MacOs, "/h/.local/bin/lintel", hint(), false),
             "Installed the lintel command at /h/.local/bin/lintel. Add ~/.local/bin to your PATH."
         );
         assert_eq!(
-            install_message("/h/.local/bin/lintel", None),
+            install_message(TargetOs::MacOs, "/h/.local/bin/lintel", None, true),
             "Installed the lintel command at /h/.local/bin/lintel."
         );
     }
 
+    // Ruling 253: the desktop session's PATH was set before the folder existed.
+    #[test]
+    fn linux_message_says_to_open_a_new_terminal_when_the_folder_is_new() {
+        assert_eq!(
+            install_message(TargetOs::Linux, "/h/.local/bin/lintel", None, true),
+            "Installed the lintel command at /h/.local/bin/lintel. Open a new terminal (or log in again) to use it."
+        );
+        assert_eq!(
+            install_message(TargetOs::Linux, "/h/.local/bin/lintel", None, false),
+            "Installed the lintel command at /h/.local/bin/lintel."
+        );
+    }
+
+    // The folder goes with the shell, so it lives as long as the test holds it.
     #[cfg(unix)]
-    fn fake_shell(body: &str) -> PathBuf {
-        let shell = temp_dir().join("shell");
+    fn fake_shell(body: &str) -> (TempDir, PathBuf) {
+        let dir = temp_dir();
+        let shell = dir.join("shell");
         write_program(&shell, &format!("#!/bin/sh\n{body}\n"));
-        shell
+        (dir, shell)
     }
 
     // Written by a child: a write handle held here could leak into a process another test
@@ -742,27 +1036,47 @@ mod tests {
         assert!(child.wait().unwrap().success());
     }
 
+    // Ruling 253: interactive too, since zsh reads ~/.zshrc only then.
     #[cfg(unix)]
     #[test]
-    fn login_shell_path_reads_the_shell_s_path() {
-        let path = login_shell_path(OsStr::new("/bin/sh"), PROBE_TIMEOUT);
-        assert!(path.is_some_and(|p| p.contains("/bin")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn login_shell_path_skips_what_login_files_print() {
-        let shell = fake_shell("echo 'Welcome back!'\nprintf %s /fake/bin:/usr/bin");
+    fn login_shell_path_asks_an_interactive_login_shell_with_a_dumb_terminal() {
+        let (dir, shell) = fake_shell(
+            "printf '%s|' \"$1\" \"$2\" \"$3\" \"$TERM\" > \"${0%/*}/asked\"\nPATH=/stub/bin:/usr/bin /bin/sh -c \"$4\"",
+        );
         assert_eq!(
             login_shell_path(shell.as_os_str(), PROBE_TIMEOUT).as_deref(),
-            Some("/fake/bin:/usr/bin")
+            Some("/stub/bin:/usr/bin")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("asked")).unwrap(),
+            "-l|-i|-c|dumb|"
+        );
+    }
+
+    // Like an rc file that greets, prints half a line and says goodbye on exit.
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_ignores_what_rc_files_print() {
+        let (_dir, shell) = fake_shell(
+            "echo 'Welcome back!'\nprintf 'no newline'\nPATH=/a:/b /bin/sh -c \"$4\"\necho\necho 'Logged out.'",
+        );
+        assert_eq!(
+            login_shell_path(shell.as_os_str(), PROBE_TIMEOUT).as_deref(),
+            Some("/a:/b")
         );
     }
 
     #[cfg(unix)]
     #[test]
+    fn login_shell_path_is_none_when_the_shell_prints_no_path() {
+        let (_dir, shell) = fake_shell("echo 'nothing useful'");
+        assert_eq!(login_shell_path(shell.as_os_str(), PROBE_TIMEOUT), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn login_shell_path_gives_up_on_a_slow_shell() {
-        let shell = fake_shell("exec sleep 10");
+        let (_dir, shell) = fake_shell("exec sleep 10");
         let start = Instant::now();
         assert_eq!(
             login_shell_path(shell.as_os_str(), Duration::from_millis(200)),
