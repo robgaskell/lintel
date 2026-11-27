@@ -58,7 +58,20 @@ export function setWindowAppearance(theme: 'light' | 'dark' | null): Promise<voi
   return invoke<void>('set_window_appearance', { theme });
 }
 
-/** Gives `path` to the window `toLabel` in one step, whoever held it (Ruling 197). */
-export function transferPath(path: string, toLabel: string): Promise<void> {
-  return invoke<void>('transfer_path', { path, toLabel });
+/**
+ * Starts handing this window's doc, and its `path` if any, to the window `toLabel`.
+ * Resolves to the hand-over id; the path stays here until the hand-over completes.
+ */
+export function transferPath(path: string | null, toLabel: string): Promise<number> {
+  return invoke<number>('transfer_path', { path, toLabel });
+}
+
+/** For the new window: true when it may take the doc in, false when the opener kept it. */
+export function completeHandoff(id: number): Promise<boolean> {
+  return invoke<boolean>('complete_handoff', { id });
+}
+
+/** For the opener: true when it keeps the doc, false when the new window already took it. */
+export function cancelHandoff(id: number): Promise<boolean> {
+  return invoke<boolean>('cancel_handoff', { id });
 }

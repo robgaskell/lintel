@@ -7,7 +7,7 @@ import { EditorView } from '@codemirror/view';
 import { createDoc } from '../docs/store.svelte';
 import { outline } from '../layout/outline.svelte';
 import { registerView, setActiveDocSource } from '../editor/views';
-import { eventModule, events, resetFakes } from '../../test/fakes';
+import { eventModule, events, listenCalls, resetFakes } from '../../test/fakes';
 import { loadSettings, updateSettings } from '../settings/settings.svelte';
 import {
   buildAppMenu,
@@ -726,6 +726,17 @@ describe('syncAppMenu', () => {
       thisWindow.isFocused.mockResolvedValue(true);
       takeAppMenu();
       await vi.waitFor(async () => expect(await installedCount()).toBe(2));
+      stop();
+    });
+
+    it("hears Rust's menu hand-over only when it names this window (Rulings 198, 213)", async () => {
+      const stop = syncAppMenu(handlers(), vi.fn());
+      await vi.waitFor(() =>
+        expect(listenCalls).toContainEqual({
+          event: 'lintel://menu-claim',
+          options: { target: { kind: 'WebviewWindow', label: 'main' } },
+        }),
+      );
       stop();
     });
 

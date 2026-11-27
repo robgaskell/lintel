@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
 import { exit } from '@tauri-apps/plugin-process';
-import { createDoc, docs, isDirty, saveDoc, untitledCounter } from '../docs/store.svelte';
+import { createDoc, docs, isDirty, saveDoc, trackHandoff, untitledCounter } from '../docs/store.svelte';
 import { writeTextFile } from '../ipc';
 import { quitApp } from './quit';
 
@@ -11,7 +11,9 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
-  transferPath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => 1),
+  completeHandoff: vi.fn(async () => true),
+  cancelHandoff: vi.fn(async () => true),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -40,6 +42,22 @@ beforeEach(() => {
 });
 
 describe('quitApp', () => {
+  it('waits for a hand-over to settle, then asks about a doc that came back (Ruling 213)', async () => {
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    messageDialog.mockResolvedValue('Cancel');
+
+    const quitting = quitApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exitApp).not.toHaveBeenCalled();
+    dirtyDoc('/back.md');
+    settle();
+    await quitting;
+
+    expect(messageDialog).toHaveBeenCalledWith(expect.stringContaining('back.md'), expect.anything());
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
   it('stays open when the user cancels', async () => {
     dirtyDoc('/a.md');
     messageDialog.mockResolvedValue('Cancel');

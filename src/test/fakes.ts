@@ -58,6 +58,7 @@ export function resetFakes(): void {
   }
   calls.length = 0;
   handlers.clear();
+  listenCalls.length = 0;
   events.failNextListen = null;
 }
 
@@ -74,6 +75,9 @@ const handlers = new Map<string, Set<Handler>>();
 /** Set `failNextListen` to make the next `listen` reject with it. */
 export const events = { failNextListen: null as Error | null };
 
+/** Every `listen`, with the options it was given, in order. */
+export const listenCalls: { event: string; options: unknown }[] = [];
+
 /** Delivers to every listener after the emit resolves, as Tauri does through the core. */
 export const eventModule = {
   emit: async (event: string, payload?: unknown) => {
@@ -83,7 +87,8 @@ export const eventModule = {
       setTimeout(() => handler({ event, payload: sent }), 0);
     }
   },
-  listen: async (event: string, handler: Handler) => {
+  listen: async (event: string, handler: Handler, options?: unknown) => {
+    listenCalls.push({ event, options });
     const failure = events.failNextListen;
     if (failure) {
       events.failNextListen = null;

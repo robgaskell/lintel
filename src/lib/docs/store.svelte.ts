@@ -69,6 +69,29 @@ export function removeDoc(id: string, { keepClaim = false } = {}): void {
   if (path !== null && !keepClaim) void release(path);
 }
 
+/**
+ * Paths this window has claimed for a doc that does not have them yet, while a file opens
+ * or a Save As runs. Their claims are right though no tab shows them (Ruling 213).
+ */
+export const opening = new Set<string>();
+
+const handoffs = new Set<Promise<unknown>>();
+
+/** Counts a hand-over of a doc to another window until it settles. */
+export function trackHandoff(handoff: Promise<unknown>): void {
+  handoffs.add(handoff);
+  const forget = () => handoffs.delete(handoff);
+  handoff.then(forget, forget);
+}
+
+/**
+ * Resolves once every hand-over running now has settled. A doc that comes back is then
+ * in `docs`, so closing or quitting asks about it (Ruling 213).
+ */
+export async function handoffsSettled(): Promise<void> {
+  await Promise.allSettled([...handoffs]);
+}
+
 let showTab: (id: string) => void = () => {};
 
 /** How Save As brings forward the tab that already has the chosen file. */
@@ -181,17 +204,22 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
     await refuseOpenElsewhere(chosen);
     return false;
   }
-  if (chosen !== oldPath && (await claimPath(chosen)) !== null) {
-    await refuseOpenElsewhere(chosen);
-    return false;
-  }
+  opening.add(chosen);
   try {
-    await writeTo(doc, path);
-  } catch (err) {
-    if (chosen !== oldPath) void release(chosen);
-    throw err;
+    if (chosen !== oldPath && (await claimPath(chosen)) !== null) {
+      await refuseOpenElsewhere(chosen);
+      return false;
+    }
+    try {
+      await writeTo(doc, path);
+    } catch (err) {
+      if (chosen !== oldPath) void release(chosen);
+      throw err;
+    }
+    doc.path = await normalizedOrAsGiven(path);
+  } finally {
+    opening.delete(chosen);
   }
-  doc.path = await normalizedOrAsGiven(path);
   doc.title = baseName(doc.path);
   if (doc.path !== chosen) {
     void claimPath(doc.path).catch((err) => console.error('Could not claim the saved file:', err));

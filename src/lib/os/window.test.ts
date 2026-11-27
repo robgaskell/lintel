@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
-import { createDoc, docs, untitledCounter } from '../docs/store.svelte';
+import { createDoc, docs, trackHandoff, untitledCounter } from '../docs/store.svelte';
 import { closeTabOrWindow, handleCloseRequested } from './window';
 
 vi.mock('../ipc', () => ({
@@ -9,7 +9,9 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
-  transferPath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => 1),
+  completeHandoff: vi.fn(async () => true),
+  cancelHandoff: vi.fn(async () => true),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -31,6 +33,23 @@ beforeEach(() => {
 });
 
 describe('handleCloseRequested', () => {
+  it('waits for a hand-over to settle, then asks about a doc that came back (Ruling 213)', async () => {
+    let settle: () => void = () => {};
+    trackHandoff(new Promise<void>((resolve) => (settle = resolve)));
+    const event = { preventDefault: vi.fn() };
+    messageDialog.mockResolvedValue('Cancel');
+
+    const closing = handleCloseRequested(event, { docIdsInOrder: () => [...docs.keys()], activate: vi.fn() });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const back = dirtyDoc('/back.md');
+    settle();
+    await closing;
+
+    expect(messageDialog).toHaveBeenCalledWith(expect.stringContaining('back.md'), expect.anything());
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(docs.has(back.id)).toBe(true);
+  });
+
   it('stops the window closing when the user cancels', async () => {
     const a = dirtyDoc('/a.md');
     const event = { preventDefault: vi.fn() };

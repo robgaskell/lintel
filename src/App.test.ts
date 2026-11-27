@@ -45,6 +45,9 @@ vi.mock('@tauri-apps/api/window', () => ({
     setTheme: async () => {},
   }),
 }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn(), save: vi.fn() }));
 vi.mock('./lib/os/menu', () => ({
   syncAppMenu: vi.fn(() => () => {}),

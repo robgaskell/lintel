@@ -7,11 +7,13 @@ import {
   adoptDoc,
   docs,
   findByPath,
+  opening,
   removeDoc,
   saveSettled,
+  trackHandoff,
   type DocState,
 } from '../docs/store.svelte';
-import { claimPath, releasePath, transferPath } from '../ipc';
+import { cancelHandoff, claimPath, completeHandoff, releasePath, transferPath } from '../ipc';
 import type { Workspace } from '../layout/workspace';
 import { settings } from '../settings/settings.svelte';
 import { resolvedTheme } from '../theme/theme';
@@ -40,11 +42,16 @@ export interface WindowReadyEvent {
   label: string;
 }
 
-/** The doc travels whole, with the per-window state that goes with it (Rulings 186, 201). */
-export interface AdoptDocEvent {
+/** A doc with the per-window state that travels with it (Rulings 186, 201). */
+interface MovingDoc {
   doc: DocState;
   largeFileNotice: boolean;
   cursor: Cursor | null;
+}
+
+/** The doc travels whole; `handoff` is the id Rust decides the hand-over by (Ruling 213). */
+export interface AdoptDocEvent extends MovingDoc {
+  handoff: number;
 }
 
 export interface DocAdoptedEvent {
@@ -66,7 +73,7 @@ let hasAdopted = false;
 const firstAdoption = new Promise<void>((resolve) => (adopted = resolve));
 
 // Paths this window is handing to another; their claims are right though no tab shows them.
-const moving = new Set<string>();
+const movingPaths = new Set<string>();
 
 /**
  * Opens a document window, hidden and already in the app's theme until its page shows it
@@ -99,8 +106,9 @@ export function tooLargeToMove(doc: DocState): boolean {
 
 /**
  * Moves a doc, unsaved edits included, to a new window. Once the window is ready and no
- * save of the doc is running, the doc leaves this window at once and its claim moves with
- * it. If the new window does not take it in time, the doc comes back here (Ruling 197).
+ * save of the doc is running, the doc leaves this window at once. Rust then decides, by
+ * hand-over id, whether the new window takes it or it comes back here; never both
+ * (Rulings 197, 213).
  */
 export async function openDocInNewWindow(docId: string): Promise<void> {
   const doc = docs.get(docId);
@@ -124,17 +132,9 @@ export async function openDocInNewWindow(docId: string): Promise<void> {
     await win.destroy();
     return;
   }
-  const path = handover.doc.path;
-  if (path !== null) moving.add(path);
-  try {
-    await handOver(label, handover);
-  } catch (err) {
-    await win.destroy().catch(() => {});
-    await bringBack(handover);
-    throw err;
-  } finally {
-    if (path !== null) moving.delete(path);
-  }
+  const settled = handOver(win, label, handover);
+  trackHandoff(settled);
+  await settled;
 }
 
 /**
@@ -174,11 +174,11 @@ export function listenForReveal(ws: Pick<Workspace, 'activate'>): () => void {
 }
 
 // Synchronous from the snapshot to the removal, so no edit typed in between is lost.
-function takeOut(docId: string): AdoptDocEvent | null {
+function takeOut(docId: string): MovingDoc | null {
   const doc = docs.get(docId);
   if (!doc) return null;
   const cursor = cursors.get(docId);
-  const event: AdoptDocEvent = {
+  const event: MovingDoc = {
     doc: { ...doc },
     largeFileNotice: largeFileNotices.has(docId),
     cursor: cursor ? { ...cursor } : null,
@@ -188,34 +188,66 @@ function takeOut(docId: string): AdoptDocEvent | null {
   return event;
 }
 
-async function handOver(label: string, event: AdoptDocEvent): Promise<void> {
-  const taken = await waitFor<DocAdoptedEvent>(
-    DOC_ADOPTED,
-    (e) => e.label === label && e.docId === event.doc.id,
-  );
+async function handOver(win: WebviewWindow, label: string, moving: MovingDoc): Promise<void> {
+  const path = moving.doc.path;
+  if (path !== null) movingPaths.add(path);
+  let handoff: number | null = null;
+  let taken: { promise: Promise<void>; stop: () => void } | null = null;
   try {
-    if (event.doc.path !== null) await transferPath(event.doc.path, label);
-    await emitTo(label, ADOPT_DOC, event);
+    taken = await waitFor<DocAdoptedEvent>(
+      DOC_ADOPTED,
+      (e) => e.label === label && e.docId === moving.doc.id,
+    );
+    handoff = await transferPath(path, label);
+    await emitTo(label, ADOPT_DOC, { ...moving, handoff } satisfies AdoptDocEvent);
     await taken.promise;
   } catch (err) {
-    taken.stop();
+    taken?.stop();
+    // The new window may have taken the doc just now; then it stays there.
+    if (handoff !== null && !(await keepHere(handoff))) return;
+    await win.destroy().catch(() => {});
+    await bringBack(moving);
     throw err;
+  } finally {
+    if (path !== null) movingPaths.delete(path);
   }
 }
 
-async function bringBack(event: AdoptDocEvent): Promise<void> {
-  const path = event.doc.path;
+// A failed answer counts as kept: two copies of the doc are better than none.
+async function keepHere(handoff: number): Promise<boolean> {
+  try {
+    return await cancelHandoff(handoff);
+  } catch (err) {
+    console.error('Could not cancel the hand-over:', err);
+    return true;
+  }
+}
+
+async function bringBack(moving: MovingDoc): Promise<void> {
+  const path = moving.doc.path;
+  let owner: string | null = null;
   if (path !== null) {
     try {
-      await transferPath(path, getCurrentWindow().label);
+      owner = await claimPath(path);
     } catch (err) {
-      console.error(`Could not take back ${path}:`, err);
+      console.error(`Could not claim ${path} again:`, err);
     }
   }
-  place(event);
+  place(owner === null ? moving : movedBack(moving));
+}
+
+// Another window has the file now, so the text comes back as an unsaved copy (Ruling 213).
+function movedBack(moving: MovingDoc): MovingDoc {
+  const { doc } = moving;
+  return {
+    ...moving,
+    doc: { ...doc, path: null, title: `${doc.title} (moved back)`, savedText: '' },
+  };
 }
 
 async function adopt(label: string, event: AdoptDocEvent): Promise<void> {
+  // Rust decides, so a doc the opener has taken back is never shown here as well.
+  if (!(await completeHandoff(event.handoff))) return;
   const path = event.doc.path;
   if (path !== null) {
     // The doc must not be lost whatever the answer, so a failed claim only logs.
@@ -232,7 +264,7 @@ async function adopt(label: string, event: AdoptDocEvent): Promise<void> {
   await emit(DOC_ADOPTED, { label, docId: event.doc.id } satisfies DocAdoptedEvent);
 }
 
-function place({ doc: state, largeFileNotice, cursor }: AdoptDocEvent): void {
+function place({ doc: state, largeFileNotice, cursor }: MovingDoc): void {
   const doc = adoptDoc(state);
   if (largeFileNotice) largeFileNotices.add(doc.id);
   if (cursor !== null) setStartCursor(doc.id, cursor);
@@ -242,9 +274,10 @@ function place({ doc: state, largeFileNotice, cursor }: AdoptDocEvent): void {
 async function reveal(ws: Pick<Workspace, 'activate'>, path: string): Promise<void> {
   const doc = findByPath(path);
   if (!doc) {
-    // A doc on its way out, or one this new window is about to take in, keeps its claim.
+    // A doc on its way out, a file being opened or saved here, or a doc this new window is
+    // about to take in, keeps its claim (Ruling 213).
     const arriving = getCurrentWindow().label.startsWith('w-') && !hasAdopted;
-    if (moving.has(path) || arriving) return answer(path, true);
+    if (movingPaths.has(path) || opening.has(path) || arriving) return answer(path, true);
     // A stale claim: nothing here shows the file, so the window that asked opens it.
     try {
       await releasePath(path);

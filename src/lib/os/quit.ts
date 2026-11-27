@@ -1,6 +1,6 @@
 import { message } from '@tauri-apps/plugin-dialog';
 import { exit } from '@tauri-apps/plugin-process';
-import { confirmCloseAll, docs, savesSettled } from '../docs/store.svelte';
+import { confirmCloseAll, docs, handoffsSettled, savesSettled } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 
 let quitting: Promise<void> | null = null;
@@ -19,6 +19,8 @@ async function runQuit(workspace?: Pick<Workspace, 'docIdsInOrder' | 'activate'>
   try {
     // A doc mid-save is still dirty: asking now would offer to exit mid-write.
     await savesSettled();
+    // A doc on its way to another window may come back, and must then be asked about.
+    await handoffsSettled();
     const ordered = workspace?.docIdsInOrder() ?? [];
     const rest = [...docs.keys()].filter((id) => !ordered.includes(id));
     if (!(await confirmCloseAll([...ordered, ...rest], (id) => workspace?.activate(id)))) return;

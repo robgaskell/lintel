@@ -3,8 +3,25 @@ import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { message } from '@tauri-apps/plugin-dialog';
 import { takeStartCursor } from '../docs/cursor.svelte';
-import { createDoc, docs, removeDoc, saveDoc, untitledCounter, type DocState } from '../docs/store.svelte';
-import { claimPath, readTextFile, releasePath, transferPath, writeTextFile } from '../ipc';
+import {
+  createDoc,
+  docs,
+  handoffsSettled,
+  isDirty,
+  removeDoc,
+  saveDoc,
+  untitledCounter,
+  type DocState,
+} from '../docs/store.svelte';
+import {
+  cancelHandoff,
+  claimPath,
+  completeHandoff,
+  readTextFile,
+  releasePath,
+  transferPath,
+  writeTextFile,
+} from '../ipc';
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
 import { largeFileNotices, openPaths, setWorkspace } from './open';
@@ -91,7 +108,9 @@ vi.mock('../ipc', () => ({
   writeTextFile: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
-  transferPath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => 1),
+  completeHandoff: vi.fn(async () => true),
+  cancelHandoff: vi.fn(async () => true),
   setWindowAppearance: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
@@ -145,7 +164,11 @@ beforeEach(() => {
   vi.mocked(releasePath).mockReset();
   vi.mocked(releasePath).mockResolvedValue();
   vi.mocked(transferPath).mockReset();
-  vi.mocked(transferPath).mockResolvedValue();
+  vi.mocked(transferPath).mockResolvedValue(7);
+  vi.mocked(completeHandoff).mockReset();
+  vi.mocked(completeHandoff).mockResolvedValue(true);
+  vi.mocked(cancelHandoff).mockReset();
+  vi.mocked(cancelHandoff).mockResolvedValue(true);
   vi.mocked(writeTextFile).mockReset();
   vi.mocked(message).mockReset();
   workspace.openDoc.mockReset();
@@ -218,13 +241,15 @@ describe('openDocInNewWindow', () => {
     expect(sent).toMatchObject({ id: doc.id, path: '/notes/a.md', title: 'a.md', mode: 'split', diskHash: 'h0' });
   });
 
-  it('moves the claim to the new window in one step, before handing the doc over (Ruling 197)', async () => {
+  it('starts the hand-over in Rust and sends its id with the doc (Ruling 213)', async () => {
     const doc = fileDoc();
 
     await openDocInNewWindow(doc.id);
 
     const label = fake.created[0].label;
     expect(transferPath).toHaveBeenCalledWith('/notes/a.md', label);
+    expect(adoptEvent().handoff).toBe(7);
+    expect(cancelHandoff).not.toHaveBeenCalled();
     expect(vi.mocked(transferPath).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(emitTo).mock.invocationCallOrder[0],
     );
@@ -304,13 +329,13 @@ describe('openDocInNewWindow', () => {
     expect(adoptEvent()).toMatchObject({ largeFileNotice: true, cursor: null });
   });
 
-  it('moves no claim for an untitled doc', async () => {
+  it('hands an untitled doc over with no path', async () => {
     const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
     doc.text = 'draft';
 
     await openDocInNewWindow(doc.id);
 
-    expect(transferPath).not.toHaveBeenCalled();
+    expect(transferPath).toHaveBeenCalledWith(null, fake.created[0].label);
     expect(adoptEvent().doc.text).toBe('draft');
   });
 
@@ -332,10 +357,89 @@ describe('openDocInNewWindow', () => {
     await expect(openDocInNewWindow(doc.id)).rejects.toThrow('gone');
 
     const back = docs.get(doc.id);
-    expect(back).toMatchObject({ text: 'dirty', savedText: '# a\n' });
+    expect(back).toMatchObject({ text: 'dirty', savedText: '# a\n', path: '/notes/a.md' });
     expect(workspace.openDoc).toHaveBeenCalledWith(back);
-    expect(transferPath).toHaveBeenLastCalledWith('/notes/a.md', 'main');
+    expect(cancelHandoff).toHaveBeenCalledWith(7);
+    expect(claimPath).toHaveBeenLastCalledWith('/notes/a.md');
     expect(fake.created[0].destroy).toHaveBeenCalled();
+  });
+
+  it('brings the doc back as an unsaved copy with no path when another window has its file now', async () => {
+    const doc = fileDoc();
+    vi.mocked(emitTo).mockRejectedValueOnce(new Error('gone'));
+    vi.mocked(claimPath).mockResolvedValueOnce('w-3');
+
+    await expect(openDocInNewWindow(doc.id)).rejects.toThrow('gone');
+
+    const back = docs.get(doc.id)!;
+    expect(back).toMatchObject({ path: null, title: 'a.md (moved back)', text: '# a\n' });
+    expect(isDirty(back)).toBe(true);
+  });
+
+  it('leaves the doc in the new window when it took it just as time ran out (Ruling 213)', async () => {
+    vi.useFakeTimers();
+    try {
+      fake.acknowledge = false;
+      vi.mocked(cancelHandoff).mockResolvedValueOnce(false);
+      const doc = fileDoc();
+      const moving = openDocInNewWindow(doc.id);
+
+      await vi.advanceTimersByTimeAsync(10_100);
+      await moving;
+
+      expect(cancelHandoff).toHaveBeenCalledWith(7);
+      expect(fake.created[0].destroy).not.toHaveBeenCalled();
+      expect(docs.has(doc.id)).toBe(false);
+      expect(workspace.openDoc).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the doc out with no await between the snapshot and the removal (Ruling 197)', async () => {
+    const doc = fileDoc();
+    let stillHereAfterSnapshot: boolean | null = null;
+    vi.spyOn(largeFileNotices, 'has').mockImplementationOnce(() => {
+      queueMicrotask(() => (stillHereAfterSnapshot = docs.has(doc.id)));
+      return false;
+    });
+
+    await openDocInNewWindow(doc.id);
+
+    expect(stillHereAfterSnapshot).toBe(false);
+  });
+
+  it('keeps the claim of the doc it is handing over when another window asks (Ruling 213)', async () => {
+    const doc = fileDoc();
+    let decide: (id: number) => void = () => {};
+    vi.mocked(transferPath).mockImplementationOnce(() => new Promise((resolve) => (decide = resolve)));
+    listenForReveal(workspace);
+
+    const moving = openDocInNewWindow(doc.id);
+    await vi.waitFor(() => expect(transferPath).toHaveBeenCalled());
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
+    await tick();
+
+    expect(releasePath).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(REVEAL_ANSWER, { path: '/notes/a.md', shown: true });
+    decide(7);
+    await moving;
+  });
+
+  it('lets closing and quitting wait until the hand-over has settled (Ruling 213)', async () => {
+    fake.acknowledge = false;
+    const doc = fileDoc();
+    const moving = openDocInNewWindow(doc.id);
+    await vi.waitFor(() => expect(emitTo).toHaveBeenCalled());
+    let settled = false;
+    const waiting = handoffsSettled().then(() => (settled = true));
+    await tick();
+    expect(settled).toBe(false);
+
+    deliver(DOC_ADOPTED, { label: fake.created[0].label, docId: doc.id });
+    await moving;
+    await waiting;
+    expect(settled).toBe(true);
   });
 
   it('brings the doc back when the new window never confirms it took it (Ruling 197)', async () => {
@@ -355,7 +459,7 @@ describe('openDocInNewWindow', () => {
       expect(fake.created[0].destroy).toHaveBeenCalled();
       expect(docs.has(doc.id)).toBe(true);
       expect(largeFileNotices.has(doc.id)).toBe(true);
-      expect(transferPath).toHaveBeenLastCalledWith('/notes/a.md', 'main');
+      expect(cancelHandoff).toHaveBeenCalledWith(7);
     } finally {
       vi.useRealTimers();
     }
@@ -433,6 +537,21 @@ describe('listenForReveal', () => {
     expect(releasePath).not.toHaveBeenCalled();
   });
 
+  it('keeps the claim of a file it is still opening (Ruling 213)', async () => {
+    await listening();
+    let finishRead: (r: { text: string; hash: string }) => void = () => {};
+    vi.mocked(readTextFile).mockImplementationOnce(() => new Promise((resolve) => (finishRead = resolve)));
+
+    const opening = openPaths(['/notes/a.md']);
+    await vi.waitFor(() => expect(readTextFile).toHaveBeenCalled());
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'main');
+    await vi.waitFor(() => expect(answers()).toEqual([{ path: '/notes/a.md', shown: true }]));
+
+    expect(releasePath).not.toHaveBeenCalled();
+    finishRead({ text: '# a\n', hash: 'h' });
+    await opening;
+  });
+
   it('passes an answer on to an open in this window that waits for it (Ruling 199)', async () => {
     await listening();
     vi.mocked(readTextFile).mockResolvedValue({ text: '# a\n', hash: 'h' });
@@ -466,6 +585,7 @@ describe('listenForAdoption', () => {
     },
     largeFileNotice: true,
     cursor: { line: 12, col: 5 },
+    handoff: 7,
   };
 
   it('listens in this window only, then announces it is ready with its label', async () => {
@@ -485,6 +605,10 @@ describe('listenForAdoption', () => {
     deliver(ADOPT_DOC, handedOver, 'main');
 
     await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(DOC_ADOPTED, { label: 'main', docId: 'moved-1' }));
+    expect(completeHandoff).toHaveBeenCalledWith(7);
+    expect(vi.mocked(completeHandoff).mock.invocationCallOrder[0]).toBeLessThan(
+      workspace.openDoc.mock.invocationCallOrder[0],
+    );
     expect(claimPath).toHaveBeenCalledWith('/notes/a.md');
     expect(vi.mocked(claimPath).mock.invocationCallOrder[0]).toBeLessThan(
       workspace.openDoc.mock.invocationCallOrder[0],
@@ -498,6 +622,20 @@ describe('listenForAdoption', () => {
     expect(largeFileNotices.has('moved-1')).toBe(true);
     expect(takeStartCursor('moved-1')).toEqual({ line: 12, col: 5 });
     await whenAdopted();
+  });
+
+  it('shows nothing when the opener has taken the doc back (Ruling 213)', async () => {
+    vi.mocked(completeHandoff).mockResolvedValueOnce(false);
+    listenForAdoption();
+    await vi.waitFor(() => expect(emit).toHaveBeenCalled());
+
+    deliver(ADOPT_DOC, handedOver, 'main');
+    await vi.waitFor(() => expect(completeHandoff).toHaveBeenCalled());
+    await tick();
+
+    expect(docs.size).toBe(0);
+    expect(workspace.openDoc).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith(DOC_ADOPTED, expect.anything());
   });
 
   it('still opens the doc when the claim fails, so the buffer is never lost', async () => {

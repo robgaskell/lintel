@@ -15,7 +15,9 @@ vi.mock('../ipc', () => ({
   pathsExist: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
-  transferPath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => 1),
+  completeHandoff: vi.fn(async () => true),
+  cancelHandoff: vi.fn(async () => true),
 }));
 
 const exists = vi.mocked(pathsExist);

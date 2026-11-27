@@ -1,7 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { message } from '@tauri-apps/plugin-dialog';
 import { claimPath, normalizePath, readTextFile, releasePath, type ReadResult } from '../ipc';
-import { createDoc, findByPath, setTabShower } from '../docs/store.svelte';
+import { createDoc, findByPath, opening, setTabShower } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
 import { settings } from '../settings/settings.svelte';
 import { recordRecent } from './recent';
@@ -39,42 +39,60 @@ export async function openPaths(paths: string[]): Promise<void> {
   const target = requireWorkspace();
   for (const given of paths) {
     let path = given;
-    let claimed = false;
-    let result: ReadResult;
     try {
-      path = await normalizePath(given);
-      const open = findByPath(path);
-      if (open) {
-        target.activate(open.id);
-        void recordRecent(path);
-        continue;
-      }
-      if (!(await claimHere(path))) {
-        void recordRecent(path);
-        continue;
-      }
-      claimed = true;
-      result = await readTextFile(path);
-    } catch (err) {
-      if (claimed) void releaseQuietly(path);
-      await message(openErrorText(given, path, err), { title: 'Lintel', kind: 'error' });
-      continue;
+      await openOne(target, given, (normalised) => {
+        path = normalised;
+        opening.add(path);
+      });
+    } finally {
+      opening.delete(path);
     }
-    // Another openPaths call may have opened it while this read was in flight.
-    const raced = findByPath(path);
-    if (raced) {
-      target.activate(raced.id);
-    } else {
-      const { text: raw, hash } = result;
-      // raw is the file's text before newline changes, so its UTF-8 length is the file size.
-      const large = new TextEncoder().encode(raw).length > LARGE_FILE_BYTES;
-      const doc = createDoc({ path, raw, hash, mode: large ? 'edit' : settings.defaultMode });
-      if (large) largeFileNotices.add(doc.id);
-      target.openDoc(doc);
-    }
-    // Not awaited: a slow store must not hold up the next file (Ruling 71).
-    void recordRecent(path);
   }
+}
+
+// `claiming` names the path before it is claimed, so the claim stays while no tab has it.
+async function openOne(
+  target: DocOpener,
+  given: string,
+  claiming: (path: string) => void,
+): Promise<void> {
+  let path = given;
+  let claimed = false;
+  let result: ReadResult;
+  try {
+    path = await normalizePath(given);
+    const open = findByPath(path);
+    if (open) {
+      target.activate(open.id);
+      void recordRecent(path);
+      return;
+    }
+    claiming(path);
+    if (!(await claimHere(path))) {
+      void recordRecent(path);
+      return;
+    }
+    claimed = true;
+    result = await readTextFile(path);
+  } catch (err) {
+    if (claimed) void releaseQuietly(path);
+    await message(openErrorText(given, path, err), { title: 'Lintel', kind: 'error' });
+    return;
+  }
+  // Another openPaths call may have opened it while this read was in flight.
+  const raced = findByPath(path);
+  if (raced) {
+    target.activate(raced.id);
+  } else {
+    const { text: raw, hash } = result;
+    // raw is the file's text before newline changes, so its UTF-8 length is the file size.
+    const large = new TextEncoder().encode(raw).length > LARGE_FILE_BYTES;
+    const doc = createDoc({ path, raw, hash, mode: large ? 'edit' : settings.defaultMode });
+    if (large) largeFileNotices.add(doc.id);
+    target.openDoc(doc);
+  }
+  // Not awaited: a slow store must not hold up the next file (Ruling 71).
+  void recordRecent(path);
 }
 
 /**

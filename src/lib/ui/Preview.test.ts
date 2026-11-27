@@ -16,7 +16,9 @@ vi.mock('../ipc', () => ({
   fetchRemoteImage: vi.fn(),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
-  transferPath: vi.fn(async () => {}),
+  transferPath: vi.fn(async () => 1),
+  completeHandoff: vi.fn(async () => true),
+  cancelHandoff: vi.fn(async () => true),
   // applyTheme sets the window appearance too (Ruling 195).
   setWindowAppearance: vi.fn(async () => {}),
 }));
