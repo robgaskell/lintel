@@ -44,9 +44,8 @@ impl TargetOs {
     }
 }
 
-/// The command's path relative to home, and its text. Windows uses `exe_path`; Linux
-/// uses `appimage`, or the .deb's program when there is none.
-pub fn cli_script(os: TargetOs, exe_path: &Path, appimage: Option<&Path>) -> (PathBuf, String) {
+/// The command's path relative to home, and its text. Only Windows uses `exe_path`.
+pub fn cli_script(os: TargetOs, exe_path: &Path) -> (PathBuf, String) {
     match os {
         TargetOs::MacOs => (
             PathBuf::from(".local/bin/lintel"),
@@ -59,10 +58,7 @@ pub fn cli_script(os: TargetOs, exe_path: &Path, appimage: Option<&Path>) -> (Pa
         ),
         TargetOs::Linux => (
             PathBuf::from(".local/bin/lintel"),
-            format!(
-                "#!/bin/sh\n{MARKER}\nprogram={}\n{LINUX_LAUNCH}",
-                shell_quote(&linux_program(appimage))
-            ),
+            linux_script(Path::new(LINUX_PROGRAM)),
         ),
     }
 }
@@ -132,8 +128,14 @@ fi
 nohup "$program" "$@" >/dev/null 2>&1 &
 "#;
 
-fn linux_program(appimage: Option<&Path>) -> PathBuf {
-    appimage.map_or_else(|| PathBuf::from("/usr/bin/lintel"), Path::to_path_buf)
+// Ruling 338: the .deb and the .rpm both install Lintel here; there is no AppImage.
+const LINUX_PROGRAM: &str = "/usr/bin/lintel";
+
+fn linux_script(program: &Path) -> String {
+    format!(
+        "#!/bin/sh\n{MARKER}\nprogram={}\n{LINUX_LAUNCH}",
+        shell_quote(program)
+    )
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -144,24 +146,18 @@ fn shell_quote(path: &Path) -> String {
 pub fn install_cli() -> Result<String, String> {
     let exe =
         std::env::current_exe().map_err(|e| format!("Could not find Lintel's own program: {e}"))?;
-    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
-    let path = install_cli_in(&home()?, TargetOs::current(), &exe, appimage.as_deref())?;
+    let path = install_cli_in(&home()?, TargetOs::current(), &exe)?;
     Ok(path.display().to_string())
 }
 
 /// The folder the command goes in for this user.
 fn cli_folder(home: &Path, os: TargetOs) -> PathBuf {
-    let (relative, _) = cli_script(os, Path::new(""), None);
+    let (relative, _) = cli_script(os, Path::new(""));
     home.join(relative.parent().unwrap_or(Path::new("")))
 }
 
-fn install_cli_in(
-    home: &Path,
-    os: TargetOs,
-    exe_path: &Path,
-    appimage: Option<&Path>,
-) -> Result<PathBuf, String> {
-    let (relative, script) = cli_script(os, exe_path, appimage);
+fn install_cli_in(home: &Path, os: TargetOs, exe_path: &Path) -> Result<PathBuf, String> {
+    let (relative, script) = cli_script(os, exe_path);
     let path = home.join(relative);
     let failed = |e: io::Error| format!("Could not install the lintel command: {e}");
     if let Some(dir) = path.parent() {
@@ -310,8 +306,7 @@ pub fn make_default_handler() -> Result<(), String> {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn make_default_handler() -> Result<(), String> {
-    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
-    write_desktop_entry_if_missing(&home()?, appimage.as_deref())?;
+    write_desktop_entry_if_missing(&home()?)?;
     let (program, args) = xdg_mime_default();
     let status = std::process::Command::new(program)
         .args(args)
@@ -373,42 +368,14 @@ fn xdg_mime_default() -> (&'static str, [&'static str; 3]) {
 }
 
 #[cfg(any(test, not(any(target_os = "macos", windows))))]
-fn desktop_entry(program: &Path) -> String {
+fn desktop_entry() -> String {
     format!(
-        "[Desktop Entry]\n{MARKER}\nType=Application\nName=Lintel\nComment=A markdown reader and editor\nExec={} %F\nIcon=lintel\nTerminal=false\nCategories=Office;TextEditor;\nMimeType=text/markdown;text/x-markdown;\n",
-        desktop_exec_arg(program)
+        "[Desktop Entry]\n{MARKER}\nType=Application\nName=Lintel\nComment=A markdown reader and editor\nExec={LINUX_PROGRAM} %F\nIcon=lintel\nTerminal=false\nCategories=Office;TextEditor;\nMimeType=text/markdown;text/x-markdown;\n"
     )
 }
 
-/// Quoted as the Desktop Entry spec asks: its string escapes apply first, so a literal
-/// backslash inside quotes is written as four.
 #[cfg(any(test, not(any(target_os = "macos", windows))))]
-fn desktop_exec_arg(program: &Path) -> String {
-    let text = program.to_string_lossy();
-    if text
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c))
-    {
-        return text.into_owned();
-    }
-    let mut quoted = String::from("\"");
-    for c in text.chars() {
-        match c {
-            '"' | '`' | '$' => {
-                quoted.push_str(r"\\");
-                quoted.push(c);
-            }
-            '\\' => quoted.push_str(r"\\\\"),
-            '%' => quoted.push_str("%%"),
-            _ => quoted.push(c),
-        }
-    }
-    quoted.push('"');
-    quoted
-}
-
-#[cfg(any(test, not(any(target_os = "macos", windows))))]
-fn write_desktop_entry_if_missing(home: &Path, appimage: Option<&Path>) -> Result<(), String> {
+fn write_desktop_entry_if_missing(home: &Path) -> Result<(), String> {
     let path = home.join(".local/share/applications/lintel.desktop");
     let failed = |e: io::Error| format!("Could not write {}: {e}", path.display());
     match fs::symlink_metadata(&path) {
@@ -419,8 +386,7 @@ fn write_desktop_entry_if_missing(home: &Path, appimage: Option<&Path>) -> Resul
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(failed)?;
     }
-    let entry = desktop_entry(&linux_program(appimage));
-    write_atomic(&path, entry.as_bytes(), None).map_err(failed)
+    write_atomic(&path, desktop_entry().as_bytes(), None).map_err(failed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,12 +540,12 @@ mod tests {
     }
 
     fn mac_script() -> String {
-        cli_script(TargetOs::MacOs, Path::new("/x/lintel"), None).1
+        cli_script(TargetOs::MacOs, Path::new("/x/lintel")).1
     }
 
     #[test]
     fn macos_script_opens_files_in_the_background_from_local_bin() {
-        let (path, script) = cli_script(TargetOs::MacOs, Path::new("/x/lintel"), None);
+        let (path, script) = cli_script(TargetOs::MacOs, Path::new("/x/lintel"));
         assert_eq!(path, PathBuf::from(".local/bin/lintel"));
         assert!(
             script.starts_with("#!/bin/sh\n# Installed by Lintel\n"),
@@ -602,7 +568,7 @@ mod tests {
     #[test]
     fn windows_script_is_a_cmd_in_windows_apps_calling_the_exe() {
         let exe = Path::new(r"C:\Program Files\Lintel\lintel.exe");
-        let (path, script) = cli_script(TargetOs::Windows, exe, None);
+        let (path, script) = cli_script(TargetOs::Windows, exe);
         assert_eq!(
             path,
             PathBuf::from("AppData/Local/Microsoft/WindowsApps/lintel.cmd")
@@ -693,37 +659,11 @@ mod tests {
     }
 
     #[test]
-    fn linux_script_calls_the_appimage_when_given() {
-        let appimage = Path::new("/home/me/Apps/Lintel 1.0.AppImage");
-        let (path, script) = cli_script(
-            TargetOs::Linux,
-            Path::new("/tmp/.mount/lintel"),
-            Some(appimage),
-        );
+    fn linux_script_calls_the_installed_package_program() {
+        let (path, script) = cli_script(TargetOs::Linux, Path::new("/tmp/.mount_x/lintel"));
         assert_eq!(path, PathBuf::from(".local/bin/lintel"));
         assert!(
-            script.starts_with(
-                "#!/bin/sh\n# Installed by Lintel\nprogram='/home/me/Apps/Lintel 1.0.AppImage'\n"
-            ),
-            "{script}"
-        );
-    }
-
-    #[test]
-    fn linux_script_calls_the_deb_program_otherwise() {
-        let (_, script) = cli_script(TargetOs::Linux, Path::new("/usr/bin/lintel"), None);
-        assert!(script.contains("\nprogram='/usr/bin/lintel'\n"), "{script}");
-    }
-
-    #[test]
-    fn linux_script_quotes_a_quote_in_the_appimage_path() {
-        let (_, script) = cli_script(
-            TargetOs::Linux,
-            Path::new("x"),
-            Some(Path::new("/a/it's.AppImage")),
-        );
-        assert!(
-            script.contains(r#"program='/a/it'\''s.AppImage'"#),
+            script.starts_with("#!/bin/sh\n# Installed by Lintel\nprogram='/usr/bin/lintel'\n"),
             "{script}"
         );
     }
@@ -740,7 +680,7 @@ mod tests {
         fn new() -> Self {
             let dir = temp_dir();
             fs::create_dir_all(dir.join("bin")).unwrap();
-            let program = dir.join("Lintel.AppImage");
+            let program = dir.join("lintel");
             let record =
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG.tmp\"\n/bin/mv \"$LOG.tmp\" \"$LOG\"\n";
             write_program(&program, record);
@@ -748,12 +688,8 @@ mod tests {
         }
 
         fn run(&self, program: &Path, path: &str) -> std::process::Output {
-            let script = self.dir.join("lintel");
-            fs::write(
-                &script,
-                cli_script(TargetOs::Linux, Path::new("x"), Some(program)).1,
-            )
-            .unwrap();
+            let script = self.dir.join("lintel-command");
+            fs::write(&script, linux_script(program)).unwrap();
             std::process::Command::new("/bin/sh")
                 .arg(&script)
                 .arg("a b.md")
@@ -821,7 +757,7 @@ mod tests {
             .find(|p| Path::new(p).exists())
             .unwrap();
         std::os::unix::fs::symlink(nohup, run.dir.join("bin/nohup")).unwrap();
-        let chatty = run.dir.join("Chatty.AppImage");
+        let chatty = run.dir.join("chatty");
         write_program(&chatty, "#!/bin/sh\necho out\necho err >&2\n/bin/sleep 3\n");
         let start = Instant::now();
         let output = run.run(&chatty, &run.dir.join("bin").display().to_string());
@@ -837,7 +773,7 @@ mod tests {
     #[test]
     fn linux_script_says_when_lintel_is_missing() {
         let run = LinuxRun::new();
-        let missing = run.dir.join("Gone.AppImage");
+        let missing = run.dir.join("gone");
         let output = run.run(&missing, "/usr/bin:/bin");
         assert_eq!(output.status.code(), Some(127));
         assert_eq!(
@@ -881,14 +817,14 @@ mod tests {
     }
 
     fn install(home: &Path) -> Result<PathBuf, String> {
-        install_cli_in(home, TargetOs::MacOs, Path::new("/x/lintel"), None)
+        install_cli_in(home, TargetOs::MacOs, Path::new("/x/lintel"))
     }
 
     #[test]
     fn cli_folder_is_where_install_puts_the_command() {
         let home = temp_dir();
         for os in [TargetOs::MacOs, TargetOs::Windows, TargetOs::Linux] {
-            let path = install_cli_in(&home, os, Path::new("x"), None).unwrap();
+            let path = install_cli_in(&home, os, Path::new("x")).unwrap();
             assert_eq!(
                 Some(cli_folder(&home, os).as_path()),
                 path.parent(),
@@ -1167,7 +1103,7 @@ mod tests {
 
     #[test]
     fn linux_desktop_entry_launches_lintel_with_its_files() {
-        let entry = desktop_entry(Path::new("/usr/bin/lintel"));
+        let entry = desktop_entry();
         assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
         for line in [
             "Type=Application",
@@ -1180,31 +1116,14 @@ mod tests {
     }
 
     #[test]
-    fn linux_desktop_entry_quotes_an_appimage_path() {
-        let entry = desktop_entry(Path::new("/home/me/My Apps/Lintel 100%.AppImage"));
-        assert!(
-            entry
-                .lines()
-                .any(|l| l == r#"Exec="/home/me/My Apps/Lintel 100%%.AppImage" %F"#),
-            "{entry}"
-        );
-        let entry = desktop_entry(Path::new(r#"/a/$b"c\d"#));
-        assert!(
-            entry.lines().any(|l| l == r#"Exec="/a/\\$b\\"c\\\\d" %F"#),
-            "{entry}"
-        );
-    }
-
-    #[test]
     fn linux_writes_a_desktop_entry_only_when_missing() {
         let home = temp_dir();
-        let appimage = Path::new("/home/me/Lintel.AppImage");
-        write_desktop_entry_if_missing(&home, Some(appimage)).unwrap();
+        write_desktop_entry_if_missing(&home).unwrap();
         let path = home.join(".local/share/applications/lintel.desktop");
-        assert_eq!(fs::read_to_string(&path).unwrap(), desktop_entry(appimage));
+        assert_eq!(fs::read_to_string(&path).unwrap(), desktop_entry());
 
         fs::write(&path, "[Desktop Entry]\nExec=mine\n").unwrap();
-        write_desktop_entry_if_missing(&home, Some(appimage)).unwrap();
+        write_desktop_entry_if_missing(&home).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "[Desktop Entry]\nExec=mine\n"
