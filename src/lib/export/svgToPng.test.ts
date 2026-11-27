@@ -58,6 +58,23 @@ describe('svgSize', () => {
   it('is null with no size at all', () => {
     expect(svgSize('<svg width="100%"></svg>')).toBeNull();
   });
+
+  it('prefers a numeric width and height to the viewBox, as Word does (Ruling 326)', () => {
+    expect(svgSize('<svg width="512" height="256" viewBox="0 0 24 24"></svg>')).toEqual({ width: 512, height: 256 });
+  });
+
+  it('takes a missing width or height from the viewBox\'s aspect', () => {
+    expect(svgSize('<svg width="100" viewBox="0 0 50 25"></svg>')).toEqual({ width: 100, height: 50 });
+    expect(svgSize('<svg height="100%" viewBox="0 0 50 25"></svg>')).toEqual({ width: 50, height: 25 });
+  });
+
+  it.each([
+    ['an infinite viewBox', '<svg viewBox="0 0 1e400 1e400"></svg>'],
+    ['a zero viewBox', '<svg viewBox="0 0 0 10"></svg>'],
+    ['a zero width', '<svg width="0" height="10"></svg>'],
+  ])('is null for %s (Ruling 326)', (_name, svg) => {
+    expect(svgSize(svg)).toBeNull();
+  });
 });
 
 describe('svgToPng', () => {
@@ -88,6 +105,27 @@ describe('svgToPng', () => {
 
   it('rejects an SVG with no size', async () => {
     await expect(svgToPng('<svg></svg>', 2)).rejects.toThrow();
+    await expect(svgToPng('<svg viewBox="0 0 1e400 1e400"></svg>', 2)).rejects.toThrow();
+  });
+
+  it('draws at the stated size with the viewBox and preserveAspectRatio kept, so nothing stretches (Ruling 326)', async () => {
+    await svgToPng('<svg width="512" height="256" viewBox="0 0 24 24" preserveAspectRatio="xMinYMin meet"></svg>', 2);
+
+    const svg = decodedSvg(FakeImage.last!.src);
+    expect(svg).toMatch(/^<svg [^>]*width="512" height="256"/);
+    expect(svg).toContain('viewBox="0 0 24 24"');
+    expect(svg).toContain('preserveAspectRatio="xMinYMin meet"');
+    expect([canvas!.width, canvas!.height]).toEqual([1024, 512]);
+  });
+
+  it('caps the canvas at 8192 px on its long side (Ruling 326)', async () => {
+    await svgToPng('<svg viewBox="0 0 20000 10000"></svg>', 2);
+    expect([canvas!.width, canvas!.height]).toEqual([8192, 4096]);
+  });
+
+  it('rejects an empty canvas result (Ruling 326)', async () => {
+    vi.mocked(HTMLCanvasElement.prototype.toDataURL).mockReturnValue('data:,');
+    await expect(svgToPng(MERMAID_SVG, 2)).rejects.toThrow();
   });
 
   it('rejects when the canvas is tainted', async () => {
@@ -105,5 +143,10 @@ describe('imageToPng', () => {
     expect(FakeImage.last!.src).toBe('data:image/webp;base64,UklGRg==');
     expect([canvas!.width, canvas!.height]).toEqual([30, 20]);
     expect([...png.slice(0, 8)]).toEqual(PNG_SIGNATURE);
+  });
+
+  it('caps a large image at 8192 px too', async () => {
+    await imageToPng('data:image/webp;base64,UklGRg==', 10000, 5000);
+    expect([canvas!.width, canvas!.height]).toEqual([8192, 4096]);
   });
 });
