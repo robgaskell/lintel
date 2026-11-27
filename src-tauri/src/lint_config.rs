@@ -87,7 +87,10 @@ mod tests {
         }
 
         fn file(&self, rel: &str, text: &str) -> PathBuf {
-            let path = self.0.join(rel);
+            // Joined part by part, so Windows paths use backslashes throughout.
+            let path = rel
+                .split('/')
+                .fold(self.0.clone(), |path, part| path.join(part));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, text).unwrap();
             path
