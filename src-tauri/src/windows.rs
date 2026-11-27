@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
-use tauri::{Emitter, State, Window, WindowEvent};
+use tauri::{Emitter, Manager, Runtime, State, Window, WindowEvent};
 
 use crate::SETTINGS;
 
@@ -16,15 +16,29 @@ pub struct RevealDocEvent {
     pub path: String,
 }
 
-/// Which window has each open file, so a file is never open in two places (spec).
-/// Keys are normalised paths, values window labels.
+/// Which window has each open file, so a file is never open in two places (spec), and the
+/// hand-overs of docs between windows that are not yet decided.
 #[derive(Default)]
-pub struct PathRegistry(Mutex<HashMap<String, String>>);
+pub struct PathRegistry(Mutex<Claims>);
+
+#[derive(Default)]
+struct Claims {
+    /// Normalised path to window label.
+    paths: HashMap<String, String>,
+    handoffs: HashMap<u64, Handoff>,
+    next_handoff: u64,
+}
+
+struct Handoff {
+    from: String,
+    to: String,
+    path: Option<String>,
+}
 
 impl PathRegistry {
     /// The label of another window that owns `path`, or None once `label` owns it.
     fn claim(&self, label: &str, path: &str) -> Option<String> {
-        let mut paths = self.paths();
+        let paths = &mut self.claims().paths;
         match paths.get(path) {
             Some(owner) if owner != label => Some(owner.clone()),
             _ => {
@@ -36,21 +50,59 @@ impl PathRegistry {
 
     // A late release from the window a doc moved out of must not drop the new owner's claim.
     fn release(&self, label: &str, path: &str) {
-        let mut paths = self.paths();
+        let paths = &mut self.claims().paths;
         if paths.get(path).is_some_and(|owner| owner == label) {
             paths.remove(path);
         }
     }
 
-    fn transfer(&self, path: &str, to: &str) {
-        self.paths().insert(path.to_owned(), to.to_owned());
+    // The path stays with `from` until the hand-over is decided.
+    fn begin_handoff(&self, from: &str, to: &str, path: Option<String>) -> u64 {
+        let mut claims = self.claims();
+        claims.next_handoff += 1;
+        let id = claims.next_handoff;
+        let handoff = Handoff {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            path,
+        };
+        claims.handoffs.insert(id, handoff);
+        id
+    }
+
+    /// True when `label` may take the doc in: the hand-over was to it and is not cancelled.
+    fn complete_handoff(&self, label: &str, id: u64) -> bool {
+        let mut claims = self.claims();
+        if claims.handoffs.get(&id).is_none_or(|h| h.to != label) {
+            return false;
+        }
+        let Some(handoff) = claims.handoffs.remove(&id) else {
+            return false;
+        };
+        if let Some(path) = handoff.path {
+            // A third window may have the file if the opener closed meanwhile; it keeps it.
+            let owner = claims.paths.get(&path);
+            if owner.is_none_or(|owner| *owner == handoff.from) {
+                claims.paths.insert(path, handoff.to);
+            }
+        }
+        true
+    }
+
+    /// True when `label` may keep the doc: the hand-over was from it and is not completed.
+    fn cancel_handoff(&self, label: &str, id: u64) -> bool {
+        let mut claims = self.claims();
+        if claims.handoffs.get(&id).is_none_or(|h| h.from != label) {
+            return false;
+        }
+        claims.handoffs.remove(&id).is_some()
     }
 
     pub fn drop_window(&self, label: &str) {
-        self.paths().retain(|_, owner| owner != label);
+        self.claims().paths.retain(|_, owner| owner != label);
     }
 
-    fn paths(&self) -> MutexGuard<'_, HashMap<String, String>> {
+    fn claims(&self) -> MutexGuard<'_, Claims> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -60,8 +112,8 @@ impl PathRegistry {
 /// Claims `path` for the calling window, or shows it in the window that owns it and
 /// returns that window's label.
 #[tauri::command]
-pub fn claim_path(
-    window: Window,
+pub fn claim_path<R: Runtime>(
+    window: Window<R>,
     registry: State<'_, PathRegistry>,
     path: String,
 ) -> Option<String> {
@@ -74,15 +126,46 @@ pub fn claim_path(
 
 /// Drops the calling window's claim on `path`; another window's claim stays.
 #[tauri::command]
-pub fn release_path(window: Window, registry: State<'_, PathRegistry>, path: String) {
+pub fn release_path<R: Runtime>(
+    window: Window<R>,
+    registry: State<'_, PathRegistry>,
+    path: String,
+) {
     registry.release(window.label(), &path);
 }
 
-/// Gives `path` to the window `to_label` in one step, so no other window can claim it
-/// in between, as a release and a claim would allow (Ruling 197).
+/// Starts handing the calling window's doc, and its `path` if it has one, to the window
+/// `to_label`. Returns the hand-over id that `complete_handoff` and `cancel_handoff` take;
+/// exactly one of them succeeds, so the doc ends in one window (Ruling 213).
 #[tauri::command]
-pub fn transfer_path(registry: State<'_, PathRegistry>, path: String, to_label: String) {
-    registry.transfer(&path, &to_label);
+pub fn transfer_path<R: Runtime>(
+    window: Window<R>,
+    registry: State<'_, PathRegistry>,
+    path: Option<String>,
+    to_label: String,
+) -> u64 {
+    registry.begin_handoff(window.label(), &to_label, path)
+}
+
+/// Called by the new window before it shows the doc. False means it must drop it.
+#[tauri::command]
+pub fn complete_handoff<R: Runtime>(
+    window: Window<R>,
+    registry: State<'_, PathRegistry>,
+    id: u64,
+) -> bool {
+    registry.complete_handoff(window.label(), id)
+}
+
+/// Called by the opener when the new window did not confirm in time. False means the new
+/// window has the doc after all.
+#[tauri::command]
+pub fn cancel_handoff<R: Runtime>(
+    window: Window<R>,
+    registry: State<'_, PathRegistry>,
+    id: u64,
+) -> bool {
+    registry.cancel_handoff(window.label(), id)
 }
 
 fn claim_or_reveal(
@@ -105,6 +188,20 @@ impl FocusOrder {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The app's window-event hook: keeps the registry and focus order current, and hands the
+/// app menu on when a document window closes.
+pub fn on_doc_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+    let app = window.app_handle();
+    let open = || app.webview_windows().into_keys().collect();
+    let registry = window.state::<PathRegistry>();
+    let focus = window.state::<FocusOrder>();
+    if let Some(owner) = on_window_event(&registry, &focus, window.label(), event, open) {
+        if let Err(err) = app.emit_to(owner.as_str(), MENU_CLAIM, ()) {
+            eprintln!("Could not hand the menu to {owner}: {err}");
+        }
     }
 }
 
@@ -194,17 +291,71 @@ mod tests {
         );
     }
 
+    const A: &str = "/notes/a.md";
+
     #[test]
-    fn a_transfer_gives_the_path_to_the_new_window_at_once() {
+    fn a_completed_hand_over_gives_the_path_to_the_new_window() {
         let registry = PathRegistry::default();
-        registry.claim("main", "/notes/a.md");
-        registry.transfer("/notes/a.md", "w-1");
+        registry.claim("main", A);
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
         assert_eq!(
-            registry.claim("main", "/notes/a.md"),
-            Some("w-1".to_owned())
+            registry.claim("w-2", A),
+            Some("main".to_owned()),
+            "still the opener's"
         );
-        registry.release("main", "/notes/a.md");
-        assert_eq!(registry.claim("w-1", "/notes/a.md"), None);
+        assert!(registry.complete_handoff("w-1", id));
+        assert!(!registry.cancel_handoff("main", id), "too late to cancel");
+        assert_eq!(registry.claim("main", A), Some("w-1".to_owned()));
+    }
+
+    #[test]
+    fn a_cancelled_hand_over_leaves_the_path_with_the_opener() {
+        let registry = PathRegistry::default();
+        registry.claim("main", A);
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
+        assert!(registry.cancel_handoff("main", id));
+        assert!(
+            !registry.complete_handoff("w-1", id),
+            "too late to take it in"
+        );
+        assert_eq!(registry.claim("w-1", A), Some("main".to_owned()));
+    }
+
+    #[test]
+    fn only_the_two_windows_of_a_hand_over_can_decide_it() {
+        let registry = PathRegistry::default();
+        let id = registry.begin_handoff("main", "w-1", None);
+        assert!(!registry.complete_handoff("main", id));
+        assert!(!registry.complete_handoff("w-2", id));
+        assert!(!registry.cancel_handoff("w-1", id));
+        assert!(!registry.complete_handoff("w-1", id + 1));
+        assert!(registry.complete_handoff("w-1", id));
+    }
+
+    #[test]
+    fn a_new_window_that_dies_mid_hand_over_leaves_the_file_with_the_opener() {
+        let registry = PathRegistry::default();
+        registry.claim("main", A);
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
+        registry.drop_window("w-1");
+        assert_eq!(
+            registry.claim("w-2", A),
+            Some("main".to_owned()),
+            "a third window cannot take it"
+        );
+        assert!(registry.cancel_handoff("main", id));
+        assert_eq!(registry.claim("w-2", A), Some("main".to_owned()));
+    }
+
+    #[test]
+    fn completing_never_takes_the_file_from_a_third_window() {
+        let registry = PathRegistry::default();
+        registry.claim("main", A);
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
+        registry.drop_window("main");
+        registry.claim("w-2", A);
+        assert!(registry.complete_handoff("w-1", id));
+        assert_eq!(registry.claim("w-1", A), Some("w-2".to_owned()));
     }
 
     #[test]
@@ -326,5 +477,70 @@ mod tests {
             registry.claim("w-2", "/notes/c.md"),
             Some("main".to_owned())
         );
+    }
+
+    mod in_the_app {
+        use super::*;
+        use std::sync::Arc;
+        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::{Listener, WebviewUrl, WebviewWindowBuilder};
+
+        fn app() -> tauri::App<MockRuntime> {
+            mock_builder()
+                .manage(PathRegistry::default())
+                .manage(FocusOrder::default())
+                .build(mock_context(noop_assets()))
+                .unwrap()
+        }
+
+        fn window(app: &tauri::App<MockRuntime>, label: &str) -> Window<MockRuntime> {
+            WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+                .build()
+                .unwrap();
+            app.get_webview_window(label).unwrap().as_ref().window()
+        }
+
+        fn heard(window: &Window<MockRuntime>, event: &'static str) -> Arc<Mutex<Vec<String>>> {
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&heard);
+            window.listen(event, move |e| {
+                log.lock().unwrap().push(e.payload().to_owned())
+            });
+            heard
+        }
+
+        #[test]
+        fn claim_path_reveals_the_doc_in_the_owner_only() {
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            let in_main = heard(&main, REVEAL_DOC);
+            let in_w1 = heard(&w1, REVEAL_DOC);
+
+            assert_eq!(claim_path(w1.clone(), app.state(), A.to_owned()), None);
+            assert_eq!(
+                claim_path(main.clone(), app.state(), A.to_owned()),
+                Some("w-1".to_owned())
+            );
+
+            assert_eq!(*in_w1.lock().unwrap(), [r#"{"path":"/notes/a.md"}"#]);
+            assert!(in_main.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_destroyed_window_loses_its_claims_and_the_menu_goes_on() {
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            let claims_in_main = heard(&main, MENU_CLAIM);
+            on_doc_window_event(&main, &WindowEvent::Focused(true));
+            on_doc_window_event(&w1, &WindowEvent::Focused(true));
+            claim_path(w1.clone(), app.state(), A.to_owned());
+
+            on_doc_window_event(&w1, &WindowEvent::Destroyed);
+
+            assert_eq!(claim_path(main.clone(), app.state(), A.to_owned()), None);
+            assert_eq!(claims_in_main.lock().unwrap().len(), 1);
+        }
     }
 }

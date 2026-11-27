@@ -11,6 +11,8 @@ fn main() {
         "claim_path",
         "release_path",
         "transfer_path",
+        "complete_handoff",
+        "cancel_handoff",
         "set_window_appearance",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

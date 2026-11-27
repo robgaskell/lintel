@@ -22,6 +22,8 @@
     "allow-claim-path",
     "allow-release-path",
     "allow-transfer-path",
+    "allow-complete-handoff",
+    "allow-cancel-handoff",
     "allow-set-window-appearance",
     "clipboard-manager:allow-write-text",
     "dialog:default",

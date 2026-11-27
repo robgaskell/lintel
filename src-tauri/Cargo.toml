@@ -30,6 +30,10 @@ base64 = "=0.23.1"
 reqwest = { version = "=0.13.5", default-features = false, features = ["stream", "rustls-no-provider"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring"] }
 
+# Tauri's mock runtime, so tests can drive real windows and events.
+[dev-dependencies]
+tauri = { version = "=2.12.7", features = ["test"] }
+
 # NSWindow, to turn off macOS automatic window tabbing (Ruling 173) and set a window's own
 # appearance (Ruling 195); tao already builds both crates.
 [target.'cfg(target_os = "macos")'.dependencies]
