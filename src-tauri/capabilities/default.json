@@ -31,6 +31,7 @@
     "opener:default",
     "process:allow-exit",
     "process:allow-restart",
-    "store:default"
+    "store:default",
+    "window-state:allow-save-window-state"
   ]
 }

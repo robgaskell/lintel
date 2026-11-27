@@ -1,6 +1,7 @@
 mod appearance;
 mod files;
 mod remote;
+mod session;
 mod startup;
 mod windows;
 
@@ -30,6 +31,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(session::prune_geometry())
+        .plugin(session::window_state())
         .manage(windows::PathRegistry::default())
         .manage(windows::FocusOrder::default())
         .on_window_event(windows::on_doc_window_event)

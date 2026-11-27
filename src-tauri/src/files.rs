@@ -395,7 +395,7 @@ fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
 /// Writes a new temp file in the target's folder, syncs it, then renames it
 /// over the target. Readers see the old bytes or the new bytes, never a mix.
 /// The rename breaks hard links (Ruling 10).
-fn write_atomic(path: &Path, bytes: &[u8], mode: Option<Permissions>) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: Option<Permissions>) -> io::Result<()> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
