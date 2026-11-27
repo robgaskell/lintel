@@ -50,7 +50,12 @@ export async function handleFileChanged(e: FileChangedEvent): Promise<void> {
 }
 
 async function reloadFromDisk(doc: DocState, path: string): Promise<'done' | 'stale'> {
-  const before = { diskHash: doc.diskHash, savedText: doc.savedText, dirty: isDirty(doc) };
+  const before = {
+    diskHash: doc.diskHash,
+    savedText: doc.savedText,
+    dirty: isDirty(doc),
+    external: doc.external,
+  };
   let read;
   try {
     read = await readTextFile(path);
@@ -59,8 +64,12 @@ async function reloadFromDisk(doc: DocState, path: string): Promise<'done' | 'st
     return 'done';
   }
   if (docs.get(doc.id) !== doc || doc.path !== path) return 'done';
+  // A save, an edit or a removal that landed meanwhile.
   const changed =
-    doc.diskHash !== before.diskHash || doc.savedText !== before.savedText || isDirty(doc) !== before.dirty;
+    doc.diskHash !== before.diskHash ||
+    doc.savedText !== before.savedText ||
+    isDirty(doc) !== before.dirty ||
+    doc.external !== before.external;
   if (changed) return 'stale';
   if (read.hash === doc.diskHash) {
     if (doc.external === 'deleted') doc.external = 'none';

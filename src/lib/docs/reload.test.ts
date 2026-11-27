@@ -200,6 +200,23 @@ describe('handleFileChanged', () => {
     expect(doc.external).toBe('none');
   });
 
+  it('keeps "Deleted on disk" when the file is removed during the read (Ruling 278)', async () => {
+    const doc = openDoc('old\n');
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    read.mockImplementationOnce(async () => {
+      await handleFileRemoved({ path: '/notes/plan.md' });
+      return { text: 'new\n', hash: 'h-new' };
+    });
+    read.mockRejectedValueOnce('Could not read /notes/plan.md: gone');
+
+    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-new' });
+
+    expect(doc.external).toBe('deleted');
+    expect(doc.text).toBe('old\n');
+    expect(doc.diskHash).toBe('h-old');
+    quiet.mockRestore();
+  });
+
   it('looks again when the doc was edited during the read, and holds a conflict', async () => {
     const doc = openDoc('old\n');
     read.mockImplementationOnce(async () => {
