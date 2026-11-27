@@ -433,6 +433,25 @@ mod tests {
         );
     }
 
+    // Ruling 333: no AppImage, no MSI. The bundler skips targets that do not fit the host.
+    #[test]
+    fn release_builds_only_the_shipped_packages_with_signed_updates() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let bundle = &conf["bundle"];
+        assert_eq!(
+            bundle["targets"],
+            serde_json::json!(["app", "dmg", "nsis", "deb", "rpm"])
+        );
+        assert_eq!(bundle["createUpdaterArtifacts"], true);
+        assert_eq!(bundle["macOS"]["signingIdentity"], "-");
+        // The public half of the key the release workflow signs with (key id 7D003332D294B971).
+        assert_eq!(
+            conf["plugins"]["updater"]["pubkey"],
+            "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdEMDAzMzMyRDI5NEI5NzEKUldSeHVaVFNNak1BZlpWdXR3OXZqUlQyNE1wVElnVUYxY1V3eWhzUFFhaFBRZ3RodFJES1lmRU4K"
+        );
+    }
+
     #[test]
     fn every_window_writes_settings_through_the_one_command() {
         assert!(include_str!("../build.rs").contains("\"update_settings\""));
