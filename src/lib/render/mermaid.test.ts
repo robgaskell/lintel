@@ -363,4 +363,27 @@ describe('renderMermaidToSvg', () => {
 
     await expect(renderMermaidToSvg('nonsense', 'light')).rejects.toThrow('No diagram type detected');
   });
+
+  it('draws labels as SVG text for Word, and a document cannot turn HTML labels back on (Ruling 316)', async () => {
+    await renderMermaidToSvg('graph TD; Word', 'light', { htmlLabels: false });
+
+    const config = mermaid.initialize.mock.calls.at(-1)![0];
+    expect(config.htmlLabels).toBe(false);
+    expect(config.secure).toEqual(expect.arrayContaining(['htmlLabels', 'flowchart']));
+  });
+
+  it('keeps the preview\'s diagrams and setup apart from Word\'s (Ruling 316)', async () => {
+    await renderMermaidIn(page('graph TD; Both'), 'light');
+    await renderMermaidToSvg('graph TD; Both', 'light', { htmlLabels: false });
+    expect(mermaid.render).toHaveBeenCalledTimes(2);
+
+    // Cached for the preview, so its drawing never changes.
+    await renderMermaidIn(page('graph TD; Both'), 'light');
+    expect(mermaid.render).toHaveBeenCalledTimes(2);
+
+    await renderMermaidIn(page('graph TD; Later'), 'light');
+    const config = mermaid.initialize.mock.calls.at(-1)![0];
+    expect(config).not.toHaveProperty('htmlLabels');
+    expect(config.secure).not.toContain('flowchart');
+  });
 });

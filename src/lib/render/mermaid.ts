@@ -5,6 +5,9 @@ export type DiagramTheme = 'light' | 'dark';
 
 type Outcome = { svg: string } | { error: string };
 
+// Word gets a PNG, and HTML labels (foreignObject) can taint or blank the canvas (Ruling 316).
+type Labels = 'html' | 'svg';
+
 /**
  * Replaces each `pre.mermaid-src` in `container` with its diagram, or with an error box.
  * Known diagrams go in before this returns, so a re-render never flashes (Ruling 100).
@@ -32,9 +35,17 @@ export async function renderMermaidIn(container: HTMLElement, theme: DiagramThem
   await Promise.all(blocks.map(({ el, source }) => place(el, source, theme, request)));
 }
 
-/** The diagram as sanitised SVG markup. Rejects with mermaid's message. */
-export async function renderMermaidToSvg(source: string, theme: DiagramTheme): Promise<string> {
-  const outcome = await outcomeFor(source, theme, null);
+/**
+ * The diagram as sanitised SVG markup. Rejects with mermaid's message.
+ * `htmlLabels: false` draws labels as SVG text, for Word; the preview's renders are kept apart.
+ */
+export async function renderMermaidToSvg(
+  source: string,
+  theme: DiagramTheme,
+  options: { htmlLabels?: boolean } = {},
+): Promise<string> {
+  const labels: Labels = options.htmlLabels === false ? 'svg' : 'html';
+  const outcome = await outcomeFor(source, theme, labels, null);
   if (outcome === null) throw new Error('The diagram render was cancelled.'); // not reached: no container
   if ('error' in outcome) throw new Error(outcome.error);
   return outcome.svg;
@@ -56,7 +67,7 @@ const drawnFrom = new WeakMap<HTMLElement, { source: string; theme: DiagramTheme
 async function place(el: HTMLElement, source: string, theme: DiagramTheme, request: Request): Promise<void> {
   let outcome: Outcome | null;
   try {
-    outcome = cached(source, theme) ?? (await outcomeFor(source, theme, request));
+    outcome = cached(source, theme, 'html') ?? (await outcomeFor(source, theme, 'html', request));
   } catch (err) {
     outcome = { error: `Diagrams could not load: ${String(err)}` }; // not cached, so the next render retries
   }
@@ -143,8 +154,8 @@ const MIN_CACHED = 64;
 let capacity = MIN_CACHED;
 const cache = new Map<string, { source: string; outcome: Outcome }>(); // least recently used first
 
-function cached(source: string, theme: DiagramTheme): Outcome | undefined {
-  const key = cacheKey(source, theme);
+function cached(source: string, theme: DiagramTheme, labels: Labels): Outcome | undefined {
+  const key = cacheKey(source, theme, labels);
   const entry = cache.get(key);
   if (entry?.source !== source) return undefined;
   cache.delete(key);
@@ -152,8 +163,8 @@ function cached(source: string, theme: DiagramTheme): Outcome | undefined {
   return entry.outcome;
 }
 
-function remember(source: string, theme: DiagramTheme, outcome: Outcome) {
-  const key = cacheKey(source, theme);
+function remember(source: string, theme: DiagramTheme, labels: Labels, outcome: Outcome) {
+  const key = cacheKey(source, theme, labels);
   cache.delete(key);
   cache.set(key, { source, outcome });
   for (const oldest of cache.keys()) {
@@ -162,8 +173,8 @@ function remember(source: string, theme: DiagramTheme, outcome: Outcome) {
   }
 }
 
-function cacheKey(source: string, theme: DiagramTheme): string {
-  return `${theme}:${hash(source)}`;
+function cacheKey(source: string, theme: DiagramTheme, labels: Labels): string {
+  return `${theme}:${labels}:${hash(source)}`;
 }
 
 // cyrb53: a fast 53-bit string hash. The entry also keeps its source, so a collision misses.
@@ -180,29 +191,29 @@ function hash(text: string): number {
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
-// One job per theme and source; every call that wants it is listed, so it runs while any is current.
+// One job per theme, label mode and source; every call that wants it is listed, so it runs while any is current.
 type Job = { requests: Request[]; result: Promise<Outcome | null> };
 const running = new Map<string, Job>();
 
 /** Resolves null when every call that wanted this render went stale before it started. */
-function outcomeFor(source: string, theme: DiagramTheme, request: Request): Promise<Outcome | null> {
-  const known = cached(source, theme);
+function outcomeFor(source: string, theme: DiagramTheme, labels: Labels, request: Request): Promise<Outcome | null> {
+  const known = cached(source, theme, labels);
   if (known) return Promise.resolve(known);
-  const key = cacheKey(source, theme);
+  const key = cacheKey(source, theme, labels);
   const existing = running.get(key);
   if (existing) {
     existing.requests.push(request);
     return existing.result;
   }
   const job: Job = { requests: [request], result: Promise.resolve(null) };
-  const work = queue.then(() => (job.requests.some(isCurrent) ? renderOne(source, theme) : null));
+  const work = queue.then(() => (job.requests.some(isCurrent) ? renderOne(source, theme, labels) : null));
   queue = work.then(
     () => {},
     () => {},
   );
   job.result = work
     .then((outcome) => {
-      if (outcome) remember(source, theme, outcome);
+      if (outcome) remember(source, theme, labels, outcome);
       return outcome;
     })
     .finally(() => running.delete(key));
@@ -214,16 +225,19 @@ const FORBIDDEN_IN_DIAGRAMS = ['img', 'image', 'feimage', 'a', 'script', 'iframe
 // Mermaid 12.3.0's own list; `secure` replaces it rather than adding to it.
 const MERMAID_SECURE_DEFAULTS = ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering', 'maxEdges'];
 
-// One render at a time: mermaid's theme is global, so set it and render as one step.
+// One render at a time: mermaid's setup is global, so set it and render as one step.
 let queue: Promise<void> = Promise.resolve();
 let loaded: Promise<Mermaid> | null = null;
-let shownTheme: DiagramTheme | null = null;
+let shownSetup: string | null = null;
 let renderCount = 0;
 
-async function renderOne(source: string, theme: DiagramTheme): Promise<Outcome> {
+async function renderOne(source: string, theme: DiagramTheme, labels: Labels): Promise<Outcome> {
   const mermaid = await loadMermaid();
-  if (shownTheme !== theme) {
+  if (shownSetup !== `${theme}:${labels}`) {
+    // initialize starts from mermaid's defaults, so the preview's setup has no htmlLabels key.
+    const svgLabels = labels === 'svg' ? { htmlLabels: false } : {};
     mermaid.initialize({
+      ...svgLabels,
       startOnLoad: false,
       securityLevel: 'strict',
       suppressErrorRendering: true,
@@ -234,9 +248,14 @@ async function renderOne(source: string, theme: DiagramTheme): Promise<Outcome> 
       // Mermaid lays labels out in the live page before we sanitise, so its own pass must
       // drop images too, and a document's init block must not undo that or add CSS with url().
       dompurifyConfig: { FORBID_TAGS: ['style', ...FORBIDDEN_IN_DIAGRAMS] },
-      secure: [...MERMAID_SECURE_DEFAULTS, 'dompurifyConfig', 'themeCSS', 'fontFamily', 'altFontFamily'],
+      secure: [
+        ...MERMAID_SECURE_DEFAULTS,
+        ...['dompurifyConfig', 'themeCSS', 'fontFamily', 'altFontFamily'],
+        // An init block could turn HTML labels back on through either key.
+        ...(labels === 'svg' ? ['htmlLabels', 'flowchart'] : []),
+      ],
     });
-    shownTheme = theme;
+    shownSetup = `${theme}:${labels}`;
   }
   renderCount += 1;
   const id = `lintel-mermaid-${renderCount}`;
