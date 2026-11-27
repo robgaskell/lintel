@@ -160,7 +160,8 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  # Runs only the Tauri signer and scripts/release.mjs (Node built-ins): no install, no build.
+  # Runs no build code: first-party actions, sha256sum, npm to fetch the Tauri signer (checked
+  # against pnpm-lock.yaml before use), the signer, and scripts/release.mjs (Node built-ins).
   sign:
     name: sign the updates
     needs: build
@@ -195,6 +196,9 @@ jobs:
           npm init -y >/dev/null
           npm install --ignore-scripts --no-audit --no-fund "@tauri-apps/cli@$version"
 
+      - name: Check the signer matches pnpm-lock.yaml
+        run: node scripts/release.mjs check-signer "$RUNNER_TEMP/signer"
+
       - name: List the files to sign
         run: |
           echo "VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
@@ -215,13 +219,26 @@ jobs:
       # Fails unless every latest.json key has a signature that tauri.conf.json's key accepts.
       - name: Check latest.json and every signature
         run: |
-          node scripts/release.mjs check release
-          cat release/latest.json
+          mkdir report
+          node scripts/release.mjs check release > report/verification.txt
+          (cd release && sha256sum -- *) >> report/verification.txt
+          cp release/latest.json report/
+          cat report/verification.txt report/latest.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
         with:
           name: release
           path: release/
+          if-no-files-found: error
+          retention-days: 3
+
+      # A manual run keeps no signed files: only latest.json and the check's report.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name != 'push'
+        with:
+          name: dry-run-report
+          path: report/
           if-no-files-found: error
           retention-days: 3
 

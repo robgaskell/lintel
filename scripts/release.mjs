@@ -1,13 +1,14 @@
 // Writes and checks the release's latest.json, the file installed copies of Lintel read to
 // find updates. Uses Node's built-ins only, so the signing job installs nothing else.
-// Run: node scripts/release.mjs updaters | manifest <dir> | check <dir>
+// Run: node scripts/release.mjs updaters | manifest <dir> | check <dir> | check-signer <dir>
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO = 'robgaskell/lintel';
-const CONF = join(dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'tauri.conf.json');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CONF = join(ROOT, 'src-tauri', 'tauri.conf.json');
 
 /** The files the build jobs produce for `version`, as the bundler names them. */
 export function assetNames(version) {
@@ -92,6 +93,7 @@ export function verifySignature(data, signatureB64, pubkeyB64, version) {
     throw new Error('signed comment does not match its signature');
   }
   const signedVersion = comment.split('\t').find((f) => f.startsWith('version:'))?.slice('version:'.length);
+  if (signedVersion === undefined) throw new Error('signature names no version');
   if (signedVersion !== version) throw new Error(`signed for version ${signedVersion}, not ${version}`);
 }
 
@@ -129,6 +131,33 @@ export function checkRelease({ dir, version, pubkey }) {
   return problems;
 }
 
+const SIGNER_BINARY = '@tauri-apps/cli-linux-x64-gnu';
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+/**
+ * Problems with the signer npm installed in `dir`. npm checks each download against the
+ * integrity it records, so matching pnpm-lock.yaml's means the locked bytes were installed.
+ */
+export function checkSigner({ dir, lock, version }) {
+  const problems = [];
+  const installed = JSON.parse(readFileSync(join(dir, 'node_modules', '.package-lock.json'), 'utf8')).packages;
+  const names = Object.keys(installed)
+    .filter((path) => path.startsWith('node_modules/'))
+    .map((path) => path.slice('node_modules/'.length));
+  for (const name of ['@tauri-apps/cli', SIGNER_BINARY]) {
+    if (!names.includes(name)) problems.push(`no ${name} installed`);
+  }
+  for (const name of names) {
+    const { version: got, integrity } = installed[`node_modules/${name}`];
+    const id = `${name}@${got}`;
+    const locked = lock.match(new RegExp(`\\n  '${escapeRegExp(id)}':\\n    resolution: \\{integrity: (sha512-[^}]+)\\}`));
+    if (!locked) problems.push(`${id} is not in pnpm-lock.yaml`);
+    else if (got !== version) problems.push(`${id} is not version ${version}`);
+    else if (integrity !== locked[1]) problems.push(`${id} integrity ${integrity} is not pnpm-lock.yaml's ${locked[1]}`);
+  }
+  return problems;
+}
+
 function main([command, dir]) {
   const conf = JSON.parse(readFileSync(CONF, 'utf8'));
   const version = conf.version;
@@ -141,8 +170,15 @@ function main([command, dir]) {
     for (const p of problems) console.error(`release: ${p}`);
     if (problems.length > 0) return 1;
     console.log(`release: ${releaseFiles(version).length} files and ${Object.keys(UPDATER_KEYS).length} latest.json keys check out for v${version}.`);
+  } else if (command === 'check-signer') {
+    const lock = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8');
+    const cli = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).devDependencies['@tauri-apps/cli'];
+    const problems = checkSigner({ dir, lock, version: cli });
+    for (const p of problems) console.error(`release: ${p}`);
+    if (problems.length > 0) return 1;
+    console.log(`release: the Tauri signer ${cli} matches pnpm-lock.yaml.`);
   } else {
-    console.error('usage: node scripts/release.mjs updaters | manifest <dir> | check <dir>');
+    console.error('usage: node scripts/release.mjs updaters | manifest <dir> | check <dir> | check-signer <dir>');
     return 2;
   }
   return 0;
