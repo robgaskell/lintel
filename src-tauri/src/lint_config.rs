@@ -2,6 +2,9 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -24,18 +27,56 @@ pub struct LintConfigResult {
     pub hash: String,
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindError {
+    /// The config file that could not be read, when the search found one.
+    pub path: Option<String>,
+    pub message: String,
+    /// The search ran out of time; the window then keeps the config it has (Ruling 298).
+    pub timed_out: bool,
+}
+
+impl FindError {
+    fn timed_out() -> Self {
+        Self {
+            path: None,
+            message: "Looking for a lint config took too long.".to_owned(),
+            timed_out: true,
+        }
+    }
+}
+
+/// Off the async workers and within paths_exist's time budget, since a stat on a mount
+/// whose server is gone can block for minutes.
 #[tauri::command]
-pub async fn find_lint_config(doc_path: String) -> Result<Option<LintConfigResult>, String> {
-    find(Path::new(&doc_path))
+pub async fn find_lint_config(doc_path: String) -> Result<Option<LintConfigResult>, FindError> {
+    let search = move || find(Path::new(&doc_path));
+    tauri::async_runtime::spawn_blocking(move || within(files::CHECK_BUDGET, search))
+        .await
+        .unwrap_or_else(|_| Err(FindError::timed_out()))
+}
+
+/// Runs `search` on its own thread. Past `budget` it is left to finish on its own.
+fn within<T: Send + 'static>(
+    budget: Duration,
+    search: impl FnOnce() -> Result<T, FindError> + Send + 'static,
+) -> Result<T, FindError> {
+    let (send, answer) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = send.send(search());
+    });
+    answer
+        .recv_timeout(budget)
+        .unwrap_or_else(|_| Err(FindError::timed_out()))
 }
 
 /// Searches from the document's folder up, stopping after the first folder that holds
 /// `.git` (a folder, or a file in worktrees and submodules) or at the root.
-pub fn find(doc_path: &Path) -> Result<Option<LintConfigResult>, String> {
+pub fn find(doc_path: &Path) -> Result<Option<LintConfigResult>, FindError> {
     let Some(folder) = doc_path.parent() else {
         return Ok(None);
     };
-    // The same spelling as normalize_path, so the config's watch and events match.
     let folder = files::canonical(folder).unwrap_or_else(|_| folder.to_path_buf());
     for dir in folder.ancestors() {
         for (name, format) in CONFIG_FILES {
@@ -51,13 +92,21 @@ pub fn find(doc_path: &Path) -> Result<Option<LintConfigResult>, String> {
     Ok(None)
 }
 
-fn read(path: &Path, format: &'static str) -> Result<LintConfigResult, String> {
-    let shown = path.display();
-    let bytes = fs::read(path).map_err(|e| format!("Could not read {shown}: {e}"))?;
+fn read(path: &Path, format: &'static str) -> Result<LintConfigResult, FindError> {
+    // As normalize_path spells it, links resolved, so its watch and a save in Lintel agree.
+    let path = files::canonical(path).unwrap_or_else(|_| path.to_path_buf());
+    let shown = path.to_string_lossy().into_owned();
+    let fail = |message: String| FindError {
+        path: Some(shown.clone()),
+        message,
+        timed_out: false,
+    };
+    let bytes = fs::read(&path).map_err(|e| fail(format!("Could not read the file: {e}")))?;
     let hash = files::sha256_hex(&bytes);
-    let text = String::from_utf8(bytes).map_err(|_| format!("{shown} is not UTF-8 text."))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| fail("Lintel reads lint config files in UTF-8 only.".to_owned()))?;
     Ok(LintConfigResult {
-        path: path.to_string_lossy().into_owned(),
+        path: shown,
         format,
         text,
         hash,
@@ -244,6 +293,48 @@ mod tests {
 
         let err = find(&doc).unwrap_err();
 
-        assert!(err.contains(".markdownlint.json"), "{err}");
+        assert_eq!(
+            err,
+            FindError {
+                path: Some(path_str(config)),
+                message: "Lintel reads lint config files in UTF-8 only.".to_owned(),
+                timed_out: false,
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_is_found_at_the_file_it_links_to() {
+        let repo = Repo::new();
+        let real = repo.file("shared/lint.json", "{}");
+        std::os::unix::fs::symlink(&real, repo.0.join(".markdownlint.json")).unwrap();
+        let doc = repo.doc("doc.md");
+
+        assert_eq!(found(&doc), Some(path_str(real)));
+    }
+
+    #[test]
+    fn a_search_that_blocks_ends_at_the_time_budget() {
+        let started = std::time::Instant::now();
+
+        let answer = within(Duration::from_millis(50), || {
+            thread::sleep(Duration::from_secs(2));
+            Ok(())
+        });
+
+        assert_eq!(answer, Err(FindError::timed_out()));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_quick_search_answers_within_the_budget() {
+        let repo = Repo::new();
+        let config = repo.file(".markdownlint.json", "{}");
+        let doc = path_str(repo.doc("doc.md"));
+
+        let answer = tauri::async_runtime::block_on(find_lint_config(doc)).unwrap();
+
+        assert_eq!(answer.map(|r| r.path), Some(path_str(config)));
     }
 }

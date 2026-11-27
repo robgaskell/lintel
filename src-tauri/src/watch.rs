@@ -774,6 +774,25 @@ mod tests {
         assert!(notices.try_recv().is_err());
     }
 
+    // As a doc and its lint config can be in one window, under two spellings (Ruling 298).
+    #[test]
+    fn a_change_found_by_a_watch_reaches_the_same_window_s_other_spelling() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "new");
+        let other = dir.0.join(".").join("a.md").to_str().unwrap().to_owned();
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("new")).unwrap();
+        watcher.lock().by_key.values_mut().next().unwrap().hash = Some(hash("old"));
+
+        watcher.watch("main", other, &hash("new")).unwrap();
+
+        assert_eq!(
+            notices.try_recv(),
+            Ok(("main".to_owned(), changed(&path, "new")))
+        );
+        assert!(notices.try_recv().is_err());
+    }
+
     #[test]
     fn lintel_s_own_save_is_sent_to_the_other_windows_only() {
         let dir = TempDir::new();

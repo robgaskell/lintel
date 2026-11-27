@@ -2,9 +2,9 @@ import type { EditorView } from '@codemirror/view';
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { SvelteMap } from 'svelte/reactivity';
 import { parse as parseYaml } from 'yaml';
-import { docs, setDocHooks, type DocState } from '../docs/store.svelte';
+import { docs, setDocHooks, watchFailed, type DocState } from '../docs/store.svelte';
 import { viewFor } from '../editor/views';
-import { findLintConfig, unwatchPath, watchPath, type LintConfigResult } from '../ipc';
+import { findLintConfig, unwatchPath, watchPath, type LintConfigError, type LintConfigResult } from '../ipc';
 import { settings } from '../settings/settings.svelte';
 import { relint } from './lintExtension';
 
@@ -20,7 +20,8 @@ export interface ParsedLintConfig {
 
 /**
  * Reads a config file's text as data: JSON with comments and trailing commas, or YAML.
- * `extends` is dropped, since it could point anywhere (Ruling 285).
+ * `extends` is dropped, since it could point anywhere (Ruling 285), and so is any
+ * `__proto__` key (Ruling 299).
  */
 export function parseLintConfig(r: LintConfigResult): ParsedLintConfig {
   const text = r.text.startsWith('\uFEFF') ? r.text.slice(1) : r.text;
@@ -33,9 +34,14 @@ export function parseLintConfig(r: LintConfigResult): ParsedLintConfig {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return { config: null, error: 'Expected a set of rules, such as MD013: false.', note: null };
   }
-  if (!('extends' in value)) return { config: value, error: null, note: null };
-  const { extends: _ignored, ...rest } = value as Record<string, unknown>;
-  return { config: rest, error: null, note: `${baseName(r.path)}: extends is not followed` };
+  const { extends: followed, ...rest } = withoutProto(value) as Record<string, unknown>;
+  const note = followed == null ? null : `${baseName(r.path)}: extends is not followed`;
+  return { config: rest, error: null, note };
+}
+
+// A parsed "__proto__" key can become the object's prototype; JSON.parse keeps it as a key.
+function withoutProto(value: object): object {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === '__proto__' ? undefined : v));
 }
 
 function parseJson(text: string): unknown {
@@ -50,12 +56,18 @@ function parseJson(text: string): unknown {
 
 interface CachedConfig extends ParsedLintConfig {
   name: string;
+  hash: string;
+}
+
+interface Failure {
+  name: string | null;
+  message: string;
 }
 
 // By config path. Reactive, so the status bar follows a config that breaks or mends.
 const cache = new SvelteMap<string, CachedConfig>();
 // Why find_lint_config failed, by doc id.
-const failures = new SvelteMap<string, string>();
+const failures = new SvelteMap<string, Failure>();
 // The config each doc uses, and the docs using each config, which keep it watched.
 const configOf = new Map<string, string>();
 const usersOf = new Map<string, Set<string>>();
@@ -64,6 +76,9 @@ const latest = new Map<string, number>();
 // What each doc's editor was last linted with, so a refresh that finds the same skips it.
 const linted = new Map<string, string>();
 let refreshes = 0;
+// A focus looks again at most this often, as each look reaches the disk (Ruling 298).
+export const FOCUS_REFRESH_MS = 5000;
+let lastFocusRefresh = -Infinity;
 
 /** The rules from Settings, or null while linting is off (Ruling 268). */
 export function settingsLintConfig(): object | null {
@@ -94,7 +109,10 @@ function fileConfig(doc: DocState | undefined): (CachedConfig & { config: object
 export function configStatus(doc: DocState | undefined): { text: string; details: string | null } | null {
   if (!doc || !settings.lint.enabled) return null;
   const failure = failures.get(doc.id);
-  if (failure) return { text: 'Lint config error', details: failure };
+  if (failure) {
+    const text = failure.name === null ? 'Lint config error' : `Lint config error: ${failure.name}`;
+    return { text, details: failure.message };
+  }
   const file = doc.lintConfigPath ? cache.get(doc.lintConfigPath) : undefined;
   if (file?.error) return { text: `Lint config error: ${file.name}`, details: file.error };
   if (file?.note) return { text: file.note, details: null };
@@ -103,27 +121,36 @@ export function configStatus(doc: DocState | undefined): { text: string; details
 
 /**
  * Finds and reads `doc`'s config file, watches it, and lints `view` (or the doc's editor)
- * again if the config changed. A newer refresh of the same doc wins.
+ * again if the config changed. A newer refresh of the same doc wins. A search that runs
+ * out of time changes nothing.
  */
 export async function refreshConfig(doc: DocState, view?: EditorView): Promise<void> {
   const refresh = ++refreshes;
   latest.set(doc.id, refresh);
   const path = doc.path;
   let found: LintConfigResult | null = null;
-  let failure: string | null = null;
+  let failure: LintConfigError | null = null;
   if (path !== null) {
     try {
       found = await findLintConfig(path);
     } catch (err) {
-      failure = err instanceof Error ? err.message : String(err);
+      failure = asFindError(err);
     }
   }
   if (latest.get(doc.id) !== refresh || docs.get(doc.id) !== doc || doc.path !== path) return;
-  if (found) cache.set(found.path, { name: baseName(found.path), ...parseLintConfig(found) });
-  if (failure === null) failures.delete(doc.id);
-  else failures.set(doc.id, failure);
-  use(doc, found);
-  const key = found ? `${found.path}\n${found.hash}` : `none\n${failure}`;
+  if (failure?.timedOut) return;
+  if (found && cache.get(found.path)?.hash !== found.hash) {
+    cache.set(found.path, { name: baseName(found.path), hash: found.hash, ...parseLintConfig(found) });
+  }
+  if (failure === null) {
+    failures.delete(doc.id);
+    use(doc, found);
+  } else {
+    failures.set(doc.id, { name: failure.path === null ? null : baseName(failure.path), message: failure.message });
+    // Settings rules apply, but the old config stays watched, so its repair is heard.
+    doc.lintConfigPath = null;
+  }
+  const key = found ? `${found.path}\n${found.hash}` : `none\n${failure?.path}\n${failure?.message}`;
   if (linted.get(doc.id) === key) return;
   linted.set(doc.id, key);
   const target = view ?? viewFor(doc.id);
@@ -149,7 +176,10 @@ function addUser(found: LintConfigResult, id: string): void {
   const users = usersOf.get(found.path) ?? new Set<string>();
   usersOf.set(found.path, users);
   users.add(id);
-  if (users.size === 1) settle('Could not watch the lint config:', () => watchPath(found.path, found.hash));
+  if (users.size !== 1) return;
+  Promise.resolve()
+    .then(() => watchPath(found.path, found.hash))
+    .catch(watchFailed);
 }
 
 function dropUser(path: string, id: string): void {
@@ -184,6 +214,21 @@ export function refreshAllConfigs(): void {
   for (const doc of docs.values()) runRefresh(doc);
 }
 
+/** As refreshAllConfigs, but at most once in FOCUS_REFRESH_MS; for each window focus. */
+export function refreshConfigsOnFocus(now = Date.now()): void {
+  if (now - lastFocusRefresh < FOCUS_REFRESH_MS) return;
+  lastFocusRefresh = now;
+  refreshAllConfigs();
+}
+
+function asFindError(err: unknown): LintConfigError {
+  if (typeof err === 'object' && err !== null && typeof (err as LintConfigError).message === 'string') {
+    const { path = null, message, timedOut = false } = err as Partial<LintConfigError> & { message: string };
+    return { path, message, timedOut };
+  }
+  return { path: null, message: String(err), timedOut: false };
+}
+
 /** Lintel wrote `path`: a config in use is read again; a new one may now apply. */
 export function configWritten(path: string): void {
   if (usersOf.has(path)) handleConfigFileEvent(path);
@@ -203,6 +248,7 @@ export function followDocConfigs(): () => void {
       if (doc.path !== null) configWritten(doc.path);
     },
   });
+  lastFocusRefresh = -Infinity;
   refreshAllConfigs();
   return () => setDocHooks(null);
 }

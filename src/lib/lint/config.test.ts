@@ -2,7 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { save } from '@tauri-apps/plugin-dialog';
-import { adoptDoc, createDoc, docs, removeDoc, saveDoc, saveDocAs, type DocState } from '../docs/store.svelte';
+import * as jsonc from 'jsonc-parser';
+import {
+  adoptDoc,
+  createDoc,
+  docs,
+  removeDoc,
+  saveDoc,
+  saveDocAs,
+  setWatchFailureReporter,
+  type DocState,
+} from '../docs/store.svelte';
 import { registerView } from '../editor/views';
 import { findLintConfig, normalizePath, unwatchPath, watchPath, writeTextFile, type LintConfigResult } from '../ipc';
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
@@ -14,8 +24,10 @@ import {
   followDocConfigs,
   handleConfigFileEvent,
   parseLintConfig,
+  FOCUS_REFRESH_MS,
   refreshAllConfigs,
   refreshConfig,
+  refreshConfigsOnFocus,
 } from './config';
 import { relint } from './lintExtension';
 
@@ -32,6 +44,10 @@ vi.mock('../ipc', async (importOriginal) => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('../os/recent', () => ({ recordRecent: vi.fn() }));
 vi.mock('./lintExtension', () => ({ relint: vi.fn() }));
+vi.mock('jsonc-parser', async (importOriginal) => {
+  const real = await importOriginal<typeof import('jsonc-parser')>();
+  return { ...real, parse: vi.fn(real.parse) };
+});
 
 const REPO = '/repo/.markdownlint.json';
 
@@ -125,6 +141,23 @@ describe('parseLintConfig', () => {
       error: 'Expected a set of rules, such as MD013: false.',
       note: null,
     });
+  });
+
+  it('drops extends: null without a note (Ruling 299)', () => {
+    expect(parseLintConfig(result('{ "extends": null, "MD013": false }'))).toEqual({
+      config: { MD013: false },
+      error: null,
+      note: null,
+    });
+  });
+
+  it('drops a __proto__ key, so the rules stay a plain object (Ruling 299)', () => {
+    const { config } = parseLintConfig(result('{ "__proto__": { "MD013": false }, "MD004": { "__proto__": {} } }'));
+
+    expect(config).toEqual({ MD004: {} });
+    expect(Object.getPrototypeOf(config)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf((config as { MD004: object }).MD004)).toBe(Object.prototype);
+    expect((config as { MD013?: boolean }).MD013).toBeUndefined();
   });
 
   it('drops extends, with a note, since it could read any file', () => {
@@ -287,6 +320,65 @@ describe('currentConfig and refreshConfig', () => {
       text: 'Lint config error',
       details: '/repo/.markdownlint.json is not UTF-8 text.',
     });
+  });
+
+  it('names the config file the search could not read (Ruling 299)', async () => {
+    const doc = open();
+    vi.mocked(findLintConfig).mockRejectedValue({
+      path: '/repo/.markdownlint.yaml',
+      message: 'Lintel reads lint config files in UTF-8 only.',
+      timedOut: false,
+    });
+
+    await refreshConfig(doc);
+
+    expect(configStatus(doc)).toEqual({
+      text: 'Lint config error: .markdownlint.yaml',
+      details: 'Lintel reads lint config files in UTF-8 only.',
+    });
+  });
+
+  it('clears the error once the config reads again (Ruling 298)', async () => {
+    const doc = open();
+    vi.mocked(findLintConfig).mockRejectedValueOnce({ path: REPO, message: 'Could not read the file', timedOut: false });
+    await refreshConfig(doc);
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+
+    await refreshConfig(doc);
+
+    expect(configStatus(doc)).toBeNull();
+    expect(currentConfig(doc)).toEqual({ MD004: false });
+  });
+
+  it('keeps the config it has when the search runs out of time (Ruling 298)', async () => {
+    const doc = open();
+    editorFor(doc);
+    vi.mocked(findLintConfig).mockResolvedValueOnce(result('{ "MD004": false }'));
+    await refreshConfig(doc);
+    vi.mocked(relint).mockClear();
+    vi.mocked(findLintConfig).mockRejectedValue({ path: null, message: 'took too long', timedOut: true });
+
+    await refreshConfig(doc);
+
+    expect(doc.lintConfigPath).toBe(REPO);
+    expect(currentConfig(doc)).toEqual({ MD004: false });
+    expect(configStatus(doc)).toBeNull();
+    expect(relint).not.toHaveBeenCalled();
+  });
+
+  it('parses a config again only when its path or hash changed (Ruling 298)', async () => {
+    const doc = open();
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+    vi.mocked(jsonc.parse).mockClear();
+
+    await refreshConfig(doc);
+    await refreshConfig(doc);
+    expect(jsonc.parse).toHaveBeenCalledTimes(1);
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": true }'));
+    await refreshConfig(doc);
+    expect(jsonc.parse).toHaveBeenCalledTimes(2);
+    expect(currentConfig(doc)).toEqual({ MD004: true });
   });
 
   it('drops an older refresh that ends after a newer one', async () => {
@@ -467,9 +559,11 @@ describe('watching config files', () => {
     expect(watchPath).not.toHaveBeenCalledWith(REPO, expect.anything());
   });
 
-  it('logs, and does not reject, when watching the config fails', async () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(watchPath).mockRejectedValueOnce(new Error('the file watcher could not start'));
+  it('says live reload is off when watching the config fails, and does not reject (Ruling 298)', async () => {
+    const reported: unknown[] = [];
+    setWatchFailureReporter((err) => reported.push(err));
+    const failure = new Error('the file watcher could not start');
+    vi.mocked(watchPath).mockRejectedValueOnce(failure);
     vi.mocked(findLintConfig).mockResolvedValue(result('{}'));
     const doc = open(null);
     doc.path = '/repo/c.md';
@@ -477,7 +571,40 @@ describe('watching config files', () => {
     await refreshConfig(doc);
     await settled();
 
-    expect(error).toHaveBeenCalledWith('Could not watch the lint config:', expect.any(Error));
-    error.mockRestore();
+    expect(reported).toEqual([failure]);
+    setWatchFailureReporter((err) => console.error(err));
+  });
+
+  it('keeps watching the config while it cannot be read, so its repair is heard (Ruling 298)', async () => {
+    stop = followDocConfigs();
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+    const doc = open();
+    await settled();
+
+    vi.mocked(findLintConfig).mockRejectedValue({ path: REPO, message: 'Could not read the file', timedOut: false });
+    handleConfigFileEvent(REPO);
+    await settled();
+    expect(currentConfig(doc)).toEqual({ MD013: false });
+    expect(unwatchPath).not.toHaveBeenCalledWith(REPO);
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": true }'));
+    handleConfigFileEvent(REPO);
+    await settled();
+    expect(currentConfig(doc)).toEqual({ MD004: true });
+  });
+
+  it('looks again on window focus at most once in 5 s (Ruling 298)', async () => {
+    stop = followDocConfigs();
+    open();
+    await settled();
+    vi.mocked(findLintConfig).mockClear();
+
+    refreshConfigsOnFocus(100_000);
+    refreshConfigsOnFocus(100_000 + FOCUS_REFRESH_MS - 1);
+    expect(findLintConfig).toHaveBeenCalledTimes(1);
+
+    refreshConfigsOnFocus(100_000 + FOCUS_REFRESH_MS);
+    expect(findLintConfig).toHaveBeenCalledTimes(2);
+    expect(FOCUS_REFRESH_MS).toBe(5000);
   });
 });

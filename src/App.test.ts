@@ -255,7 +255,7 @@ describe('App lint count (M6.1)', () => {
     stop();
   });
 
-  const repoConfig = (text: string) => ({ path: '/repo/.markdownlint.json', format: 'json' as const, text, hash: 'c' });
+  const repoConfig = (text: string) => ({ path: '/repo/.markdownlint.json', format: 'json' as const, text, hash: `hash of ${text}` });
 
   it("lints a stale Fix all again with the doc's config file (Ruling 282)", async () => {
     vi.mocked(findLintConfig).mockResolvedValue(repoConfig('{ "MD004": { "style": "asterisk" } }'));
@@ -294,7 +294,9 @@ describe('App lint count (M6.1)', () => {
     fake.focusHandler!({ payload: false });
     expect(findLintConfig).not.toHaveBeenCalled();
     fake.focusHandler!({ payload: true });
+    fake.focusHandler!({ payload: true });
 
+    // The second focus is within 5 s of the first (Ruling 298).
     expect(findLintConfig).toHaveBeenCalledExactlyOnceWith('/repo/a.md');
   });
 

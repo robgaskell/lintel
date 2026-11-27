@@ -14,7 +14,7 @@
   import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
   import { dropPrintRootUnlessOpen } from './lib/export/print';
   import { outline } from './lib/layout/outline.svelte';
-  import { configStatus, currentConfig, followDocConfigs, refreshAllConfigs } from './lib/lint/config';
+  import { configStatus, currentConfig, followDocConfigs, refreshConfigsOnFocus } from './lib/lint/config';
   import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
   import { Workspace } from './lib/layout/workspace';
   import {
@@ -236,7 +236,7 @@
       if (!focused) return;
       takeAppMenu();
       // A config file made nearer to a doc while this window was in the background.
-      refreshAllConfigs();
+      refreshConfigsOnFocus();
       setOutlineChecked(outline.visible).catch((err) =>
         console.error('Could not tick View > Show Outline:', err),
       );

@@ -85,7 +85,17 @@ export interface LintConfigResult {
   hash: string;
 }
 
-/** The nearest markdownlint config file at or above the doc's folder, or null (Ruling 285). */
+/** Why find_lint_config failed; `path` is the config file it could not read, if any. */
+export interface LintConfigError {
+  path: string | null;
+  message: string;
+  timedOut: boolean;
+}
+
+/**
+ * The nearest markdownlint config file at or above the doc's folder, or null (Ruling 285).
+ * Rejects with a LintConfigError.
+ */
 export function findLintConfig(docPath: string): Promise<LintConfigResult | null> {
   return invoke<LintConfigResult | null>('find_lint_config', { docPath });
 }

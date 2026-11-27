@@ -406,12 +406,17 @@ export function setWatchFailureReporter(report: (err: unknown) => void): void {
   reportWatchFailure = report;
 }
 
+/** Reports a watch that failed, as the window's own doc watches do. */
+export function watchFailed(err: unknown): void {
+  reportWatchFailure(err);
+}
+
 // Unwatched, the file only stops reloading; nothing is lost.
 async function watch(path: string, hash: string): Promise<void> {
   try {
     await watchPath(path, hash);
   } catch (err) {
-    reportWatchFailure(err);
+    watchFailed(err);
   }
 }
 
