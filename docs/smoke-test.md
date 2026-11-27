@@ -15,3 +15,9 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 
 - [ ] Windows: Install command-line tool, then `lintel x.md` in a new terminal works. Make default opens the Default apps settings page.
 - [ ] Linux: Install command-line tool works. After Make default, `xdg-mime query default text/markdown` prints `lintel.desktop`.
+
+## Printing (M7.1)
+
+- [ ] Windows and Linux: File > Print opens a dialog and prints a page. Note any failure in docs/known-issues.md.
+- [ ] Windows and Linux: File > Export as PDF shows a hint, then the print dialog. The hint names the dialog's PDF option (Windows: "Microsoft Print to PDF"; Linux: "Print to File", then PDF), and choosing it saves a PDF. Note any other wording.
+- [ ] Windows: press Ctrl+P with a document open. Note whether Lintel's print of the document opens or WebView2's print of the app window, and correct the Ctrl+P entry in docs/known-issues.md to match. If a printed page shows `tauri.localhost`, check that turning off headers and footers removes it.

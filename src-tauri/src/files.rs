@@ -46,7 +46,8 @@ pub async fn read_text_file(path: String) -> Result<ReadResult, String> {
 }
 
 /// The canonical spelling of an existing file's path, so one file never opens in two tabs.
-/// Letter case is not folded on case-insensitive volumes (Ruling 44).
+/// On macOS this also gives the name's letter case as stored, so case-only spellings meet
+/// (Ruling 296); Windows is still to be checked.
 #[tauri::command]
 pub async fn normalize_path(path: String) -> Result<String, String> {
     // Only argv gives relative paths, and only when its folder could not be read (Ruling 242);
