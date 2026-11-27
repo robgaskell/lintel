@@ -15,9 +15,16 @@ export function copyNotices(): Promise<string> {
   return invoke<string>('copy_notices');
 }
 
-/** Resolves to the sha-256 hex of the bytes written. */
-export function writeTextFile(path: string, text: string): Promise<string> {
-  return invoke<string>('write_text_file', { path, text });
+/**
+ * Resolves to the sha-256 hex of the bytes written. With `expectedHash`, a file on disk with
+ * other bytes is left alone and the call rejects with CHANGED_ON_DISK (Ruling 357).
+ */
+export function writeTextFile(
+  path: string,
+  text: string,
+  expectedHash: string | null = null,
+): Promise<string> {
+  return invoke<string>('write_text_file', { path, text, expectedHash });
 }
 
 /** Writes `base64`'s bytes atomically, as Save does; for exports such as .docx (Ruling 314). */

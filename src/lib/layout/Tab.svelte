@@ -21,6 +21,8 @@
     <span class="badge updated">Updated</span>
   {:else if doc.external === 'deleted'}
     <span class="badge deleted">Deleted on disk</span>
+  {:else if doc.external === 'conflict'}
+    <span class="badge conflict">Changed on disk</span>
   {/if}
   {#if dirty}
     <span class="dirty" role="img" aria-label="Unsaved changes"></span>
@@ -82,7 +84,8 @@
     color: var(--tab-updated);
   }
 
-  .deleted {
+  .deleted,
+  .conflict {
     color: var(--tab-deleted);
   }
 

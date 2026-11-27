@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   claimPath,
@@ -12,6 +13,7 @@ import { message, save } from '@tauri-apps/plugin-dialog';
 import { recordRecent } from '../os/recent';
 import {
   adoptDoc,
+  CHANGED_ON_DISK,
   closeDocWithPrompt,
   confirmCloseAll,
   createDoc,
@@ -28,6 +30,7 @@ import {
   setDocHooks,
   setWatchFailureReporter,
   untitledCounter,
+  type DocState,
 } from './store.svelte';
 
 vi.mock('../ipc', () => ({
@@ -157,7 +160,7 @@ describe('saveDoc', () => {
     expect(await saveDoc(doc.id)).toBe(true);
 
     expect(write).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\r\nbc\r\n');
+    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\r\nbc\r\n', 'h0');
     expect(doc.savedText).toBe(doc.text);
     expect(doc.diskHash).toBe('h1');
     expect(isDirty(doc)).toBe(false);
@@ -170,7 +173,7 @@ describe('saveDoc', () => {
 
     expect(await saveDoc(doc.id)).toBe(true);
 
-    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\n');
+    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\n', 'h0');
     expect(doc.external).toBe('none');
   });
 
@@ -196,7 +199,7 @@ describe('saveDoc', () => {
     expect(await saveDoc(doc.id)).toBe(true);
 
     expect(saveDialog).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith('/notes/empty.md', '');
+    expect(write).toHaveBeenCalledWith('/notes/empty.md', '', null);
     expect(doc.path).toBe('/notes/empty.md');
   });
 
@@ -211,11 +214,12 @@ describe('saveDoc', () => {
     expect(doc.diskHash).toBe('h0');
   });
 
-  it('clears the held disk version on save', async () => {
+  it('clears the held disk version on a save the user lets replace it', async () => {
     const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
     doc.text = 'mine\n';
     doc.external = 'conflict';
     doc.diskText = 'theirs\n';
+    messageDialog.mockResolvedValue('Replace');
     write.mockResolvedValue('h1');
 
     await saveDoc(doc.id);
@@ -255,6 +259,88 @@ describe('saveDoc', () => {
   });
 });
 
+describe('saving over a newer version on disk (Ruling 357)', () => {
+  function conflicted(): DocState {
+    const doc = createDoc({ path: '/notes/plan.md', raw: 'base\n', hash: 'h-theirs', mode: 'split' });
+    doc.text = 'mine\n';
+    doc.external = 'conflict';
+    doc.diskText = 'theirs\n';
+    return doc;
+  }
+
+  it('asks before Save writes during a conflict, and Cancel writes nothing and keeps both', async () => {
+    const doc = conflicted();
+    messageDialog.mockResolvedValue('Cancel');
+
+    expect(await saveDoc(doc.id)).toBe(false);
+
+    expect(messageDialog).toHaveBeenCalledWith(
+      'plan.md changed on disk. Replace it with your version?',
+      expect.objectContaining({ buttons: { ok: 'Replace', cancel: 'Cancel' } }),
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(doc.external).toBe('conflict');
+    expect(doc.diskText).toBe('theirs\n');
+    expect(doc.text).toBe('mine\n');
+  });
+
+  it("writes the user's version during a conflict on Replace", async () => {
+    const doc = conflicted();
+    messageDialog.mockResolvedValue('Replace');
+    write.mockResolvedValue('h-mine');
+
+    expect(await saveDoc(doc.id)).toBe(true);
+
+    expect(write).toHaveBeenCalledWith('/notes/plan.md', 'mine\n', null);
+    expect(doc.external).toBe('none');
+    expect(doc.diskText).toBeNull();
+  });
+
+  it('asks when the file changed on disk unnoticed, and Cancel leaves it', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    doc.text = 'mine\n';
+    write.mockRejectedValue(CHANGED_ON_DISK);
+    messageDialog.mockResolvedValue('Cancel');
+
+    expect(await saveDoc(doc.id)).toBe(false);
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith('/notes/a.md', 'mine\n', 'h0');
+    expect(isDirty(doc)).toBe(true);
+    expect(doc.diskHash).toBe('h0');
+  });
+
+  it('writes over a file changed unnoticed on Replace', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'a\n', hash: 'h0', mode: 'edit' });
+    doc.text = 'mine\n';
+    write.mockRejectedValueOnce(CHANGED_ON_DISK).mockResolvedValueOnce('h-mine');
+    messageDialog.mockResolvedValue('Replace');
+
+    expect(await saveDoc(doc.id)).toBe(true);
+
+    expect(write).toHaveBeenLastCalledWith('/notes/a.md', 'mine\n', null);
+    expect(doc.diskHash).toBe('h-mine');
+    expect(isDirty(doc)).toBe(false);
+  });
+
+  it('keeps the tab open when Save in the close prompt meets a conflict and Cancel', async () => {
+    const doc = conflicted();
+    for (const answer of ['Save', 'Cancel', 'Save', 'Cancel']) messageDialog.mockResolvedValueOnce(answer);
+
+    expect(await closeDocWithPrompt(doc.id)).toBe(false);
+    expect(await confirmCloseAll([doc.id])).toBe(false);
+
+    expect(write).not.toHaveBeenCalled();
+    expect(docs.has(doc.id)).toBe(true);
+    expect(doc.external).toBe('conflict');
+  });
+
+  it('matches the error Rust sends (files.rs CHANGED_ON_DISK)', () => {
+    const rust = readFileSync('src-tauri/src/files.rs', 'utf8');
+    expect(rust).toContain(`pub const CHANGED_ON_DISK: &str = "${CHANGED_ON_DISK}";`);
+  });
+});
+
 describe('saveDocAs', () => {
   it('writes to the chosen path and renames the doc', async () => {
     const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
@@ -264,7 +350,7 @@ describe('saveDocAs', () => {
 
     expect(await saveDocAs(doc.id)).toBe(true);
 
-    expect(write).toHaveBeenCalledWith('/notes/new.md', 'new\n');
+    expect(write).toHaveBeenCalledWith('/notes/new.md', 'new\n', null);
     expect(doc.path).toBe('/notes/new.md');
     expect(doc.title).toBe('new.md');
     expect(doc.diskHash).toBe('h2');
@@ -338,7 +424,7 @@ describe('closeDocWithPrompt', () => {
     write.mockResolvedValue('h1');
 
     expect(await closeDocWithPrompt(doc.id)).toBe(true);
-    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\nb\n');
+    expect(write).toHaveBeenCalledWith('/notes/a.md', 'a\nb\n', 'h0');
     expect(docs.has(doc.id)).toBe(false);
   });
 

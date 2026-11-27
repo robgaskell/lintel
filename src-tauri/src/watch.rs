@@ -1127,6 +1127,7 @@ mod tests {
                 app.state(),
                 path.clone(),
                 "mine".to_owned(),
+                None,
             ))
             .unwrap();
 
@@ -1134,6 +1135,25 @@ mod tests {
             let files = watcher.lock();
             let watched = files.by_key.values().next().unwrap();
             assert_eq!(watched.hash, Some(hash("mine")));
+        }
+
+        #[test]
+        fn write_text_file_refuses_a_file_changed_since_the_hash_it_expects() {
+            let dir = TempDir::new();
+            let path = dir.file("a.md", "theirs");
+            let app = app();
+            let main = window(&app, "main");
+
+            let saved = block_on(files::write_text_file(
+                main,
+                app.state(),
+                path.clone(),
+                "mine".to_owned(),
+                Some(hash("base")),
+            ));
+
+            assert_eq!(saved, Err(files::CHANGED_ON_DISK.to_owned()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), "theirs");
         }
 
         #[test]
@@ -1155,6 +1175,7 @@ mod tests {
                 app.state(),
                 path.clone(),
                 "{ }".to_owned(),
+                None,
             ))
             .unwrap();
 

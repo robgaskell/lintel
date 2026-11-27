@@ -610,7 +610,7 @@ describe('quitApp', () => {
 
     await quitApp();
 
-    expect(writeFile).toHaveBeenCalledWith('/a.md', 'changed');
+    expect(writeFile).toHaveBeenCalledWith('/a.md', 'changed', '');
     expect(isDirty(a)).toBe(false);
     expect(exitApp).toHaveBeenCalledWith(0);
   });

@@ -375,14 +375,35 @@ fn doctype_end(text: &str) -> Option<usize> {
 
 /// Returns the sha-256 hex of the bytes written. The watcher learns the new hash, so
 /// Lintel's own save does not come back to this window; other windows watching it hear it.
+/// With `expected_hash`, a file whose bytes differ is left alone (Ruling 357).
 #[tauri::command]
 pub async fn write_text_file<R: Runtime>(
     window: Window<R>,
     watcher: State<'_, Watcher>,
     path: String,
     text: String,
+    expected_hash: Option<String>,
 ) -> Result<String, String> {
-    watcher.saving(window.label(), &path, || write_text(&path, &text))
+    watcher.saving(window.label(), &path, || {
+        write_text_unless_changed(&path, &text, expected_hash.as_deref())
+    })
+}
+
+/// The save's error when another program changed the file; the front end matches it.
+pub const CHANGED_ON_DISK: &str = "The file changed on disk since Lintel last read it.";
+
+/// A missing file has nothing to lose, and an unreadable one is left for the write to report.
+pub(crate) fn write_text_unless_changed(
+    path: &str,
+    text: &str,
+    expected_hash: Option<&str>,
+) -> Result<String, String> {
+    if let (Some(expected), Ok(bytes)) = (expected_hash, fs::read(path)) {
+        if sha256_hex(&bytes) != expected {
+            return Err(CHANGED_ON_DISK.to_owned());
+        }
+    }
+    write_text(path, text)
 }
 
 /// Writes an export such as a .docx, sent as base64 (Ruling 314).
@@ -538,6 +559,35 @@ mod tests {
         assert_eq!(read.text, text);
         assert_eq!(read.hash, written_hash);
         assert_eq!(read.hash, sha256_hex(text.as_bytes()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_expects_other_bytes_leaves_the_file_alone() {
+        let dir = temp_dir();
+        let file = path_str(&dir.join("note.md"));
+        fs::write(&file, "theirs").unwrap();
+
+        let result = write_text_unless_changed(&file, "mine", Some(&sha256_hex(b"base")));
+
+        assert_eq!(result, Err(CHANGED_ON_DISK.to_owned()));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "theirs");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_expects_the_bytes_on_disk_or_a_missing_file_writes() {
+        let dir = temp_dir();
+        let file = path_str(&dir.join("note.md"));
+        fs::write(&file, "base").unwrap();
+        let gone = path_str(&dir.join("gone.md"));
+
+        let saved = write_text_unless_changed(&file, "mine", Some(&sha256_hex(b"base")));
+        let recreated = write_text_unless_changed(&gone, "back", Some(&sha256_hex(b"old")));
+
+        assert_eq!(saved, Ok(sha256_hex(b"mine")));
+        assert_eq!(recreated, Ok(sha256_hex(b"back")));
+        assert_eq!(fs::read_to_string(&gone).unwrap(), "back");
         fs::remove_dir_all(dir).unwrap();
     }
 

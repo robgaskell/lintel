@@ -540,7 +540,7 @@ describe('watching config files', () => {
     await saveDoc(config.id);
     await settled();
 
-    expect(writeTextFile).toHaveBeenCalledWith(REPO, '{ "MD004": true }');
+    expect(writeTextFile).toHaveBeenCalledWith(REPO, '{ "MD004": true }', 'h');
     expect(currentConfig(doc)).toEqual({ MD004: true });
   });
 

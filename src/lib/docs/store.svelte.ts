@@ -204,8 +204,9 @@ export function isDirty(doc: DocState): boolean {
 }
 
 /**
- * Resolves to false only if the user cancels the Save As dialog.
- * Rejects for an unknown id. A second call while a save is running gets the first call's promise.
+ * Resolves to false when the user cancels: the Save As dialog, or Replace over a newer
+ * version on disk. Rejects for an unknown id. A second call while a save is running gets
+ * the first call's promise.
  */
 export function saveDoc(id: string): Promise<boolean> {
   return onceAtATime(id, async () => runSave(getDoc(id)));
@@ -284,9 +285,36 @@ async function runSave(doc: DocState): Promise<boolean> {
   if (doc.path === null) return runSaveAs(doc);
   // A clean save must not touch the file, so its bytes stay identical.
   if (!isDirty(doc) && doc.external !== 'deleted') return true;
-  await writeTo(doc, doc.path);
-  hooks?.saved(doc, doc.path);
+  const path = doc.path;
+  if (doc.external === 'conflict') {
+    if (!(await mayReplace(doc))) return false;
+    await writeTo(doc, path, null);
+  } else {
+    try {
+      await writeTo(doc, path, doc.diskHash);
+    } catch (err) {
+      if (err !== CHANGED_ON_DISK) throw err;
+      if (!(await mayReplace(doc))) return false;
+      await writeTo(doc, path, null);
+    }
+  }
+  hooks?.saved(doc, path);
   return true;
+}
+
+/** Rust's CHANGED_ON_DISK in files.rs: another program changed the file since Lintel read it. */
+export const CHANGED_ON_DISK = 'The file changed on disk since Lintel last read it.';
+
+const REPLACE = 'Replace';
+
+// Cancel keeps both versions: the user's text stays unsaved and the file stays as it is.
+async function mayReplace(doc: DocState): Promise<boolean> {
+  const answer = await message(`${doc.title} changed on disk. Replace it with your version?`, {
+    title: 'Lintel',
+    kind: 'warning',
+    buttons: { ok: REPLACE, cancel: CANCEL },
+  });
+  return answer === REPLACE;
 }
 
 async function runSaveAs(doc: DocState): Promise<boolean> {
@@ -313,7 +341,8 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
       return false;
     }
     try {
-      await writeTo(doc, path);
+      // The save dialog has already asked before replacing an existing file.
+      await writeTo(doc, path, null);
     } catch (err) {
       if (chosen !== oldPath) void release(chosen);
       throw err;
@@ -344,10 +373,11 @@ async function refuseOpenElsewhere(path: string): Promise<void> {
   await message(text, { title: 'Lintel', kind: 'error' });
 }
 
-async function writeTo(doc: DocState, path: string): Promise<void> {
+/** `expectedHash` null writes whatever is on disk now. */
+async function writeTo(doc: DocState, path: string, expectedHash: string | null): Promise<void> {
   // Snapshot first: edits typed while the write is in flight stay unsaved.
   const text = doc.text;
-  const hash = await writeTextFile(path, toDisk(text, doc.lineEnding));
+  const hash = await writeTextFile(path, toDisk(text, doc.lineEnding), expectedHash);
   doc.savedText = text;
   doc.diskHash = hash;
   doc.external = 'none';

@@ -349,7 +349,7 @@ describe('handleFileRemoved', () => {
 
     expect(await saveDoc(doc.id)).toBe(true);
     expect(write).toHaveBeenCalledOnce();
-    expect(write).toHaveBeenCalledWith('/notes/plan.md', 'kept\n');
+    expect(write).toHaveBeenCalledWith('/notes/plan.md', 'kept\n', 'h-old');
     expect(doc.external).toBe('none');
   });
 

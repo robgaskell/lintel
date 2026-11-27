@@ -27,12 +27,14 @@ describe('Tab', () => {
     expect(container.querySelector('.lintel-tab')?.textContent).toContain('Deleted on disk');
   });
 
-  it('shows neither for a doc in step with its file, or in conflict', () => {
-    for (const external of ['none', 'conflict'] as const) {
-      const { container, unmount } = tab(external);
-      const text = container.querySelector('.lintel-tab')?.textContent ?? '';
-      expect(text).not.toMatch(/Updated|Deleted on disk/);
-      unmount();
-    }
+  it('shows "Changed on disk" for a doc in conflict, so a tab in the background shows it too', () => {
+    const { container } = tab('conflict');
+    expect(container.querySelector('.lintel-tab')?.textContent).toContain('Changed on disk');
+  });
+
+  it('shows no badge for a doc in step with its file', () => {
+    const { container } = tab('none');
+    const text = container.querySelector('.lintel-tab')?.textContent ?? '';
+    expect(text).not.toMatch(/Updated|Deleted on disk|Changed on disk/);
   });
 });
