@@ -534,7 +534,8 @@ mod tests {
     // holds_exit itself is tested in updater.rs.
     #[test]
     fn an_exit_request_during_an_install_is_refused() {
-        let lib = include_str!("lib.rs");
+        // Windows checks the file out with CRLF line ends.
+        let lib = include_str!("lib.rs").replace("\r\n", "\n");
         let wiring = concat!("if updater::holds_exit(app, *code) {\n", "            api.prevent_exit();");
         assert_eq!(lib.matches(wiring).count(), 1);
     }
