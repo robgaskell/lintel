@@ -69,11 +69,12 @@ function controls(container: HTMLElement): boolean {
 }
 
 describe('SettingsApp', () => {
-  it('lists Appearance, Editor and Files, for later steps to extend', () => {
+  it('lists Appearance, Editor, Files and Lint, for later steps to extend', () => {
     expect(sections.map((s) => [s.id, s.label])).toEqual([
       ['appearance', 'Appearance'],
       ['editor', 'Editor'],
       ['files', 'Files'],
+      ['lint', 'Lint'],
     ]);
   });
 
@@ -144,7 +145,7 @@ describe('SettingsApp', () => {
   });
 
   it('ignores a section it does not have', () => {
-    history.replaceState(null, '', '/?view=settings&section=lint');
+    history.replaceState(null, '', '/?view=settings&section=updates');
     const { queryByLabelText } = render(SettingsApp);
 
     expect(queryByLabelText('Reading font')).toBeTruthy();

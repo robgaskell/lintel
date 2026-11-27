@@ -5,7 +5,12 @@ export const saveError = $state({ message: '' });
 
 /** Saves a change from a Settings control. The window has no dialogs (Ruling 160). */
 export function save(patch: SettingsPatch): void {
-  updateSettings(patch).then(
+  track(updateSettings(patch));
+}
+
+/** Shows whether a save made some other way, such as a rule switch, failed. */
+export function track(saving: Promise<void>): void {
+  saving.then(
     () => (saveError.message = ''),
     (err) => (saveError.message = `Could not save: ${err instanceof Error ? err.message : err}`),
   );
