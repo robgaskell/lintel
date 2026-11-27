@@ -281,6 +281,14 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
     ['marker-end', '<svg><path d="M0 0L9 9" marker-end="url(https://x.example/marker#m)"/></svg>'],
     ['filter', '<svg><rect width="9" height="9" filter="url(https://x.example/filter#f)"/></svg>'],
     ['mask image-set', '<svg><rect width="9" height="9" mask="image-set(&quot;https://x.example/set&quot; 1x)"/></svg>'],
+    // A scheme without // still loads, in any letter case (Ruling 329).
+    ['image-set with http:host', '<svg><rect width="9" height="9" mask="image-set(&quot;http:x.example/a&quot; 1x)"/></svg>'],
+    ['-webkit-image-set', '<svg><rect width="9" height="9" mask="-webkit-image-set(&quot;http:x.example/b&quot; 1x)"/></svg>'],
+    ['upper-case HTTP:', '<svg><rect width="9" height="9" mask="IMAGE-SET(&quot;HTTP:x.example/c&quot; 1x)"/></svg>'],
+    ['src()', '<svg><rect width="9" height="9" mask="src(&quot;http:x.example/d&quot;)"/></svg>'],
+    ['image-set with //host', '<svg><rect width="9" height="9" mask="image-set(&quot;//x.example/f&quot; 1x)"/></svg>'],
+    ['image-set with \\\\host', '<svg><rect width="9" height="9" mask="image-set(&quot;\\\\x.example\\g&quot; 1x)"/></svg>'],
+    ['data: URI that loads', '<svg><rect width="9" height="9" mask="url(data:image/svg+xml,%3Cimage href=%22http:x.example/e%22/%3E#m)"/></svg>'],
   ])('drops an SVG %s that points off the page', async (_name, markup) => {
     const html = await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' });
 
@@ -300,6 +308,19 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
     const markup = '<svg><defs><linearGradient id="h-g"></linearGradient></defs><rect width="9" height="9" fill="url(#h-g)"/></svg>';
     const page = parse(await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' }));
     expect(page.querySelector('.content rect')!.getAttribute('fill')).toBe('url(#h-g)');
+  });
+
+  it('keeps an in-page <use href="#x"> (the sanitiser drops <use>; this is the strip alone), and a data: image in image-set (Ruling 329)', async () => {
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({
+      ...actual(text),
+      html:
+        '<p><svg><defs><rect id="h-r" width="9" height="9"></rect></defs><use href="#h-r"></use>' +
+        '<rect width="9" height="9" mask="image-set(&quot;data:image/png;base64,AAAA&quot; 1x)"></rect></svg></p>',
+    }));
+    const page = parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' }));
+    expect(page.querySelector('.content use')!.getAttribute('href')).toBe('#h-r');
+    expect(page.querySelector('.content rect[mask]')!.getAttribute('mask')).toContain('data:image/png');
   });
 
   it('drops style attributes and <style> elements even if the sanitiser let them through (Ruling 320)', async () => {

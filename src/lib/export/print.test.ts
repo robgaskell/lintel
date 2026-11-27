@@ -351,6 +351,39 @@ describe('printDoc', () => {
     }
   });
 
+  it('keeps the hold past 60 s once print has settled; only input ends it then (Ruling 329)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const printedDoc = doc('# Kept\n');
+      await printDoc(printedDoc, { pdfHint: false });
+      dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+
+      vi.advanceTimersByTime(120_000);
+      expect(document.querySelector('.print-root')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets a never-settling print\'s limit end only that print\'s hold (Ruling 329)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      print.mockImplementationOnce(() => new Promise(() => {}) as never);
+      void printDoc(doc('# Stuck\n'), { pdfHint: false });
+      await vi.waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+      vi.advanceTimersByTime(10_000);
+
+      const printedDoc = doc('# Next\n');
+      await printDoc(printedDoc, { pdfHint: false });
+      dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+      // The stuck print's 60 s pass; the next print still holds.
+      vi.advanceTimersByTime(55_000);
+      expect(document.querySelector('.print-root h1')?.textContent).toBe('Next');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('starts a new print with no hold left from the last one (Ruling 322)', async () => {
     await printDoc(doc('# First\n'), { pdfHint: false });
     // No input since: the first print still holds. A stale check while the next renders drops it.

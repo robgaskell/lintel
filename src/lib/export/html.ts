@@ -145,9 +145,11 @@ function unlinkNetworkPaths(root: DocumentFragment) {
   }
 }
 
-// Drops raw styles and every attribute that could load something: a url() or a scheme,
-// `//` or `\\` target other than data: and #fragment. Links are unlinkNetworkPaths' job, and
-// an image's src is the preview's, which keeps only data URIs (Ruling 320).
+// Drops raw styles and every attribute that could load something (Rulings 320, 329): a
+// value that starts with a scheme other than data:, `//` or `\\`; or one with a parenthesis
+// that holds such a scheme, a backslash or `//` anywhere, or a url() not within the page.
+// Other hrefs keep only a #fragment. Links are unlinkNetworkPaths' job, and an image's src
+// is the preview's, which keeps only data URIs.
 function stripRemote(root: DocumentFragment) {
   for (const style of root.querySelectorAll('style')) style.remove();
   for (const el of root.querySelectorAll('*')) {
@@ -167,10 +169,12 @@ function stripRemote(root: DocumentFragment) {
 function pointsOffPage(value: string): boolean {
   const target = value.trim();
   if (!target.includes('(')) return /^([a-z][a-z0-9+.-]*:\S|[\\/]{2})/i.test(target) && !isInPage(target);
-  // A CSS value: only url()s within the page may stay. Escapes could spell another url(),
-  // and image-set() and the like take a plain address.
-  const rest = target.replace(/url\(\s*(['"]?)\s*(#|data:)[^'")]*\1\s*\)/gi, '');
-  return /url\(|\\|\/\//i.test(rest);
+  // A CSS value (it has a parenthesis) goes if it holds anywhere, in any letter case, a
+  // scheme other than data:, a backslash or `//`, even inside a data: URI; or a url() not
+  // within the page (Ruling 329).
+  const schemes = target.match(/[a-z][a-z0-9+.-]*:/gi) ?? [];
+  if (schemes.some((scheme) => scheme.toLowerCase() !== 'data:') || /\\|\/\//.test(target)) return true;
+  return /url\(/i.test(target.replace(/url\(\s*(['"]?)\s*(#|data:)[^'")]*\1\s*\)/gi, ''));
 }
 
 function isInPage(target: string): boolean {
