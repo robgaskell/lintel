@@ -193,9 +193,13 @@ describe('buildDocx', () => {
           '',
           '![Scheme-less](//z.example/p.png)',
           '',
-          '<img src="https://y.example/h.png" alt="Raw">',
+          '<img src="https://y.example/h.png" alt="RawAltBlock">',
           '',
-          '<p>Inline <img src="http://w.example/i.png" alt="In"> here</p>',
+          '<p>Inline <img src="http://w.example/i.png" alt="RawAltInline"> here</p>',
+          '',
+          'Para with <img src="https://z.example/q.png" alt="RawAltInPara"> mixed.',
+          '',
+          "<img alt='Tom &amp; Jerry' SRC=//v.example/t.png>",
           '',
         ].join('\n'),
       )
@@ -207,6 +211,8 @@ describe('buildDocx', () => {
     expect(count(xml, /<w:drawing>/g)).toBe(0);
     expect(xml).toContain('Remote chart');
     expect(xml).toContain('Scheme-less');
+    // Raw HTML images too (Ruling 325).
+    for (const alt of ['RawAltBlock', 'RawAltInline', 'RawAltInPara', 'Tom &amp; Jerry']) expect(xml, alt).toContain(alt);
   });
 
   it('turns a local SVG into a PNG only, at the SVG\'s own size (Ruling 315)', async () => {
@@ -239,6 +245,105 @@ describe('buildDocx', () => {
     expect(readImageAsDataUri).toHaveBeenCalledWith('/abs/d.png');
     expect(count(xml, /<w:drawing>/g)).toBe(1);
     expect(xml).toContain('Rel');
+  });
+
+  it('turns a raw HTML local SVG into a PNG only too (Ruling 327)', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><image href="https://t.example/x.png"/></svg>';
+    vi.mocked(readImageAsDataUri).mockResolvedValueOnce(`data:image/svg+xml;base64,${btoa(svg)}`);
+
+    const zip = await parts('<p>Logo <img src="logo.svg" alt="L"></p>\n');
+
+    expect(count(zip.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
+    expect([...zip.keys()].some((name) => name.endsWith('.svg'))).toBe(false);
+    expect([...zip.values()].join('\n')).not.toContain('t.example');
+  });
+
+  it('shows a diagram at its own width and height when it states them, not its viewBox (Ruling 326)', async () => {
+    vi.mocked(renderMermaidToSvg).mockResolvedValueOnce('<svg width="512" height="256" viewBox="0 0 24 24"></svg>');
+    const xml = (await parts('```mermaid\ngraph TD; A\n```\n')).get('word/document.xml')!;
+    expect(xml).toContain('<wp:extent cx="4876800" cy="2438400"/>');
+  });
+
+  it('breaks code block lines inside one paragraph (Ruling 327)', async () => {
+    const xml = (await parts('```\nline one\nline two\n```\n')).get('word/document.xml')!;
+    const paragraph = [...xml.matchAll(/<w:p>(?:(?!<\/w:p>).)*<\/w:p>/gs)].map(([p]) => p).find((p) => p.includes('line one'))!;
+    expect(paragraph).toMatch(/line one<\/w:t>.*<w:br\/><w:t[^>]*>line two</s);
+  });
+
+  it.each([
+    ['a list item', '- item\n\n  ```\n  CODE\n  ```\n', 'w:left="400" w:right="0"'],
+    ['a nested list item', '- a\n  - b\n\n    ```\n    CODE\n    ```\n', 'w:left="800" w:right="0"'],
+    ['a quote', '> ```\n> CODE\n> ```\n', 'w:left="720" w:right="720"'],
+  ])('indents a code block in %s as its text (Ruling 327)', async (_name, text, indent) => {
+    const xml = (await parts(text)).get('word/document.xml')!;
+    const paragraph = [...xml.matchAll(/<w:p>(?:(?!<\/w:p>).)*<\/w:p>/gs)].map(([p]) => p).find((p) => p.includes('CODE'))!;
+    expect(paragraph).toContain(`<w:ind ${indent}/>`);
+  });
+
+  it('keeps bold, italic, strike and link styles on inline code (Ruling 327)', async () => {
+    const xml = (await parts('**`b1`** *`i1`* ~~`s1`~~ [`l1`](https://x.example/)\n')).get('word/document.xml')!;
+    const run = (text: string) => [...xml.matchAll(/<w:r>(?:(?!<\/w:r>).)*<\/w:r>/gs)].map(([r]) => r).find((r) => r.includes(`>${text}<`))!;
+    expect(run('b1')).toContain('<w:b/>');
+    expect(run('i1')).toContain('<w:i/>');
+    expect(run('s1')).toContain('<w:strike/>');
+    expect(run('l1')).toContain('<w:rStyle w:val="Hyperlink"/>');
+    expect(run('l1')).toContain('Consolas');
+  });
+
+  it('leaves no local path in the file (Ruling 327, as 319)', async () => {
+    vi.mocked(readImageAsDataUri).mockImplementation(async (path) => {
+      throw `Could not read ${path}: No such file or directory`;
+    });
+    const text = '![Chart](img/a.png) ![](/Users/alice/private/b.png) <img src="c.png" alt="C">\n';
+    const zip = await parts(text, doc(text, '/Users/alice/notes/doc.md'));
+
+    const all = [...zip.values()].join('\n');
+    expect(all).not.toContain('/Users/alice');
+    expect(all).not.toContain('Could not read');
+    expect(zip.get('word/document.xml')).toContain('Chart');
+  });
+});
+
+describe('buildDocx links (Ruling 324)', () => {
+  it('keeps web, mail, relative and in-document links, and leaves network paths, file: and other schemes as text', async () => {
+    const text = [
+      String.raw`[unc](\\\\evil-md\\share)`,
+      String.raw`[mixed](/\\evil-mix/x)`,
+      '[nw](//evil-nw/x)',
+      '[fs](file://evil-file/share/x)',
+      '[fsl](file:///Users/rob/secret.txt)',
+      '[js](javascript:alert(1))',
+      '[smb](smb://evil-smb/x)',
+      '[pct](%5C%5Cevil-pct%5Cx)',
+      '[ref][r]',
+      '<file://evil-auto/x>',
+      '[web](https://example.com/) [mail](mailto:a@example.com) [rel](other%20file.md) [top](#intro)',
+      'Inline <a href="file://evil-inline/x">h0</a> raw.',
+      '',
+      '<p><a href="\\\\evil-html\\share">h1</a> <a href="file://evil-html2/s">h2</a>',
+      "<a HREF='&#102;ile://evil-ent/x'>h3</a> <a href=//evil-unq/x>h4</a>",
+      '<a title=">" href="file://evil-title/x">h5</a> <a href=" file://evil-space/x">h6</a>',
+      '<a title="href=file://evil-copy/x" href=file://evil-copy/x>h7</a>',
+      '<a href="https://raw.example/">rawweb</a></p>',
+      '',
+      '# Intro',
+      '',
+      '[r]: file://evil-ref/x',
+      '',
+    ].join('\n');
+    const zip = await parts(text);
+    const rels = zip.get('word/_rels/document.xml.rels')!;
+    const xml = zip.get('word/document.xml')!;
+
+    expect(rels).not.toMatch(/evil|secret|javascript|smb:/i);
+    for (const target of ['https://example.com/', 'mailto:a@example.com', 'other%20file.md', 'https://raw.example/']) {
+      expect(rels, target).toContain(`Target="${target}"`);
+    }
+    const shown = [...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map(([, t]) => t).join('');
+    for (const label of ['unc', 'mixed', 'nw', 'fs', 'fsl', 'js', 'smb', 'pct', 'ref', 'h0', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'h7']) {
+      expect(shown, label).toMatch(new RegExp(`\\b${label}\\b`));
+    }
+    expect(xml).toMatch(/<w:hyperlink [^>]*w:anchor="/);
   });
 });
 

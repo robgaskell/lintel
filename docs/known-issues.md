@@ -123,3 +123,21 @@ may be missing from the picture in Word.
 
 Export as Word never downloads anything. An image from the web, written in Markdown or as
 an HTML `<img>`, appears in the Word file as its alt text, not as a picture.
+
+### A diagram's own flowchart settings are ignored
+
+Export as Word draws diagram labels as plain text, and so ignores a diagram's own
+`%%{init: ...}%%` settings for labels and for flowcharts (the `flowchart` key). A flowchart
+that changes its own layout or curves this way can look different in Word from the preview.
+
+### Links to emoji-only headings stay plain text
+
+In Export as Word, a link to a heading whose text is only emoji or punctuation, such as
+`# 🚀`, stays as plain text, because Word names that heading's bookmark differently.
+
+## Exports: some links become plain text
+
+In Export as HTML and Export as Word, a link to a network path (`\\server\share` or
+`//server/share`), any `file:` address, or an address that is not `http`, `https` or
+`mailto` keeps its text but is no longer a link. On Windows, opening such a link can send
+your sign-in details to another computer. Links to other files by relative path stay.

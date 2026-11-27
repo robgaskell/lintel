@@ -1,6 +1,6 @@
 import { message, save } from '@tauri-apps/plugin-dialog';
 import type { ParagraphChild } from 'docx';
-import type { Code, Image, Nodes, Root } from 'mdast';
+import type { Code, Nodes, Parent, Root, RootContent } from 'mdast';
 import type { RemarkDocxPlugin } from 'remark-docx';
 import type { DocState } from '../docs/store.svelte';
 import { readImageAsDataUri, writeBinaryFile } from '../ipc';
@@ -10,12 +10,12 @@ import { slugify } from '../render/markdown';
 import { renderMermaidToSvg } from '../render/mermaid';
 import { settings } from '../settings/settings.svelte';
 import { bytesToBase64, dataUriToBytes } from './bytes';
+import { keepsLink } from './exportLinks';
 import { imageToPng, svgSize, svgToPng } from './svgToPng';
 import { exportName, withoutMarkdownExtension, writeUnlessOpen } from './target';
 
 type ExportDoc = Pick<DocState, 'path' | 'title' | 'text'>;
 type Docx = typeof import('docx');
-type Builders = Awaited<ReturnType<RemarkDocxPlugin>>;
 type DocxImage = NonNullable<Parameters<RemarkDocxPlugin>[0]['images'] extends Map<string, infer T> ? T : never>;
 
 const CODE_FONT = 'Consolas';
@@ -52,6 +52,7 @@ async function build(doc: ExportDoc): Promise<{ bytes: Uint8Array; unembedded: b
     .use(remarkParse)
     .use(remarkGfm)
     .use(() => pointAnchorsAtHeadings)
+    .use(() => keepSafeLinks)
     .use(remarkDocx, {
       title: withoutMarkdownExtension(doc.title),
       image: { load: images.load, toPng },
@@ -137,24 +138,18 @@ async function diagramImage(source: string): Promise<DocxImage | null> {
 
 /**
  * remark-docx embeds an SVG with its PNG as fallback; Lintel embeds the PNG only, so Word
- * never renders a document's own SVG (Ruling 315). Raw HTML images keep the default.
+ * never renders a document's own SVG (Rulings 315, 327). Loading is done by the time any
+ * builder runs, so the first image or HTML node swaps every loaded SVG for its PNG.
  */
 function pngOnlySvgs(): RemarkDocxPlugin {
   return async ({ images }) => {
-    function asPng(node: Pick<Image, 'url' | 'alt' | 'title'>, ctx: Parameters<NonNullable<Builders['image']>>[1]) {
-      const image = ctx.images.get(node.url);
-      if (image?.type !== 'svg') return null;
-      const key = `\0lintel-png-${node.url}`;
-      images.set(key, { type: 'png', data: image.fallback, width: image.width, height: image.height });
-      return ctx.render([{ type: 'image', url: key, alt: node.alt, title: node.title }]);
+    function swap() {
+      for (const [url, image] of images) {
+        if (image?.type === 'svg') images.set(url, { type: 'png', data: image.fallback, width: image.width, height: image.height });
+      }
+      return null; // the default builder draws the node
     }
-    return {
-      image: (node, ctx) => asPng(node, ctx),
-      imageReference: (node, ctx) => {
-        const definition = ctx.definition(node.identifier);
-        return definition ? asPng({ url: definition.url, alt: node.alt, title: definition.title }, ctx) : null;
-      },
-    };
+    return { image: swap, imageReference: swap, html: swap };
   };
 }
 
@@ -205,6 +200,77 @@ function pointAnchorsAtHeadings(tree: Root) {
     const action = classifyHref(node.url);
     const id = action.kind === 'anchor' ? headingIdFor(action.fragment, ids) : null;
     if (id) node.url = `#${id.slice(2)}`;
+  });
+}
+
+/**
+ * Unsafe links (see keepsLink) become their text, in Markdown and in raw HTML; remote images
+ * in raw HTML become their alt text, as Markdown ones do (Rulings 324, 325).
+ */
+function keepSafeLinks(tree: Root) {
+  const definitions = new Map<string, string>();
+  walk(tree, (node) => {
+    if (node.type === 'definition') definitions.set(node.identifier, node.url);
+  });
+  replaceEach(tree, (node) => {
+    if (node.type === 'link' && !keepsLink(node.url)) return node.children;
+    if (node.type === 'linkReference') {
+      const url = definitions.get(node.identifier);
+      if (url !== undefined && !keepsLink(url)) return node.children;
+    }
+    if (node.type === 'html') node.value = safeRawHtml(node.value);
+    return null;
+  });
+}
+
+// An HTML start tag, with quoted attribute values that may hold `>`.
+const START_TAG = /<(a|img)(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g;
+
+function safeRawHtml(html: string): string {
+  return html.replace(START_TAG, (tag, name: string, attributes: string) => {
+    const attrs = [...attributes.matchAll(ATTRIBUTE)].map(({ 0: text, 1: key = '', 2: raw, index }) => ({
+      text,
+      index,
+      key: key.toLowerCase(),
+      value: raw === undefined ? '' : entityDecoded(raw.replace(/^(["'])(.*)\1$/s, '$2')),
+    }));
+    if (name.toLowerCase() === 'img') {
+      const src = attrs.find((a) => a.key === 'src')?.value.trim() ?? '';
+      if (classifyImageSrc(src) !== 'remote') return tag;
+      return escapeHtml(attrs.find((a) => a.key === 'alt')?.value ?? '');
+    }
+    const unsafe = attrs.filter((a) => a.key === 'href' && !keepsLink(a.value));
+    // Cut by position: the same text may sit inside another attribute's value.
+    let kept = attributes;
+    for (const a of unsafe.reverse()) kept = kept.slice(0, a.index) + kept.slice(a.index + a.text.length);
+    return unsafe.length === 0 ? tag : `<${name}${kept}>`;
+  });
+}
+
+// Reads entities the way the HTML parser will, as in `&#102;ile:`.
+function entityDecoded(text: string): string {
+  const area = document.createElement('textarea');
+  area.innerHTML = text;
+  return area.value;
+}
+
+function escapeHtml(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+/** Visits every node below `node`; when `replace` returns nodes, they take the visited node's place. */
+function replaceEach(node: Nodes, replace: (node: Nodes) => RootContent[] | null) {
+  if (!('children' in node)) return;
+  const parent = node as Parent;
+  parent.children = parent.children.flatMap((child) => {
+    const replaced = replace(child);
+    if (replaced === null) {
+      replaceEach(child, replace);
+      return [child];
+    }
+    for (const kept of replaced) replaceEach(kept, replace);
+    return replaced;
   });
 }
 

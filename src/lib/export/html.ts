@@ -10,6 +10,7 @@ import hljsCss from '../theme/hljs.css?inline';
 import { cssVariables } from '../theme/theme';
 import tokensCss from '../theme/tokens.css?inline';
 import pageCss from './html.css?inline';
+import { keepsLink } from './exportLinks';
 import { renderFrozen } from './print';
 import { exportName, withoutMarkdownExtension, writeUnlessOpen } from './target';
 
@@ -136,14 +137,10 @@ function dropCopiedHeadingIds(root: DocumentFragment, headings: Heading[]) {
   }
 }
 
-// A click on a network path sends the user's Windows password hash to that host, so such
-// links, and any file: URL, keep only their text (Ruling 321). Relative links stay.
 function unlinkNetworkPaths(root: DocumentFragment) {
   for (const link of root.querySelectorAll('a')) {
     for (const attr of [...link.attributes]) {
-      // Browsers ignore spaces and control characters in a URL.
-      const target = attr.value.replace(/[\x00-\x20]/g, '');
-      if (attr.localName === 'href' && /^([\\/]{2}|file:)/i.test(target)) link.removeAttributeNode(attr);
+      if (attr.localName === 'href' && !keepsLink(attr.value)) link.removeAttributeNode(attr);
     }
   }
 }
