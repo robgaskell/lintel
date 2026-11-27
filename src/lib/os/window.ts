@@ -2,12 +2,14 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
 import { arrivalKey, confirmCloseAll, docs, handoffsSettled } from '../docs/store.svelte';
 import type { Workspace } from '../layout/workspace';
+import { readyForOpenFilesAgain } from './open';
 import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { docWindowLabels } from './windows';
 
 /**
  * The window's close-requested handler. Prompts once per dirty doc, each shown first;
- * Cancel or an error keeps the window open. Tauri destroys it unless preventDefault is called.
+ * Cancel or an error keeps the window open, and it takes opened files again (Ruling 242).
+ * Tauri destroys it unless preventDefault is called.
  */
 export async function handleCloseRequested(
   event: { preventDefault(): void },
@@ -25,11 +27,13 @@ export async function handleCloseRequested(
       for (const id of ids) asked.add(arrivalKey(id));
       if (!(await confirmCloseAll(ids, (id) => workspace.activate(id)))) {
         event.preventDefault();
+        readyForOpenFilesAgain();
         return;
       }
     }
   } catch (err) {
     event.preventDefault();
+    readyForOpenFilesAgain();
     await message(String(err), { title: 'Lintel', kind: 'error' });
     return;
   }

@@ -47,7 +47,7 @@ export function isLargeFile(raw: string): boolean {
 /**
  * Opens a file from the last session under its old id, so the saved layout finds its tab
  * (Ruling 204). No dialogs and no Open Recent entry; a large file opens in Edit (Ruling 222).
- * Null when another window has the file; rejects when it cannot be read.
+ * Null when another window, or this one, has the file already; rejects when it cannot be read.
  */
 export async function restoreDoc(init: {
   id: string;
@@ -56,6 +56,8 @@ export async function restoreDoc(init: {
   pinned: boolean;
 }): Promise<{ doc: DocState; large: boolean } | null> {
   const { id, path, mode, pinned } = init;
+  // Opened here already, by an outside open that did not wait for the restore (Ruling 242).
+  if (findByPath(path)) return null;
   opening.add(path);
   try {
     if ((await claimPath(path)) !== null) return null;

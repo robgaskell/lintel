@@ -221,7 +221,7 @@ async function rebuild(session: WindowSession): Promise<{ restored: number; miss
     }
     try {
       const opened = await restoreDoc({ id, path: tab.path, mode: tab.mode, pinned: tab.pinned });
-      // Null: another window shows the file, which is where it belongs.
+      // Null: another window shows the file, or this one does already.
       if (!opened) continue;
       if (opened.large) largeFileNotices.add(id);
       setStartTopLine(id, tab.topLine);

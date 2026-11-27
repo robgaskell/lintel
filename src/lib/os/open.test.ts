@@ -9,10 +9,13 @@ import {
   largeFileNotices,
   listenForDrops,
   listenForOpenFiles,
+  MAX_DROPPED_FILES,
   newUntitled,
   OPEN_FILES,
   openPaths,
+  readyForOpenFilesAgain,
   revealAnswered,
+  setOpenNoticeShower,
   setWorkspace,
 } from './open';
 import type { Workspace } from '../layout/workspace';
@@ -440,6 +443,57 @@ describe('listenForOpenFiles (Ruling 230)', () => {
   });
 });
 
+describe('openPaths from outside Lintel (Ruling 238)', () => {
+  const shown = vi.fn();
+  beforeEach(() => {
+    shown.mockReset();
+    setOpenNoticeShower(shown);
+  });
+
+  it('names every file that failed in one notice, with the reasons, and shows no dialog', async () => {
+    normalize.mockImplementation(async (path) => {
+      if (path === '/y/missing.md') throw 'Could not open /y/missing.md: No such file';
+      return path;
+    });
+    read.mockImplementation(async (path) => {
+      if (path === '/x/bad.bin') throw 'Lintel opens UTF-8 text files only.';
+      return { text: 'ok', hash: 'h' };
+    });
+
+    await openPaths(['/x/bad.bin', '/good.md', '/y/missing.md'], { fromOutside: true });
+
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(shown).toHaveBeenCalledOnce();
+    expect(shown).toHaveBeenCalledWith({
+      text: 'Could not open 2 files: bad.bin, missing.md',
+      details:
+        'Could not open /x/bad.bin: Lintel opens UTF-8 text files only.\nCould not open /y/missing.md: No such file',
+    });
+    expect(docs.size).toBe(1);
+  });
+
+  it('says "1 file" for one, and nothing when every file opens', async () => {
+    await openPaths(['/a.md'], { fromOutside: true });
+    expect(shown).not.toHaveBeenCalled();
+
+    normalize.mockRejectedValueOnce('Could not open notes.md: the folder it was given from could not be read.');
+    await openPaths(['notes.md'], { fromOutside: true });
+    expect(shown.mock.calls[0][0].text).toBe('Could not open 1 file: notes.md');
+  });
+
+  it('reports ready again when asked, and opens the files kept meanwhile (Ruling 242)', async () => {
+    listenForOpenFiles();
+    await vi.waitFor(() => expect(frontendReady).toHaveBeenCalledOnce());
+    vi.mocked(frontendReady).mockResolvedValueOnce(['/kept.md']);
+
+    readyForOpenFilesAgain();
+
+    await vi.waitFor(() => expect(docs.size).toBe(1));
+    expect(frontendReady).toHaveBeenCalledTimes(2);
+    expect([...docs.values()][0].path).toBe('/kept.md');
+  });
+});
+
 describe('listenForDrops (Ruling 232)', () => {
   function drop(payload: unknown) {
     fake.drop!({ payload });
@@ -473,6 +527,23 @@ describe('listenForDrops (Ruling 232)', () => {
     expect(messageDialog.mock.calls[0][0]).toContain('one.png');
     expect(messageDialog.mock.calls[0][0]).toContain('two.bin');
     expect(docs.size).toBe(1);
+  });
+
+  it('opens only the first 100 files of a bigger drop, and says so (Ruling 242)', async () => {
+    const paths = Array.from({ length: MAX_DROPPED_FILES + 5 }, (_, i) => `/f${i}.md`);
+    listenForDrops();
+    await vi.waitFor(() => expect(fake.drop).not.toBeNull());
+
+    drop({ type: 'drop', paths, position: { x: 0, y: 0 } });
+
+    await vi.waitFor(() => expect(messageDialog).toHaveBeenCalled());
+    expect(MAX_DROPPED_FILES).toBe(100);
+    expect(docs.size).toBe(100);
+    expect(read).not.toHaveBeenCalledWith('/f100.md');
+    expect(messageDialog).toHaveBeenCalledWith('Lintel opened the first 100 of the 105 files dropped.', {
+      title: 'Lintel',
+      kind: 'info',
+    });
   });
 
   it('does nothing while files are only dragged over the window', async () => {

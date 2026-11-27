@@ -27,11 +27,30 @@ export interface OpenFilesEvent {
 }
 
 export interface OpenOptions {
-  /** Opened from outside Lintel: no window is brought forward (Ruling 229). */
+  /**
+   * Opened from outside Lintel: no window is brought forward (Ruling 229), and files that
+   * fail are named in a status-bar notice, never a dialog (Ruling 238).
+   */
   fromOutside?: boolean;
-  /** One dialog lists every file that failed, as for a drop (Ruling 232). */
-  oneDialog?: boolean;
 }
+
+/** A status-bar notice: `text` names the files, `details` says why each failed. */
+export interface OpenNotice {
+  text: string;
+  details: string;
+}
+
+/** Drops of more files open only this many (Ruling 242). */
+export const MAX_DROPPED_FILES = 100;
+
+interface Failure {
+  given: string;
+  text: string;
+}
+
+let showNotice: (notice: OpenNotice) => void = () => {};
+// Set once this window listens for opened files.
+let reportReady: (() => void) | null = null;
 
 // The whole Workspace, as the session and quit code read its layout and tab order (Ruling 207).
 let workspace: Workspace | null = null;
@@ -48,6 +67,11 @@ export function revealAnswered(path: string, shown: boolean): void {
   revealWaits.get(path)?.(shown);
 }
 
+/** Where this window shows notices about files from outside that did not open. */
+export function setOpenNoticeShower(show: (notice: OpenNotice) => void): void {
+  showNotice = show;
+}
+
 export function setWorkspace(target: Workspace): void {
   workspace = target;
   setTabShower((id) => target.activate(id));
@@ -59,24 +83,47 @@ export function setWorkspace(target: Workspace): void {
  * in another window is shown there instead (Ruling 185).
  */
 export async function openPaths(paths: string[], options: OpenOptions = {}): Promise<void> {
+  if (!options.fromOutside) {
+    await openEach(paths, false, (failure) => showOpenError(failure.text));
+    return;
+  }
+  const failures = await openEach(paths, true, null);
+  if (failures.length > 0) showNotice(noticeFor(failures));
+}
+
+// Each failure goes to `report` as it happens or, with no `report`, comes back at the end.
+async function openEach(
+  paths: string[],
+  fromOutside: boolean,
+  report: ((failure: Failure) => Promise<unknown>) | null,
+): Promise<Failure[]> {
   const target = requireWorkspace();
-  const failures: string[] = [];
+  const failures: Failure[] = [];
   for (const given of paths) {
     let path = given;
-    let failure: string | null;
+    let text: string | null;
     try {
-      failure = await openOne(target, given, options, (normalised) => {
+      text = await openOne(target, given, fromOutside, (normalised) => {
         path = normalised;
         opening.add(path);
       });
     } finally {
       opening.delete(path);
     }
-    if (failure === null) continue;
-    if (options.oneDialog) failures.push(failure);
-    else await showOpenError(failure);
+    if (text === null) continue;
+    if (report) await report({ given, text });
+    else failures.push({ given, text });
   }
-  if (failures.length > 0) await showOpenError(failures.join('\n\n'));
+  return failures;
+}
+
+function noticeFor(failures: Failure[]): OpenNotice {
+  const n = failures.length;
+  const names = failures.map(({ given }) => given.split(/[\\/]/).pop() || given);
+  return {
+    text: `Could not open ${n} ${n === 1 ? 'file' : 'files'}: ${names.join(', ')}`,
+    details: failures.map(({ text }) => text).join('\n'),
+  };
 }
 
 /**
@@ -87,12 +134,26 @@ export function listenForOpenFiles(): void {
   const label = getCurrentWindow().label;
   const open = (paths: string[]) =>
     openPaths(paths, { fromOutside: true }).catch((err) => console.error('Could not open files:', err));
+  const ready = () =>
+    frontendReady()
+      .then(open)
+      .catch((err) => console.error('Could not take files opened from outside:', err));
   listen<OpenFilesEvent>(OPEN_FILES, ({ payload }) => void open(payload.paths), {
     target: { kind: 'WebviewWindow', label },
   })
-    .then(() => frontendReady())
-    .then(open)
-    .catch((err) => console.error('Could not take files opened from outside:', err));
+    .then(() => {
+      reportReady = () => void ready();
+      return ready();
+    })
+    .catch((err) => console.error('Could not listen for files opened from outside:', err));
+}
+
+/**
+ * For a window whose close was cancelled: Rust sends no files to a window asked to close
+ * until it reports ready again (Ruling 242).
+ */
+export function readyForOpenFilesAgain(): void {
+  reportReady?.();
 }
 
 /** Opens files dropped on this window. Returns a function that stops listening. */
@@ -104,15 +165,20 @@ export function listenForDrops(): () => void {
   return () => void stop.then((unlisten) => unlisten()).catch(() => {});
 }
 
-// Folders are skipped; any other file opens as File > Open's "All files" would (Ruling 232).
+// Folders are skipped; any other file opens as File > Open's "All files" would, and one
+// dialog reports every failure (Ruling 232).
 async function openDropped(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   try {
     const isFile = await pathsExist(paths);
-    await openPaths(
-      paths.filter((_, i) => isFile[i]),
-      { oneDialog: true },
-    );
+    const files = paths.filter((_, i) => isFile[i]);
+    const failures = await openEach(files.slice(0, MAX_DROPPED_FILES), false, null);
+    const lines = failures.map(({ text }) => text);
+    if (files.length > MAX_DROPPED_FILES) {
+      lines.push(`Lintel opened the first ${MAX_DROPPED_FILES} of the ${files.length} files dropped.`);
+    }
+    if (lines.length === 0) return;
+    await message(lines.join('\n\n'), { title: 'Lintel', kind: failures.length > 0 ? 'error' : 'info' });
   } catch (err) {
     console.error('Could not open the dropped files:', err);
   }
@@ -123,7 +189,7 @@ async function openDropped(paths: string[]): Promise<void> {
 async function openOne(
   target: DocOpener,
   given: string,
-  { fromOutside = false }: OpenOptions,
+  fromOutside: boolean,
   claiming: (path: string) => void,
 ): Promise<string | null> {
   let path = given;

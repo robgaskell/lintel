@@ -6,7 +6,7 @@ import { createDoc, docs } from './lib/docs/store.svelte';
 import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
-import { listenForDrops, listenForOpenFiles, openPaths } from './lib/os/open';
+import { listenForDrops, listenForOpenFiles, openPaths, setOpenNoticeShower } from './lib/os/open';
 import { listenForQuitRequests } from './lib/os/quit';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
@@ -70,6 +70,7 @@ vi.mock('./lib/os/open', () => ({
   setWorkspace: vi.fn(),
   listenForOpenFiles: vi.fn(),
   listenForDrops: vi.fn(() => fake.stopDrops),
+  setOpenNoticeShower: vi.fn(),
   openPaths: vi.fn(async () => {}),
   newUntitled: vi.fn(),
   largeFileNotices: new Set(),
@@ -338,6 +339,40 @@ describe('App session (Rulings 205, 209, 212)', () => {
 
     await vi.waitFor(() => expect(listenForOpenFiles).toHaveBeenCalledOnce());
     quiet.mockRestore();
+  });
+
+  it('takes files opened from outside after 2 s when the restore never settles (Ruling 242)', async () => {
+    vi.useFakeTimers();
+    vi.mocked(restoreWindow).mockReturnValueOnce(new Promise(() => {}));
+    render(App);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(listenForOpenFiles).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(listenForOpenFiles).toHaveBeenCalledOnce();
+  });
+
+  it('shows files from outside that did not open in the status bar, with the reasons on hover (Ruling 238)', () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container } = render(App);
+    const show = vi.mocked(setOpenNoticeShower).mock.calls[0][0];
+
+    show({ text: 'Could not open 1 file: b.bin', details: 'Could not open /b.bin: not UTF-8' });
+    flushSync();
+
+    const status = container.querySelector('footer [role="status"]');
+    expect(status?.textContent).toBe('Could not open 1 file: b.bin');
+    expect(status?.getAttribute('title')).toBe('Could not open /b.bin: not UTF-8');
+  });
+
+  it('shows them with no tab open too', () => {
+    const { container } = render(App);
+    vi.mocked(setOpenNoticeShower).mock.calls[0][0]({ text: 'Could not open 1 file: b.bin', details: 'why' });
+    flushSync();
+
+    expect(container.querySelector('.notice-bar [role="status"]')?.getAttribute('title')).toBe('why');
   });
 
   it('opens dropped files, and stops listening when the window goes', () => {

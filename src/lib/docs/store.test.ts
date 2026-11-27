@@ -718,6 +718,15 @@ describe('restoreDoc (Ruling 204)', () => {
     expect(recordRecent).not.toHaveBeenCalled();
   });
 
+  it('leaves a file this window already opened alone, as one opened from outside before a slow restore (Ruling 242)', async () => {
+    vi.mocked(readTextFile).mockResolvedValue({ text: 'a', hash: 'h' });
+    createDoc({ path: '/a.md', raw: 'a', hash: 'h', mode: 'split' });
+
+    expect(await restoreDoc({ id: 'x', path: '/a.md', mode: 'split', pinned: false })).toBeNull();
+    expect(docs.size).toBe(1);
+    expect(readTextFile).not.toHaveBeenCalled();
+  });
+
   it('opens a file over 2,000,000 bytes in Edit, whatever mode it had (Ruling 222)', async () => {
     vi.mocked(readTextFile).mockResolvedValue({ text: 'x'.repeat(2_000_001), hash: 'h' });
 

@@ -10,6 +10,7 @@
     lintFixable,
     onFixAll,
     notice,
+    noticeDetails = null,
     update,
     onUpdate,
     reading = false,
@@ -22,6 +23,7 @@
     lintFixable: boolean;
     onFixAll?: () => void;
     notice: string | null;
+    noticeDetails?: string | null; // shown on hover
     update: 'none' | 'ready';
     onUpdate?: () => void;
     reading?: boolean; // Read mode shows reading time instead of cursor and save state
@@ -56,7 +58,7 @@
   </span>
   <span class="group right">
     {#if notice}
-      <span role="status">{notice}</span>
+      <span role="status" title={noticeDetails}>{notice}</span>
     {:else}
       <span>Markdown · UTF-8</span>
     {/if}

@@ -16,7 +16,7 @@
     type MenuHandlers,
   } from './lib/os/menu';
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
-  import { listenForDrops, listenForOpenFiles, setWorkspace } from './lib/os/open';
+  import { listenForDrops, listenForOpenFiles, setOpenNoticeShower, setWorkspace } from './lib/os/open';
   import { currentPlatform } from './lib/os/platform';
   import { listenForQuitRequests } from './lib/os/quit';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
@@ -37,6 +37,8 @@
 
   const RECENT_SHOWN = 5;
   const NOTICE_MS = 10_000;
+  // main.ts shows the window by then even if its restore has not settled (Ruling 242).
+  const OPEN_FILES_DEADLINE_MS = 2000;
   const label = getCurrentWindow().label;
 
   let host: HTMLElement;
@@ -68,16 +70,22 @@
     untrack(() => scheduleWindowSave(label));
   });
 
-  // Until the next key or click, or 10 s (Ruling 212).
+  // Until the next key or click, or 10 s (Ruling 212). `details` shows on hover (Ruling 238).
   let notice = $state<string | null>(null);
-  function showNotice(text: string) {
+  let noticeDetails = $state<string | null>(null);
+  let clearNotice = () => {};
+  function showNotice(text: string, details: string | null = null) {
+    clearNotice();
     notice = text;
+    noticeDetails = details;
     const clear = () => {
       notice = null;
+      noticeDetails = null;
       clearTimeout(timer);
       window.removeEventListener('keydown', clear, true);
       window.removeEventListener('pointerdown', clear, true);
     };
+    clearNotice = clear;
     const timer = setTimeout(clear, NOTICE_MS);
     window.addEventListener('keydown', clear, true);
     window.addEventListener('pointerdown', clear, true);
@@ -110,6 +118,7 @@
     // Last of the two: it tells the window that opened this one that it can hand a doc over.
     const stopAdoption = listenForAdoption();
     const stopDrops = listenForDrops();
+    setOpenNoticeShower(({ text, details }) => showNotice(text, details));
     // onActiveChange makes no first call, so read the current value too (Ruling 111).
     activeId = workspace.activeDocId();
     const stopActive = workspace.onActiveChange((id) => (activeId = id));
@@ -163,6 +172,7 @@
       takingFiles = true;
       listenForOpenFiles();
     }
+    const openFilesDeadline = setTimeout(takeOpenedFiles, OPEN_FILES_DEADLINE_MS);
     async function restoreSession() {
       try {
         const { missing } = await restoreWindow(label);
@@ -206,6 +216,8 @@
       stopReveal();
       stopAdoption();
       stopDrops();
+      clearTimeout(openFilesDeadline);
+      clearNotice();
       unlistenClose.then((stop) => stop());
       unlistenFocus.then((stop) => stop());
       setActiveDocSource(null);
@@ -235,12 +247,13 @@
       lintCount={null}
       lintFixable={false}
       {notice}
+      {noticeDetails}
       update="none"
       reading={active.mode === 'read'}
     />
   {:else if notice}
     <!-- With nothing restored there is no status bar, but the notice still shows (Ruling 235). -->
-    <footer class="notice-bar"><span role="status">{notice}</span></footer>
+    <footer class="notice-bar"><span role="status" title={noticeDetails}>{notice}</span></footer>
   {/if}
 </div>
 

@@ -4,6 +4,7 @@ import { adoptDoc, createDoc, docs, trackHandoff, untitledCounter } from '../doc
 import { forgetWindowSessionLater, saveWindowSession } from './session';
 import { closeTabOrWindow, handleCloseRequested } from './window';
 import { docWindowLabels } from './windows';
+import { readyForOpenFilesAgain } from './open';
 
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
@@ -26,6 +27,7 @@ vi.mock('./session', () => ({
   saveWindowSession: vi.fn(async () => {}),
 }));
 vi.mock('./windows', () => ({ docWindowLabels: vi.fn(async () => ['main']) }));
+vi.mock('./open', () => ({ readyForOpenFilesAgain: vi.fn() }));
 
 const messageDialog = vi.mocked(message);
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -42,6 +44,7 @@ beforeEach(() => {
   messageDialog.mockReset();
   vi.mocked(forgetWindowSessionLater).mockClear();
   vi.mocked(saveWindowSession).mockClear();
+  vi.mocked(readyForOpenFilesAgain).mockClear();
   vi.mocked(docWindowLabels).mockResolvedValue(['main']);
 });
 
@@ -227,6 +230,22 @@ describe('handleCloseRequested', () => {
 
     expect(event.preventDefault).toHaveBeenCalled();
     expect(workspace.activate).toHaveBeenCalledWith(a.id);
+  });
+
+  it('takes files opened from outside again once the close is cancelled or fails (Ruling 242)', async () => {
+    const a = dirtyDoc('/a.md');
+    const workspace = { docIdsInOrder: () => [a.id], activate: vi.fn() };
+    messageDialog.mockResolvedValueOnce('Cancel');
+    await handleCloseRequested({ preventDefault: vi.fn() }, workspace);
+    expect(readyForOpenFilesAgain).toHaveBeenCalledOnce();
+
+    messageDialog.mockRejectedValueOnce(new Error('dialog broke')).mockResolvedValue('Ok');
+    await handleCloseRequested({ preventDefault: vi.fn() }, workspace);
+    expect(readyForOpenFilesAgain).toHaveBeenCalledTimes(2);
+
+    messageDialog.mockResolvedValue("Don't Save");
+    await handleCloseRequested({ preventDefault: vi.fn() }, workspace);
+    expect(readyForOpenFilesAgain).toHaveBeenCalledTimes(2);
   });
 
   it('lets the window close once every dirty doc is answered', async () => {
