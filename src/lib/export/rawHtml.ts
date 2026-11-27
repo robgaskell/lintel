@@ -96,7 +96,7 @@ function checkGroup(group: RootContent[], block: boolean, inline: InlineSvg) {
 /**
  * One raw HTML node with unsafe hrefs removed, remote and off-device images as their alt
  * text, and inline SVGs and SVG data: images as pictures loaded through `inline` (PNG only
- * in Word). Changes are made on the parsed tree, which is written back out only if writing
+ * in Word); an empty inline SVG becomes its aria-label. Changes are made on the parsed tree, which is written back out only if writing
  * and reading it again gives the same HTML. Null when the node must become text instead.
  */
 function safeRawHtml(html: string, inline: InlineSvg): string | null {
@@ -126,11 +126,16 @@ function safeRawHtml(html: string, inline: InlineSvg): string | null {
   }
   for (const svg of root.querySelectorAll('svg')) {
     if (svg.parentElement?.closest('svg')) continue;
+    changed = true;
+    // An empty SVG, such as half a block split by a blank line, would draw a blank picture.
+    if (svg.childElementCount === 0) {
+      svg.replaceWith(svg.getAttribute('aria-label') ?? '');
+      continue;
+    }
     const img = document.createElement('img');
     img.setAttribute('src', inline(new TextEncoder().encode(new XMLSerializer().serializeToString(svg))));
     img.setAttribute('alt', svg.getAttribute('aria-label') ?? '');
     svg.replaceWith(img);
-    changed = true;
   }
   if (!changed) return html;
   const out = serialise(root);

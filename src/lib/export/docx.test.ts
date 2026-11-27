@@ -762,6 +762,24 @@ describe('the output gate, round 4 (Ruling 339)', () => {
   });
 });
 
+describe('raw HTML the input layer cannot rewrite safely (Ruling 339)', () => {
+  it('becomes its text when the rewritten HTML reads differently (M8b)', async () => {
+    vi.mocked(gateDocx).mockImplementationOnce(async (bytes) => bytes);
+    const xml = (await parts('<p><math><svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20"/></svg></math></p>\n')).get(
+      'word/document.xml',
+    )!;
+    expect(svgToPng).not.toHaveBeenCalled();
+    expect(count(xml, /<w:drawing>/g)).toBe(0);
+  });
+
+  it('never draws an empty <svg> from a block split by a blank line', async () => {
+    const text = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">\n\n<rect width="40" height="20"/></svg>\n';
+    const xml = (await parts(text)).get('word/document.xml')!;
+    for (const [svg] of vi.mocked(svgToPng).mock.calls) expect(svg).toMatch(/^<svg[^>]*>\s*<\w/);
+    expect(count(xml, /<w:drawing>/g)).toBe(0);
+  });
+});
+
 describe('exportDocx', () => {
   beforeEach(() => {
     vi.mocked(save).mockResolvedValue('/out/doc.docx');
