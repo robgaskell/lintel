@@ -36,6 +36,7 @@
     docPath = null,
     reading = false,
     lineCount,
+    print = false,
   }: {
     result: RenderResult;
     onLineVisible?: (line: number) => void;
@@ -43,6 +44,7 @@
     docPath?: string | null; // relative images and links resolve against its folder
     reading?: boolean; // Read mode: 720 px column, larger text
     lineCount?: number; // source lines; lets the last block sync to the end
+    print?: boolean; // the print root: light diagrams, no banner or scroll sync (Ruling 293)
   } = $props();
 
   let scroller: HTMLDivElement;
@@ -50,9 +52,12 @@
   let content: HTMLDivElement;
 
   // The theme diagrams are drawn in; follows the theme engine (Ruling 128).
-  let theme: DiagramTheme = $resolvedTheme;
+  let theme: DiagramTheme = untrack(() => (print ? 'light' : $resolvedTheme));
   // A hidden tab draws its diagrams when it is shown, not while out of sight (Ruling 115).
   let diagramsWaiting = false;
+  // What drawn() waits for; images only in print mode.
+  let diagramsDrawn: Promise<void> = Promise.resolve();
+  let imagesLoading: Promise<unknown>[] = [];
 
   // The line this preview means to show at its top; kept across re-renders (Ruling 83).
   let topLine = 1;
@@ -107,6 +112,11 @@
     scroller?.focus({ preventScroll: true });
   }
 
+  /** Settles once the latest render's diagrams are drawn and, in print mode, its images loaded or failed. */
+  export async function drawn(): Promise<void> {
+    await Promise.allSettled([diagramsDrawn, ...imagesLoading]);
+  }
+
   // Allowing remote images patches again; loaded local images come from the cache.
   $effect(() => {
     const [next, path, remote] = [result, docPath, remoteAllowed];
@@ -115,12 +125,13 @@
 
   $effect(() => {
     const next = $resolvedTheme;
-    if (next === theme) return;
+    if (print || next === theme) return;
     theme = next;
     untrack(drawDiagrams);
   });
 
   onMount(() => {
+    if (print) return;
     // Images, diagrams, the front matter card, a resize or the reading width move blocks.
     const observer = new ResizeObserver(() => {
       if (diagramsWaiting) drawDiagrams();
@@ -139,6 +150,7 @@
     // Blocked again: fetches still queued must not go out.
     if (remoteWasAllowed && !remote) remoteImages.clear();
     remoteWasAllowed = remote;
+    imagesLoading = [];
     remoteHeldBack = prepareImages(template.content, path, remote);
     content.replaceChildren(template.content);
     // Known diagrams go in now; new ones arrive later and the ResizeObserver re-syncs.
@@ -148,9 +160,10 @@
     timing('lintel:patch', started);
   }
 
+  // The print root is hidden on screen, but its diagrams are drawn at once.
   function drawDiagrams() {
-    diagramsWaiting = scroller.clientHeight === 0;
-    if (!diagramsWaiting) void renderMermaidIn(content, theme);
+    diagramsWaiting = !print && scroller.clientHeight === 0;
+    if (!diagramsWaiting) diagramsDrawn = renderMermaidIn(content, theme);
   }
 
   function measureAnchors(): Anchor[] {
@@ -214,10 +227,15 @@
       return;
     }
     img.removeAttribute('src');
-    loader.load(key).then(
-      (uri) => (img.src = uri),
+    const loading = loader.load(key).then(
+      (uri) => {
+        img.src = uri;
+        // A print waits until the image can be drawn, not just until it has its src.
+        if (print) return img.decode?.().catch(() => {});
+      },
       (err) => img.isConnected && img.replaceWith(altBox(img, String(err))),
     );
+    if (print) imagesLoading.push(loading);
   }
 
   function altBox(img: HTMLImageElement, why: string): HTMLElement {
@@ -269,8 +287,8 @@
   }
 </script>
 
-<div class="preview-frame">
-  {#if showRemoteBanner}
+<div class="preview-frame" class:print>
+  {#if showRemoteBanner && !print}
     <RemoteImagesBanner
       onLoad={loadRemoteImages}
       onAlwaysLoad={alwaysLoadRemoteImages}
@@ -282,6 +300,7 @@
   <div
     class="preview"
     class:reading
+    class:print
     bind:this={scroller}
     tabindex="0"
     role="region"
@@ -336,6 +355,34 @@
 
   .content {
     overflow-wrap: break-word;
+  }
+
+  /* The print root grows to its content, and the page margins replace the padding. */
+  .preview-frame.print {
+    display: block;
+    height: auto;
+  }
+
+  .preview.print {
+    overflow: visible;
+    contain: none;
+  }
+
+  .print .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .print .content :global(:is(pre, table, .mermaid-diagram)) {
+    overflow: visible;
+  }
+
+  .print .content :global(pre) {
+    white-space: pre-wrap;
+  }
+
+  .print .content :global(table) {
+    display: table;
   }
 
   .content > :global(:first-child) {

@@ -12,6 +12,7 @@
   import { countWords, saveStateOf } from './lib/docs/stats';
   import { docs, setWatchFailureReporter } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource, viewFor } from './lib/editor/views';
+  import { dropPrintRootUnlessOpen } from './lib/export/print';
   import { outline } from './lib/layout/outline.svelte';
   import { configStatus, currentConfig, followDocConfigs, refreshAllConfigs } from './lib/lint/config';
   import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
@@ -89,6 +90,12 @@
     for (const doc of docs.values()) void [doc.pinned, doc.mode];
     void outline.visible;
     untrack(() => scheduleWindowSave(label));
+  });
+
+  // The last print stays in the page until its doc closes or leaves (Ruling 294).
+  $effect(() => {
+    const open = new Set(docs.keys());
+    untrack(() => dropPrintRootUnlessOpen(open));
   });
 
   // Until the next key or click, or 10 s (Ruling 212). `details` shows on hover (Ruling 238).

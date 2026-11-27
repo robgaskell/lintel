@@ -426,6 +426,18 @@ mod tests {
     }
 
     #[test]
+    fn only_document_windows_may_print() {
+        // On macOS, window.print() is a call to the webview plugin.
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        let print = serde_json::json!("core:webview:allow-print");
+        assert!(main["permissions"].as_array().unwrap().contains(&print));
+        assert!(!settings["permissions"].as_array().unwrap().contains(&print));
+    }
+
+    #[test]
     fn document_windows_may_ask_for_opened_files() {
         let main: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();

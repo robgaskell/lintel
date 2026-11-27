@@ -1,6 +1,7 @@
 import { message, open } from '@tauri-apps/plugin-dialog';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
+import { printDoc } from '../export/print';
 import type { Workspace } from '../layout/workspace';
 import type { MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
@@ -45,10 +46,19 @@ export function makeMenuHandlers({
     if (saved) workspace.refreshTab(id);
   }
 
-  function setMode(mode: ViewMode) {
+  function activeDoc() {
     const id = workspace.activeDocId();
-    const doc = id ? docs.get(id) : undefined;
+    return id ? docs.get(id) : undefined;
+  }
+
+  function setMode(mode: ViewMode) {
+    const doc = activeDoc();
     if (doc) doc.mode = mode;
+  }
+
+  async function printActive(pdfHint: boolean) {
+    const doc = activeDoc();
+    if (doc) await printDoc(doc, { pdfHint });
   }
 
   // The menu bar is shared with the Settings window (Ruling 142). Document commands do
@@ -97,8 +107,8 @@ export function makeMenuHandlers({
     closeTab: guarded(closeTab),
     setMode: (mode) => forDoc(() => setMode(mode))(),
     toggleOutline: guarded(toggleOutline),
-    print: forDoc(notYet),
-    exportPdf: forDoc(notYet),
+    print: forDoc(() => printActive(false)),
+    exportPdf: forDoc(() => printActive(true)),
     exportHtml: forDoc(notYet),
     exportDocx: forDoc(notYet),
     openSettings: (section) => guarded(() => openSettingsWindow(section))(),

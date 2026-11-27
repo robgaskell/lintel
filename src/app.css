@@ -1,9 +1,11 @@
 /*
  * The palette variables and the surfaces derived from them are set on <html> by the theme
  * engine (src/lib/theme/theme.ts). Everything below maps onto them, except the syntax
- * colours and a shadow, which have a fixed set per theme (Rulings 129, 148).
+ * colours and a shadow, which have a fixed set per theme (Rulings 129, 148). The print
+ * root takes the light set, mapped onto its own light palette (Ruling 293).
  */
-:root {
+:root,
+.print-root {
   --editor-bg: var(--bg);
   --editor-text: var(--text);
   --preview-text: var(--text);

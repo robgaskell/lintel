@@ -1,0 +1,34 @@
+/* The print root is hidden on screen and is all that prints (Rulings 293, 294). */
+.print-root {
+  display: none;
+}
+
+/* wry asks for zero margins, so the page sets its own. */
+@page {
+  margin: 18mm 16mm;
+}
+
+@media print {
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+    background: none;
+  }
+
+  body > :not(.print-root) {
+    display: none !important;
+  }
+
+  .print-root {
+    display: block;
+  }
+
+  .print-root :is(pre, table, tr, blockquote, img, .mermaid-diagram, .mermaid-error, .front-matter) {
+    break-inside: avoid;
+  }
+
+  .print-root :is(h1, h2, h3, h4, h5, h6) {
+    break-after: avoid;
+  }
+}

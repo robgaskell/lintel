@@ -281,7 +281,7 @@ describe('app.css', () => {
   });
 
   it('puts the tab strip, outline, toolbar and status bar on the chrome tone', () => {
-    const tokens = all.find((b) => b.selector === ':root')!.decls;
+    const tokens = all.find((b) => b.selector.split(',')[0] === ':root')!.decls;
     expect(tokens['--tab-strip']).toBe('var(--chrome)');
     expect(tokens['--outline-bg']).toBe('var(--chrome)');
     expect(tokens['--outline-active']).toBe('var(--accent-tint)');

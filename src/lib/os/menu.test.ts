@@ -230,11 +230,11 @@ describe('menuEntries', () => {
 
   it('disables the items whose features come later', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
-    const later = ['print', 'export-pdf', 'export-html', 'export-docx'];
+    const later = ['export-html', 'export-docx'];
     for (const id of later) expect(byId(entries, id).enabled).toBe(false);
     const ready = [
       ...['settings', 'new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'],
-      ...['split-right', 'split-down'],
+      ...['split-right', 'split-down', 'print', 'export-pdf'],
     ];
     for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);

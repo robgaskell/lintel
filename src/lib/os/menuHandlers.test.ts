@@ -8,6 +8,7 @@ import { quitApp } from './quit';
 import { clearRecent, recentMayHaveChanged } from './recent';
 import { closeTabOrWindow } from './window';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
+import { printDoc } from '../export/print';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -16,6 +17,7 @@ vi.mock('./platform', () => ({ isMac: vi.fn(() => true) }));
 vi.mock('./quit', () => ({ quitApp: vi.fn() }));
 vi.mock('./recent', () => ({ clearRecent: vi.fn(), recentMayHaveChanged: vi.fn() }));
 vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
+vi.mock('../export/print', () => ({ printDoc: vi.fn(async () => {}) }));
 vi.mock('../../settings/settingsWindow', () => ({
   focusedSettingsWindow: vi.fn(async () => null),
   openSettingsWindow: vi.fn(async () => {}),
@@ -172,8 +174,35 @@ describe('makeMenuHandlers', () => {
     expect(message).not.toHaveBeenCalled();
   });
 
+  it('prints the active doc, with the PDF hint for Export as PDF (Ruling 292)', async () => {
+    const doc = { id: 'doc-1', mode: 'split' } as DocState;
+    docs.set(doc.id, doc);
+    const h = makeMenuHandlers(deps());
+
+    h.print();
+    h.exportPdf();
+
+    await vi.waitFor(() => expect(printDoc).toHaveBeenCalledTimes(2));
+    expect(printDoc).toHaveBeenNthCalledWith(1, doc, { pdfHint: false });
+    expect(printDoc).toHaveBeenNthCalledWith(2, doc, { pdfHint: true });
+  });
+
+  it('prints nothing with no doc open', async () => {
+    const d = deps();
+    vi.mocked(d.workspace.activeDocId).mockReturnValue(null);
+    const h = makeMenuHandlers(d);
+
+    h.print();
+    h.exportPdf();
+
+    await vi.waitFor(() => expect(focusedSettingsWindow).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(printDoc).not.toHaveBeenCalled();
+    expect(message).not.toHaveBeenCalled();
+  });
+
   it('says so when an item without a handler yet is chosen', async () => {
-    makeMenuHandlers(deps()).print();
+    makeMenuHandlers(deps()).exportHtml();
     await vi.waitFor(() =>
       expect(String(vi.mocked(message).mock.calls[0]?.[0])).toContain('Not implemented yet'),
     );
@@ -209,6 +238,7 @@ describe('makeMenuHandlers', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(saveDoc).not.toHaveBeenCalled();
       expect(saveDocAs).not.toHaveBeenCalled();
+      expect(printDoc).not.toHaveBeenCalled();
       expect(doc.mode).toBe('split');
       expect(message).not.toHaveBeenCalled();
     });
