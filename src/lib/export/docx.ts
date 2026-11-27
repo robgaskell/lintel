@@ -52,7 +52,7 @@ async function build(doc: ExportDoc): Promise<{ bytes: Uint8Array; unembedded: b
     .use(remarkParse)
     .use(remarkGfm)
     .use(() => pointAnchorsAtHeadings)
-    .use(() => keepSafeLinks)
+    .use(() => (tree: Root) => keepSafeLinks(tree, images.inline))
     .use(remarkDocx, {
       title: withoutMarkdownExtension(doc.title),
       image: { load: images.load, toPng },
@@ -67,7 +67,15 @@ async function build(doc: ExportDoc): Promise<{ bytes: Uint8Array; unembedded: b
 // Never fetch: the CSP blocks it, and remote images stay remote (Ruling 315).
 function imageLoader(docPath: string | null) {
   let unembedded = false;
+  // Raw HTML's own SVGs, under addresses a document cannot know.
+  const inlined: Uint8Array[] = [];
+  const prefix = `lintel-inline-${crypto.randomUUID()}:`;
+  function inline(svg: Uint8Array): string {
+    inlined.push(svg);
+    return `${prefix}${inlined.length - 1}`;
+  }
   async function load(url: string): Promise<Uint8Array> {
+    if (url.startsWith(prefix)) return inlined[Number(url.slice(prefix.length))] ?? new Uint8Array();
     const kind = classifyImageSrc(url);
     if (kind === 'data') return dataUriToBytes(url);
     // remark-docx shows the alt text instead.
@@ -79,7 +87,7 @@ function imageLoader(docPath: string | null) {
     }
     return dataUriToBytes(await readImageAsDataUri(path));
   }
-  return { load, unembedded: () => unembedded };
+  return { load, inline, unembedded: () => unembedded };
 }
 
 // For webp and svg. A canvas reads them from a data: URI, never a blob: URL (Ruling 315).
@@ -126,7 +134,7 @@ function diagrams(docx: Docx): RemarkDocxPlugin {
 async function diagramImage(source: string): Promise<DocxImage | null> {
   try {
     const svg = await renderMermaidToSvg(source, 'light', { htmlLabels: false });
-    const size = svgSize(svg);
+    const size = await svgSize(svg);
     if (size === null) return null;
     const png = await svgToPng(svg, DIAGRAM_SCALE);
     return { type: 'png', data: arrayBuffer(png), width: size.width, height: size.height };
@@ -204,59 +212,84 @@ function pointAnchorsAtHeadings(tree: Root) {
 }
 
 /**
- * Unsafe links (see keepsLink) become their text, in Markdown and in raw HTML; remote images
- * in raw HTML become their alt text, as Markdown ones do (Rulings 324, 325).
+ * Unsafe links (see keepsLink) become their text, in Markdown and in raw HTML. Raw HTML
+ * images that are remote or on another computer become their alt text, as Markdown ones do
+ * (Rulings 324, 325, 330). A reference uses its first definition, as remark-docx does.
  */
-function keepSafeLinks(tree: Root) {
+function keepSafeLinks(tree: Root, inline: (svg: Uint8Array) => string) {
   const definitions = new Map<string, string>();
   walk(tree, (node) => {
-    if (node.type === 'definition') definitions.set(node.identifier, node.url);
+    if (node.type !== 'definition') return;
+    const key = node.identifier.toUpperCase();
+    if (!definitions.has(key)) definitions.set(key, node.url);
   });
   replaceEach(tree, (node) => {
     if (node.type === 'link' && !keepsLink(node.url)) return node.children;
     if (node.type === 'linkReference') {
-      const url = definitions.get(node.identifier);
+      const url = definitions.get(node.identifier.toUpperCase());
       if (url !== undefined && !keepsLink(url)) return node.children;
     }
-    if (node.type === 'html') node.value = safeRawHtml(node.value);
+    if (node.type === 'html') node.value = safeRawHtml(node.value, inline);
     return null;
   });
 }
 
-// An HTML start tag, with quoted attribute values that may hold `>`.
-const START_TAG = /<(a|img)(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
-const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g;
-
-function safeRawHtml(html: string): string {
-  return html.replace(START_TAG, (tag, name: string, attributes: string) => {
-    const attrs = [...attributes.matchAll(ATTRIBUTE)].map(({ 0: text, 1: key = '', 2: raw, index }) => ({
-      text,
-      index,
-      key: key.toLowerCase(),
-      value: raw === undefined ? '' : entityDecoded(raw.replace(/^(["'])(.*)\1$/s, '$2')),
-    }));
-    if (name.toLowerCase() === 'img') {
-      const src = attrs.find((a) => a.key === 'src')?.value.trim() ?? '';
-      if (classifyImageSrc(src) !== 'remote') return tag;
-      return escapeHtml(attrs.find((a) => a.key === 'alt')?.value ?? '');
+/**
+ * Raw HTML as docx/html may read it. The HTML is parsed as a browser would, changed on the
+ * parsed tree, and written back out, which any HTML parser reads the same way (Ruling 330).
+ * Inline SVGs and SVG data: images become pictures loaded through `inline`, so they reach
+ * Word as PNG only. HTML with nothing that links or loads is left as written.
+ */
+function safeRawHtml(html: string, inline: (svg: Uint8Array) => string): string {
+  if (!/href|src|<svg/i.test(html)) return html;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const root = template.content;
+  const elements = [...root.querySelectorAll('*')];
+  const hrefs = elements.flatMap((el) => [...el.attributes].filter((a) => a.localName === 'href').map((a) => ({ el, a })));
+  const images = [...root.querySelectorAll('img')];
+  // A duplicate or oddly quoted attribute may read differently elsewhere, so then the parsed form is written.
+  let changed = hrefs.length !== count(html, /href/gi) || images.length !== count(html, /<img/gi);
+  for (const { el, a } of hrefs) {
+    if (keepsLink(a.value)) continue;
+    el.removeAttributeNode(a);
+    changed = true;
+  }
+  for (const img of images) {
+    const src = img.getAttribute('src') ?? '';
+    if (/^\s*data:/i.test(src)) {
+      if (!/^\s*data:image\/svg\+xml/i.test(src)) continue;
+      const svg = svgBytes(src);
+      if (svg) img.setAttribute('src', inline(svg));
+      else img.replaceWith(img.alt);
+    } else if (classifyImageSrc(src.trim()) === 'remote' || !keepsLink(src)) {
+      img.replaceWith(img.alt);
+    } else {
+      continue;
     }
-    const unsafe = attrs.filter((a) => a.key === 'href' && !keepsLink(a.value));
-    // Cut by position: the same text may sit inside another attribute's value.
-    let kept = attributes;
-    for (const a of unsafe.reverse()) kept = kept.slice(0, a.index) + kept.slice(a.index + a.text.length);
-    return unsafe.length === 0 ? tag : `<${name}${kept}>`;
-  });
+    changed = true;
+  }
+  for (const svg of root.querySelectorAll('svg')) {
+    if (svg.parentElement?.closest('svg')) continue;
+    const img = document.createElement('img');
+    img.setAttribute('src', inline(new TextEncoder().encode(new XMLSerializer().serializeToString(svg))));
+    img.setAttribute('alt', svg.getAttribute('aria-label') ?? '');
+    svg.replaceWith(img);
+    changed = true;
+  }
+  return changed ? template.innerHTML : html;
 }
 
-// Reads entities the way the HTML parser will, as in `&#102;ile:`.
-function entityDecoded(text: string): string {
-  const area = document.createElement('textarea');
-  area.innerHTML = text;
-  return area.value;
+function svgBytes(dataUri: string): Uint8Array | null {
+  try {
+    return dataUriToBytes(dataUri.trim());
+  } catch {
+    return null;
+  }
 }
 
-function escapeHtml(text: string): string {
-  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+function count(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0;
 }
 
 /** Visits every node below `node`; when `replace` returns nodes, they take the visited node's place. */

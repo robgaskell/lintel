@@ -392,6 +392,16 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
 });
 
 describe('buildStandaloneHtml links (Ruling 321)', () => {
+  it('keeps tel: and ftp: links as text only, as Word does (Ruling 324)', async () => {
+    const text = '[call](tel:+441234) [files](ftp://x.example/f) [web](https://example.com/)\n';
+    const links = [...parse(await buildStandaloneHtml(doc(text), { theme: 'light' })).querySelectorAll('.content a')];
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['call', null],
+      ['files', null],
+      ['web', 'https://example.com/'],
+    ]);
+  });
+
   it('drops network-path and file: hrefs but keeps relative and web links', async () => {
     const text = [
       '[unc](//host/share)',

@@ -121,8 +121,8 @@ describe('buildDocx', () => {
 
   it('shows task lists with ballot boxes', async () => {
     const zip = await parts(SAMPLE);
-    expect(zip.get('word/numbering.xml')).toContain('☐');
-    expect(zip.get('word/numbering.xml')).toContain('☑');
+    expect(zip.get('word/numbering.xml')).toContain('\u2610');
+    expect(zip.get('word/numbering.xml')).toContain('\u2611');
   });
 
   it('points a #fragment link at its heading\'s bookmark, as the preview finds it (Ruling 318)', async () => {
@@ -344,6 +344,83 @@ describe('buildDocx links (Ruling 324)', () => {
       expect(shown, label).toMatch(new RegExp(`\\b${label}\\b`));
     }
     expect(xml).toMatch(/<w:hyperlink [^>]*w:anchor="/);
+  });
+});
+
+describe('buildDocx links fail closed (Ruling 330)', () => {
+  async function rels(text: string) {
+    return (await parts(text)).get('word/_rels/document.xml.rels')!;
+  }
+
+  it.each([
+    ['an unbalanced quote in a value', "<p><a href=//evil-unbal'x>t</a></p>"],
+    ['an unbalanced quote inline', "Para <a href=//evil-unbali'x>t</a> end"],
+    ['a quote in an attribute name', '<p><a x" href=//evil-qname/x>t</a></p>'],
+    ['a single quote in an attribute name', "<p><a x' href=//evil-qname2/x>t</a></p>"],
+    ['a safe href before an unsafe one', '<p><a href="https://ok.example/" href="//evil-dup/x">t</a></p>'],
+    ['a no-break space', '<p><a href="\u00a0//evil-nbsp/x">t</a></p>'],
+    ['a malformed escape in raw HTML', '<p><a href="%5C%5Cevil-hpct%5Cx%ZZ">t</a></p>'],
+    ['a malformed escape', '[t](%5C%5Cevil-pct%5Cx%ZZ)'],
+    ['a malformed UTF-8 escape', '[t](%5C%5Cevil-utf%5Cx%E0)'],
+    ['a twice-encoded path', '[t](%255C%255Cevil-dpct/x)'],
+    ['fullwidth backslashes', '[t](\uff3c\uff3cevil-fw\\x)'],
+    ['fullwidth slashes', '[t](\uff0f\uff0fevil-fws/x)'],
+    ['an ideographic space', '<p><a href="\u3000//evil-ideo/x">t</a></p>'],
+    ['the first of two definitions', '[t][rd]\n\n[rd]: //evil-refdup/x\n[rd]: https://ok.example/'],
+  ])('leaves no link for %s', async (_name, text) => {
+    expect(await rels(text)).not.toMatch(/evil/);
+  });
+
+  it('uses the first of two definitions, as remark-docx does', async () => {
+    expect(await rels('[t][rd]\n\n[rd]: https://ok.example/\n[rd]: //evil-second/x\n')).toContain('Target="https://ok.example/"');
+  });
+
+  it('keeps a safe raw HTML link inside a paragraph', async () => {
+    expect(await rels('Para <a href="https://ok.example/">t</a> end\n')).toContain('Target="https://ok.example/"');
+  });
+
+  it('drops javascript: in a plain paragraph, away from any raw HTML (E6)', async () => {
+    const zip = await parts('[js](javascript:alert(1))\n');
+    expect(zip.get('word/_rels/document.xml.rels')).not.toContain('javascript');
+    expect(zip.get('word/document.xml')).toContain('>js<');
+  });
+
+  it('shows a remote raw image\'s alt as text, never as markup (M2d)', async () => {
+    const zip = await parts('<p><img src="https://x.example/y.png" alt="<a href=//evil-alt/x>A</a>"></p>\n');
+    expect(zip.get('word/_rels/document.xml.rels')).not.toMatch(/evil/);
+    expect(zip.get('word/document.xml')).toContain('&lt;a href=//evil-alt/x&gt;A&lt;/a&gt;');
+  });
+
+  it('shows a raw image on a network path or file: URL as its alt text, and never reads it', async () => {
+    const xml = (await parts('<p><img src="\\\\evil-unc\\x.png" alt="UNCALT"> <img src="file://evil-f/x.png" alt="FILEALT"></p>\n')).get(
+      'word/document.xml',
+    )!;
+    expect(readImageAsDataUri).not.toHaveBeenCalled();
+    expect(xml).toContain('UNCALT');
+    expect(xml).toContain('FILEALT');
+    expect(xml).not.toMatch(/evil/);
+  });
+});
+
+describe('buildDocx inline SVG (Ruling 330)', () => {
+  it('draws an inline raw <svg> as a PNG only', async () => {
+    const zip = await parts(
+      '<p>Logo <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><image href="https://t.example/x.png"/></svg></p>\n',
+    );
+
+    expect(vi.mocked(svgToPng).mock.calls[0]?.[0]).toMatch(/^<svg[^>]*width="40"/);
+    expect(count(zip.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
+    expect([...zip.keys()].some((name) => name.endsWith('.svg'))).toBe(false);
+    expect([...zip.values()].join('\n')).not.toContain('t.example');
+  });
+
+  it('draws a raw <img> with an SVG data: URI as a PNG only', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><use href="https://u.example/x.svg#a"/></svg>';
+    const zip = await parts(`<p><img src="data:image/svg+xml;base64,${btoa(svg)}" alt="D"></p>\n`);
+
+    expect(count(zip.get('word/document.xml')!, /<w:drawing>/g)).toBe(1);
+    expect([...zip.keys()].some((name) => name.endsWith('.svg'))).toBe(false);
+    expect([...zip.values()].join('\n')).not.toContain('u.example');
   });
 });
 
