@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings",
-  "description": "Permissions for the Settings window: settings and its own window only, no files, dialogs, links or app commands but update_settings (Rulings 160, 271)",
+  "description": "Permissions for the Settings window: its own window, update_settings, and the store plugin, which may write settings files. The store plugin cannot limit which JSON files it opens, so store:default reaches any path. No dialogs, links or other app commands (Rulings 160, 271, 357)",
   "windows": ["settings"],
   "permissions": [
     "core:event:default",

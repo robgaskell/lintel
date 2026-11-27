@@ -93,7 +93,6 @@ fn app_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
         Box::new(settings_window()),
         Box::new(tauri_plugin_clipboard_manager::init()),
         Box::new(tauri_plugin_dialog::init()),
-        Box::new(tauri_plugin_fs::init()),
         // The preview's own click handler is the one path that opens links.
         Box::new(
             tauri_plugin_opener::Builder::new()
@@ -665,6 +664,28 @@ mod tests {
         let write = serde_json::json!("allow-write-binary-file");
         assert!(main["permissions"].as_array().unwrap().contains(&write));
         assert!(!settings["permissions"].as_array().unwrap().contains(&write));
+    }
+
+    // Ruling 357: no unused plugin or permission ships.
+    #[test]
+    fn ships_no_file_plugin_and_no_restart_permission() {
+        let names: Vec<String> = app_plugins::<tauri::test::MockRuntime>()
+            .iter()
+            .map(|plugin| plugin.name().to_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n == "fs"), "{names:?}");
+        assert!(!include_str!("../Cargo.toml").contains("tauri-plugin-fs"));
+        assert!(!include_str!("../../package.json").contains("@tauri-apps/plugin-fs"));
+        assert!(!include_str!("../capabilities/default.json").contains("process:allow-restart"));
+    }
+
+    #[test]
+    fn the_settings_capability_says_it_may_write_settings_files() {
+        let settings: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        let description = settings["description"].as_str().unwrap();
+        assert!(!description.contains("no files"), "{description}");
+        assert!(description.contains("settings files"), "{description}");
     }
 
     #[test]
