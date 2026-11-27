@@ -179,11 +179,20 @@ export class Workspace {
     return this.api.toJSON();
   }
 
-  /** Every doc the layout names must already be in `docs`; panels for missing docs are dropped. */
+  /**
+   * Every doc the layout names must already be in `docs`; panels for missing docs are dropped.
+   * A doc in `docs` that the layout leaves out keeps a tab, even when the layout is rejected.
+   */
   fromJSON(layout: unknown): void {
-    this.api.fromJSON(layout as SerializedDockview);
-    for (const panel of [...this.api.panels]) {
-      if (!docs.has(panel.id)) this.api.removePanel(panel);
+    try {
+      this.api.fromJSON(layout as SerializedDockview);
+    } finally {
+      for (const panel of [...this.api.panels]) {
+        if (!docs.has(panel.id)) this.api.removePanel(panel);
+      }
+      for (const doc of docs.values()) {
+        if (!this.api.getPanel(doc.id)) this.openDoc(doc);
+      }
     }
   }
 

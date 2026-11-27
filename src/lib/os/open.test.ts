@@ -4,6 +4,7 @@ import { claimPath, normalizePath, readTextFile, releasePath } from '../ipc';
 import { docs, untitledCounter } from '../docs/store.svelte';
 import { settings } from '../settings/settings.svelte';
 import { largeFileNotices, newUntitled, openPaths, revealAnswered, setWorkspace } from './open';
+import type { Workspace } from '../layout/workspace';
 import { recordRecent } from './recent';
 
 vi.mock('../ipc', () => ({
@@ -44,7 +45,7 @@ beforeEach(() => {
   vi.mocked(claimPath).mockResolvedValue(null);
   vi.mocked(releasePath).mockReset();
   vi.mocked(releasePath).mockResolvedValue();
-  setWorkspace(workspace);
+  setWorkspace(workspace as unknown as Workspace);
 });
 
 // The next claim finds the file in w-1, whose window answers whether it shows it.

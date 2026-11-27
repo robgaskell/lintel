@@ -8,7 +8,8 @@ import { recordRecent } from './recent';
 
 type DocOpener = Pick<Workspace, 'openDoc' | 'activate' | 'closeDoc'>;
 
-let workspace: DocOpener | null = null;
+// The whole Workspace, as the session and quit code read its layout and tab order (Ruling 207).
+let workspace: Workspace | null = null;
 
 /** Docs opened in Edit because they are large; DocPane shows the notice while an id is here. */
 export const largeFileNotices: Set<string> = new SvelteSet<string>();
@@ -25,7 +26,7 @@ export function revealAnswered(path: string, shown: boolean): void {
   revealWaits.get(path)?.(shown);
 }
 
-export function setWorkspace(target: DocOpener): void {
+export function setWorkspace(target: Workspace): void {
   workspace = target;
   setTabShower((id) => target.activate(id));
 }
@@ -122,7 +123,7 @@ export function newUntitled(): void {
 }
 
 /** This window's Workspace. Throws before App has mounted it. */
-export function requireWorkspace(): DocOpener {
+export function requireWorkspace(): Workspace {
   if (!workspace) throw new Error('openPaths called before setWorkspace');
   return workspace;
 }

@@ -7,7 +7,9 @@ import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
 import { openPaths } from './lib/os/open';
+import { listenForQuitRequests } from './lib/os/quit';
 import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
+import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
 import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
 import App from './App.svelte';
 
@@ -18,6 +20,7 @@ const fake = vi.hoisted(() => ({
   layoutListeners: new Set<() => void>(),
   alone: new Set<string>(),
   focusHandler: null as ((event: { payload: boolean }) => void) | null,
+  label: 'main',
 }));
 
 vi.mock('./lib/layout/workspace', () => ({
@@ -37,6 +40,7 @@ vi.mock('./lib/layout/workspace', () => ({
 }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
+    label: fake.label,
     onCloseRequested: async () => () => {},
     onFocusChanged: async (handler: (event: { payload: boolean }) => void) => {
       fake.focusHandler = handler;
@@ -64,6 +68,13 @@ vi.mock('./lib/os/open', () => ({
   openPaths: vi.fn(async () => {}),
   newUntitled: vi.fn(),
   largeFileNotices: new Set(),
+}));
+vi.mock('./lib/os/quit', () => ({ listenForQuitRequests: vi.fn(() => () => {}), quitApp: vi.fn() }));
+vi.mock('./lib/os/session', async (importOriginal) => ({
+  missingNotice: (await importOriginal<typeof import('./lib/os/session')>()).missingNotice,
+  restoreWindow: vi.fn(async () => ({ restored: 0, missing: [] })),
+  restoreAllWindows: vi.fn(async () => {}),
+  scheduleWindowSave: vi.fn(),
 }));
 vi.mock('./lib/os/recent', () => ({
   knownRecent: vi.fn(async () => ['/notes/a.md', '/notes/b.md']),
@@ -101,6 +112,7 @@ beforeEach(() => {
   fake.layoutListeners.clear();
   fake.alone.clear();
   fake.focusHandler = null;
+  fake.label = 'main';
   outline.visible = true;
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
@@ -281,5 +293,82 @@ describe('App theme (Ruling 128)', () => {
     await vi.waitFor(() => expect(root.dataset.theme).toBe('dark'));
     expect(root.style.getPropertyValue('--bg')).toBe('#181817');
     expect(root.style.getPropertyValue('--size-edit')).toBe('18px');
+  });
+});
+
+describe('App session (Rulings 205, 209, 212)', () => {
+  beforeEach(() => {
+    vi.mocked(loadSettings).mockImplementation(async () => settings);
+  });
+
+  it('restores this window after the settings load, and main reopens the other windows', async () => {
+    let finishLoad = () => {};
+    vi.mocked(loadSettings).mockImplementation(() => new Promise((resolve) => (finishLoad = () => resolve(settings))));
+    render(App);
+    expect(restoreWindow).not.toHaveBeenCalled();
+
+    finishLoad();
+
+    await vi.waitFor(() => expect(restoreAllWindows).toHaveBeenCalled());
+    expect(restoreWindow).toHaveBeenCalledWith('main');
+    expect(listenForQuitRequests).toHaveBeenCalled();
+  });
+
+  it('reopens no other windows from a second window', async () => {
+    fake.label = 'w-1';
+    render(App);
+    await vi.waitFor(() => expect(restoreWindow).toHaveBeenCalledWith('w-1'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(restoreAllWindows).not.toHaveBeenCalled();
+  });
+
+  it('shows how many files were not found until the next key, in the status bar', async () => {
+    vi.mocked(restoreWindow).mockResolvedValueOnce({ restored: 1, missing: ['/gone.md'] });
+    const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container } = render(App);
+
+    await vi.waitFor(() => expect(statusText(container)).toContain('1 file from last session was not found'));
+    await fireEvent.keyDown(window, { key: 'a' });
+    expect(statusText(container)).not.toContain('not found');
+  });
+
+  it('clears the notice after 10 s', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(restoreWindow).mockResolvedValueOnce({ restored: 1, missing: ['/x.md', '/y.md'] });
+    const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container } = render(App);
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+    expect(statusText(container)).toContain('2 files from last session were not found');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    flushSync();
+    expect(statusText(container)).not.toContain('not found');
+  });
+
+  it('saves the session after a layout, pin, mode or outline change', () => {
+    const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
+    render(App);
+    flushSync();
+    const save = vi.mocked(scheduleWindowSave);
+    save.mockClear();
+
+    for (const cb of fake.layoutListeners) cb();
+    expect(save).toHaveBeenCalledTimes(1);
+    a.pinned = true;
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(2);
+    a.mode = 'read';
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(3);
+    outline.visible = false;
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(4);
+    a.text = 'typing is not a session change';
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(4);
+    expect(save).toHaveBeenLastCalledWith('main');
   });
 });

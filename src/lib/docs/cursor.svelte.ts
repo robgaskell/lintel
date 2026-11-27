@@ -57,3 +57,29 @@ export function takeStartCursor(docId: string): Cursor | undefined {
   startCursors.delete(docId);
   return cursor;
 }
+
+const topLines = new Map<string, number>();
+
+/** The first visible source line of each doc's pane, 1-based, for the session (Ruling 208). */
+export function setTopLine(docId: string, line: number): void {
+  topLines.set(docId, Math.max(1, Math.floor(line)));
+}
+
+export function topLineOf(docId: string): number {
+  return topLines.get(docId) ?? 1;
+}
+
+// Lines restored from the session, scrolled to the top when each doc's pane first mounts.
+const startTopLines = new Map<string, number>();
+
+export function setStartTopLine(docId: string, line: number): void {
+  startTopLines.set(docId, line);
+  setTopLine(docId, line);
+}
+
+/** The line set for `docId`, once. */
+export function takeStartTopLine(docId: string): number | undefined {
+  const line = startTopLines.get(docId);
+  startTopLines.delete(docId);
+  return line;
+}

@@ -25,15 +25,18 @@ import {
 import { DEFAULT_SETTINGS, settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
 import { largeFileNotices, openPaths, setWorkspace } from './open';
+import type { Workspace } from '../layout/workspace';
 import {
   ADOPT_DOC,
   createAppWindow,
   DOC_ADOPTED,
+  docWindowLabels,
   listenForAdoption,
   listenForReveal,
   openDocInNewWindow,
   REVEAL_ANSWER,
   REVEAL_DOC,
+  setRestoring,
   whenAdopted,
   WINDOW_READY,
   type AdoptDocEvent,
@@ -97,6 +100,7 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
     };
   }),
   getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
+  getAllWebviewWindows: async () => [{ label: 'main' }, { label: 'settings' }, { label: 'w-1' }],
 }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => fake.win,
@@ -177,7 +181,7 @@ beforeEach(() => {
   for (const fn of Object.values(fake.win)) if (typeof fn === 'function') fn.mockClear();
   placeThisWindow();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
-  setWorkspace(workspace);
+  setWorkspace(workspace as unknown as Workspace);
 });
 
 describe('createAppWindow', () => {
@@ -660,5 +664,59 @@ describe('listenForAdoption', () => {
 
     expect(fake.listeners).toHaveLength(0);
     expect(docs.size).toBe(0);
+  });
+});
+
+describe('docWindowLabels', () => {
+  it('lists the document windows, never Settings (Ruling 147)', async () => {
+    expect(await docWindowLabels()).toEqual(['main', 'w-1']);
+  });
+});
+
+// Last in the file: a finished restore stays finished for the module.
+describe('reveal while the session restores (Ruling 205)', () => {
+  function answers() {
+    return vi.mocked(emit).mock.calls.filter(([event]) => event === REVEAL_ANSWER).map(([, p]) => p);
+  }
+
+  it('keeps the claim and stays hidden, even for a doc it already shows', async () => {
+    fake.win.label = 'w-2';
+    fileDoc();
+    listenForReveal(workspace);
+    await vi.waitFor(() => expect(fake.listeners).toHaveLength(2));
+    setRestoring(true);
+
+    deliver(REVEAL_DOC, { path: '/notes/a.md' }, 'w-2');
+    deliver(REVEAL_DOC, { path: '/notes/other.md' }, 'w-2');
+
+    await vi.waitFor(() => expect(answers()).toHaveLength(2));
+    expect(answers()).toEqual([
+      { path: '/notes/a.md', shown: true },
+      { path: '/notes/other.md', shown: true },
+    ]);
+    expect(workspace.activate).not.toHaveBeenCalled();
+    expect(fake.win.show).not.toHaveBeenCalled();
+    expect(releasePath).not.toHaveBeenCalled();
+    setRestoring(false);
+  });
+
+  it('once restored, a window that took in no doc lets go of a stale claim', async () => {
+    // A fresh module: earlier tests have already adopted docs into this one.
+    vi.resetModules();
+    const fresh = await import('./windows');
+    const { emit: freshEmit } = await import('@tauri-apps/api/event');
+    const { releasePath: freshRelease } = await import('../ipc');
+    fake.win.label = 'w-2';
+    fake.listeners.length = 0;
+    fresh.listenForReveal(workspace);
+    await vi.waitFor(() => expect(fake.listeners).toHaveLength(2));
+    fresh.setRestoring(true);
+    fresh.setRestoring(false);
+
+    deliver(REVEAL_DOC, { path: '/notes/other.md' }, 'w-2');
+
+    await vi.waitFor(() => expect(freshRelease).toHaveBeenCalledWith('/notes/other.md'));
+    const sent = vi.mocked(freshEmit).mock.calls.filter(([event]) => event === REVEAL_ANSWER);
+    expect(sent.map(([, p]) => p)).toEqual([{ path: '/notes/other.md', shown: false }]);
   });
 });

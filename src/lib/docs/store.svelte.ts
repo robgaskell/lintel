@@ -1,6 +1,6 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { claimPath, normalizePath, releasePath, writeTextFile } from '../ipc';
+import { claimPath, normalizePath, readTextFile, releasePath, writeTextFile } from '../ipc';
 import { recordRecent } from '../os/recent';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
@@ -33,9 +33,46 @@ export function createDoc(init: {
   hash: string;
   mode: ViewMode;
 }): DocState {
+  return insertDoc(crypto.randomUUID(), init);
+}
+
+/**
+ * Opens a file from the last session under its old id, so the saved layout finds its tab
+ * (Ruling 204). No dialogs and no Open Recent entry. Null when another window has the file;
+ * rejects when it cannot be read.
+ */
+export async function restoreDoc(init: {
+  id: string;
+  path: string;
+  mode: ViewMode;
+  pinned: boolean;
+}): Promise<DocState | null> {
+  const { id, path, mode, pinned } = init;
+  opening.add(path);
+  try {
+    if ((await claimPath(path)) !== null) return null;
+    let read;
+    try {
+      read = await readTextFile(path);
+    } catch (err) {
+      void release(path);
+      throw err;
+    }
+    const doc = insertDoc(id, { path, raw: read.text, hash: read.hash, mode });
+    doc.pinned = pinned;
+    return doc;
+  } finally {
+    opening.delete(path);
+  }
+}
+
+function insertDoc(
+  id: string,
+  init: { path: string | null; raw: string; hash: string; mode: ViewMode },
+): DocState {
   const text = toBuffer(init.raw);
   const doc = $state<DocState>({
-    id: crypto.randomUUID(),
+    id,
     path: init.path,
     title: init.path === null ? `Untitled-${++untitledCounter.n}` : baseName(init.path),
     text,

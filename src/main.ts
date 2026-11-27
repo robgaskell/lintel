@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App.svelte';
 import SettingsApp from './settings/SettingsApp.svelte';
 import { restoreTheme, setsWindowAppearance } from './lib/theme/theme';
+import { whenRestored } from './lib/os/session';
 import { whenAdopted } from './lib/os/windows';
 import './app.css';
 
@@ -32,13 +33,14 @@ function showOncePainted() {
   setTimeout(show, 100);
 }
 
-// A window opened for a moved doc waits for the doc, so it never shows empty first (Ruling 184).
-const ADOPTION_DEADLINE_MS = 2000;
-if (getCurrentWindow().label.startsWith('w-')) {
-  const deadline = new Promise<void>((resolve) => setTimeout(resolve, ADOPTION_DEADLINE_MS));
-  void Promise.race([whenAdopted(), deadline]).then(showOncePainted);
-} else {
+// A document window waits for its moved doc or its restored session, so it never shows
+// empty first (Rulings 184, 205). Settings has neither.
+const READY_DEADLINE_MS = 2000;
+if (view === 'settings') {
   showOncePainted();
+} else {
+  const deadline = new Promise<void>((resolve) => setTimeout(resolve, READY_DEADLINE_MS));
+  void Promise.race([whenAdopted(), whenRestored(), deadline]).then(showOncePainted);
 }
 
 export default app;

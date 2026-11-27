@@ -26,6 +26,13 @@ export class FakeStore {
     calls.push(`set ${this.path} ${key}`);
     this.data.set(key, viaJson(value));
   }
+  async delete(key: string): Promise<boolean> {
+    calls.push(`delete ${this.path} ${key}`);
+    return this.data.delete(key);
+  }
+  async keys(): Promise<string[]> {
+    return [...this.data.keys()];
+  }
   async entries<T>(): Promise<[string, T][]> {
     return [...this.data].map(([k, v]) => [k, viaJson(v) as T]);
   }

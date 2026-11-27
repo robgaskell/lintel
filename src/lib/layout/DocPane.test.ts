@@ -3,7 +3,7 @@ import { flushSync } from 'svelte';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { EditorView } from '@codemirror/view';
 import { fakePreviewLayout } from '../../test/layout';
-import { cursors, setStartCursor } from '../docs/cursor.svelte';
+import { cursors, setStartCursor, setStartTopLine, topLineOf } from '../docs/cursor.svelte';
 import { createDoc, docs, type ViewMode } from '../docs/store.svelte';
 import { largeFileNotices } from '../os/open';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
@@ -243,6 +243,46 @@ describe('DocPane scroll sync', () => {
 
     expect(measure).toHaveBeenCalled();
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() }));
+  });
+
+  it('publishes the first visible line as a whole number, for the session (Ruling 208)', () => {
+    const { doc, q } = pane('read', src);
+    userScroll(q('.preview')!, 225); // line 5.5
+    flushSync();
+    expect(topLineOf(doc.id)).toBe(5);
+  });
+
+  it('opens a restored doc with its saved line at the top of the preview', () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: src, hash: 'h', mode: 'read' });
+    setStartTopLine(doc.id, 5);
+
+    const { container } = render(DocPane, { doc });
+
+    expect(container.querySelector('.preview')!.scrollTop).toBe(200);
+    expect(topLineOf(doc.id)).toBe(5);
+  });
+
+  it('scrolls a restored editor so its saved line is at the top once the pane shows', () => {
+    const observers = fakeResizeObservers();
+    try {
+      const scroll = vi.spyOn(EditorView, 'scrollIntoView');
+      const doc = createDoc({ path: '/notes/a.md', raw: src, hash: 'h', mode: 'edit' });
+      setStartTopLine(doc.id, 5);
+      render(DocPane, { doc });
+      expect(scroll).not.toHaveBeenCalled();
+
+      observers.resize(300);
+
+      // Line 5 starts at offset 8; y 'start', not centred (Ruling 208).
+      expect(scroll).toHaveBeenCalledWith(8, { y: 'start', yMargin: 0 });
+      scroll.mockClear();
+      observers.resize(0);
+      observers.resize(300);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      scroll.mockRestore();
+    } finally {
+      observers.restore();
+    }
   });
 });
 

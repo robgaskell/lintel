@@ -245,6 +245,20 @@ describe('Workspace', () => {
     expect(ws.docIdsInOrder()).toEqual([a.id]);
   });
 
+  it('keeps a tab for an open doc the restored layout leaves out, even a broken layout', () => {
+    const a = fileDoc('a.md');
+    ws.openDoc(a);
+    const layout = ws.toJSON();
+    const late = fileDoc('late.md');
+    ws.openDoc(late);
+
+    ws.fromJSON(layout);
+    expect(ws.docIdsInOrder()).toEqual([a.id, late.id]);
+
+    expect(() => ws.fromJSON({ grid: 'broken' })).toThrow();
+    expect(ws.docIdsInOrder().sort()).toEqual([a.id, late.id].sort());
+  });
+
   it('refreshTab updates the stored title after a rename', () => {
     const a = createDoc({ path: null, raw: '', hash: '', mode: 'split' });
     ws.openDoc(a);

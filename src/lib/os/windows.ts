@@ -1,5 +1,5 @@
 import { emit, emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { get } from 'svelte/store';
 import { cursors, setStartCursor, type Cursor } from '../docs/cursor.svelte';
@@ -15,6 +15,7 @@ import {
 } from '../docs/store.svelte';
 import { cancelHandoff, claimPath, completeHandoff, releasePath, transferPath } from '../ipc';
 import type { Workspace } from '../layout/workspace';
+import { SETTINGS_LABEL } from '../../settings/settingsWindow';
 import { settings } from '../settings/settings.svelte';
 import { resolvedTheme } from '../theme/theme';
 import { largeFileNotices, requireWorkspace, revealAnswered } from './open';
@@ -71,6 +72,10 @@ export interface RevealAnswerEvent {
 let adopted: () => void = () => {};
 let hasAdopted = false;
 const firstAdoption = new Promise<void>((resolve) => (adopted = resolve));
+
+// A window restoring its session holds claims for docs it has not made yet (Ruling 205).
+let restoring = false;
+let hasRestored = false;
 
 // Paths this window is handing to another; their claims are right though no tab shows them.
 const movingPaths = new Set<string>();
@@ -155,6 +160,18 @@ export function listenForAdoption(): () => void {
 /** Resolves once this window has taken in its first handed-over doc. */
 export function whenAdopted(): Promise<void> {
   return firstAdoption;
+}
+
+/** Set while this window restores its session; once done, it holds its docs like an adopter. */
+export function setRestoring(on: boolean): void {
+  restoring = on;
+  if (!on) hasRestored = true;
+}
+
+/** Labels of the open document windows; the Settings window is not one (Ruling 147). */
+export async function docWindowLabels(): Promise<string[]> {
+  const all = await getAllWebviewWindows();
+  return all.map((win) => win.label).filter((label) => label !== SETTINGS_LABEL);
 }
 
 /**
@@ -272,11 +289,13 @@ function place({ doc: state, largeFileNotice, cursor }: MovingDoc): void {
 }
 
 async function reveal(ws: Pick<Workspace, 'activate'>, path: string): Promise<void> {
+  // Mid-restore the answer is unknown: the claim stays and the hidden window stays hidden.
+  if (restoring) return answer(path, true);
   const doc = findByPath(path);
   if (!doc) {
     // A doc on its way out, a file being opened or saved here, or a doc this new window is
     // about to take in, keeps its claim (Ruling 213).
-    const arriving = getCurrentWindow().label.startsWith('w-') && !hasAdopted;
+    const arriving = getCurrentWindow().label.startsWith('w-') && !hasAdopted && !hasRestored;
     if (movingPaths.has(path) || opening.has(path) || arriving) return answer(path, true);
     // A stale claim: nothing here shows the file, so the window that asked opens it.
     try {

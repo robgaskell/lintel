@@ -13,6 +13,8 @@ const win = vi.hoisted(() => ({ label: 'main', show: vi.fn(async () => {}), setF
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }));
 const adoption = vi.hoisted(() => ({ resolve: () => {}, promise: Promise.resolve() }));
 vi.mock('./lib/os/windows', () => ({ whenAdopted: () => adoption.promise }));
+const restoration = vi.hoisted(() => ({ resolve: () => {}, promise: Promise.resolve() }));
+vi.mock('./lib/os/session', () => ({ whenRestored: () => restoration.promise }));
 
 // Frames run only when the test says so.
 let frames: FrameRequestCallback[] = [];
@@ -22,9 +24,12 @@ function nextFrame() {
   for (const cb of due) cb(performance.now());
 }
 
-async function start(search: string, label = 'main') {
+// `restored`: main and restored windows show once their session is back (Ruling 205).
+async function start(search: string, label = 'main', { restored = label === 'main' } = {}) {
   win.label = label;
   adoption.promise = new Promise<void>((resolve) => (adoption.resolve = resolve));
+  restoration.promise = new Promise<void>((resolve) => (restoration.resolve = resolve));
+  if (restored) restoration.resolve();
   history.replaceState(null, '', `/${search}`);
   document.body.innerHTML = '<div id="app"></div>';
   vi.resetModules();
@@ -37,6 +42,7 @@ async function start(search: string, label = 'main') {
   vi.useFakeTimers({ toFake: ['setTimeout'] });
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => frames.push(cb));
   await import('./main');
+  await vi.advanceTimersByTimeAsync(0);
   return vi.mocked(mount).mock.calls[0][0] as unknown;
 }
 
@@ -151,6 +157,51 @@ describe('main in a new document window (Ruling 184)', () => {
     adoption.resolve();
     await flush();
     await vi.advanceTimersByTimeAsync(100);
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+});
+
+describe('main while the session restores (Ruling 205)', () => {
+  const flush = () => vi.advanceTimersByTimeAsync(0);
+
+  it('keeps the main window hidden until its restore is done, so no empty state shows first', async () => {
+    await start('', 'main', { restored: false });
+    nextFrame();
+    nextFrame();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(win.show).not.toHaveBeenCalled();
+
+    restoration.resolve();
+    await flush();
+    nextFrame();
+    nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+
+  it('shows the main window anyway 2 s on when the restore hangs', async () => {
+    await start('', 'main', { restored: false });
+    await vi.advanceTimersByTimeAsync(2000);
+    nextFrame();
+    nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+
+  it('shows a restored document window once its restore is done', async () => {
+    await start('', 'w-1', { restored: false });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(win.show).not.toHaveBeenCalled();
+
+    restoration.resolve();
+    await flush();
+    nextFrame();
+    nextFrame();
+    expect(win.show).toHaveBeenCalledOnce();
+  });
+
+  it('never holds the Settings window for a restore', async () => {
+    await start('?view=settings', 'settings', { restored: false });
+    nextFrame();
+    nextFrame();
     expect(win.show).toHaveBeenCalledOnce();
   });
 });

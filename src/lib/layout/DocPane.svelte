@@ -9,7 +9,7 @@
   import Editor from '../editor/Editor.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
-  import { takeStartCursor, trackCursor } from '../docs/cursor.svelte';
+  import { setTopLine, takeStartCursor, takeStartTopLine, trackCursor } from '../docs/cursor.svelte';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { largeFileNotices } from '../os/open';
@@ -29,8 +29,12 @@
   let renderedLines = $state(1);
   let renderError = $state<string | null>(null);
 
+  // Restored from the session: scrolled to the top once the pane shows (Ruling 208).
+  const startLine = untrack(() => takeStartTopLine(doc.id));
+  let startPending = startLine !== undefined;
   // First visible source line, from whichever side the user scrolled last.
-  let topLine = $state(1);
+  let topLine = $state(startLine ?? 1);
+  $effect(() => setTopLine(doc.id, topLine));
   // At the end, the last heading is on screen though it never reaches the top (Ruling 122).
   let scrolledToEnd = $state(false);
   // Marks the editor scroll that following the preview causes, so it is not sent back.
@@ -49,6 +53,7 @@
       });
     }
     editor.scrollDOM.addEventListener('scroll', onEditorScroll, { passive: true });
+    if (startPending && pane?.clientHeight > 0) showStartLine();
     cleanups.push(
       registerView(doc.id, editor),
       trackCursor(doc.id, editor),
@@ -56,6 +61,19 @@
       () => editor.scrollDOM.removeEventListener('scroll', onEditorScroll),
     );
   }
+
+  function showStartLine() {
+    startPending = false;
+    if (!view || doc.mode === 'read') return;
+    view.requestMeasure();
+    scrollEditorTo(topLine);
+  }
+
+  // A new preview starts at its own line 1; it shows the pane's line instead.
+  $effect(() => {
+    const shown = preview;
+    if (shown) untrack(() => shown.scrollToLine(topLine));
+  });
 
   function onEditorScroll() {
     if (!view || paneHidden || editorLock.skip()) return;
@@ -209,7 +227,8 @@
     // Dockview takes a hidden tab's pane out of the page, which resets its scroll (Ruling 83).
     const observer = new ResizeObserver(([entry]) => {
       const hidden = !entry || entry.contentRect.height === 0;
-      if (paneHidden && !hidden && view && doc.mode !== 'read') {
+      if (startPending && !hidden && view) showStartLine();
+      else if (paneHidden && !hidden && view && doc.mode !== 'read') {
         view.requestMeasure();
         scrollEditorTo(topLine);
       }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { claimPath, normalizePath, releasePath, writeTextFile } from '../ipc';
+import { claimPath, normalizePath, readTextFile, releasePath, writeTextFile } from '../ipc';
 import { message, save } from '@tauri-apps/plugin-dialog';
 import { recordRecent } from '../os/recent';
 import {
@@ -11,6 +11,7 @@ import {
   findByPath,
   isDirty,
   removeDoc,
+  restoreDoc,
   saveDoc,
   saveSettled,
   setTabShower,
@@ -658,5 +659,44 @@ describe('adoptDoc (Ruling 186)', () => {
     expect(doc).toEqual(state);
     expect(isDirty(doc)).toBe(true);
     expect(claimPath).not.toHaveBeenCalled();
+  });
+});
+
+describe('restoreDoc (Ruling 204)', () => {
+  beforeEach(() => {
+    vi.mocked(claimPath).mockReset();
+    vi.mocked(claimPath).mockResolvedValue(null);
+    vi.mocked(releasePath).mockClear();
+    vi.mocked(readTextFile).mockReset();
+    vi.mocked(recordRecent).mockClear();
+    messageDialog.mockReset();
+  });
+
+  it('opens the file under its saved id, with its pin and mode, and no Open Recent entry', async () => {
+    vi.mocked(readTextFile).mockResolvedValue({ text: 'a\r\nb\r\n', hash: 'h1' });
+
+    const doc = await restoreDoc({ id: 'saved-id', path: '/a.md', mode: 'read', pinned: true });
+
+    expect(doc).toMatchObject({ id: 'saved-id', path: '/a.md', mode: 'read', pinned: true, text: 'a\nb\n' });
+    expect(docs.get('saved-id')).toBe(doc);
+    expect(claimPath).toHaveBeenCalledWith('/a.md');
+    expect(recordRecent).not.toHaveBeenCalled();
+  });
+
+  it('leaves the file to the window that has it', async () => {
+    vi.mocked(claimPath).mockResolvedValue('w-1');
+
+    expect(await restoreDoc({ id: 'x', path: '/a.md', mode: 'split', pinned: false })).toBeNull();
+    expect(readTextFile).not.toHaveBeenCalled();
+    expect(docs.size).toBe(0);
+  });
+
+  it('lets go of the claim and shows no dialog when the file cannot be read', async () => {
+    vi.mocked(readTextFile).mockRejectedValue(new Error('not UTF-8'));
+
+    await expect(restoreDoc({ id: 'x', path: '/a.md', mode: 'split', pinned: false })).rejects.toThrow('not UTF-8');
+    expect(releasePath).toHaveBeenCalledWith('/a.md');
+    expect(messageDialog).not.toHaveBeenCalled();
+    expect(docs.size).toBe(0);
   });
 });

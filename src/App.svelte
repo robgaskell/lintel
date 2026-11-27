@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { message } from '@tauri-apps/plugin-dialog';
   import { cursors } from './lib/docs/cursor.svelte';
@@ -18,7 +18,14 @@
   import { listenTabSwitchKeys, makeMenuHandlers } from './lib/os/menuHandlers';
   import { setWorkspace } from './lib/os/open';
   import { currentPlatform } from './lib/os/platform';
+  import { listenForQuitRequests } from './lib/os/quit';
   import { getRecent, knownRecent, onRecentChanged } from './lib/os/recent';
+  import {
+    missingNotice,
+    restoreAllWindows,
+    restoreWindow,
+    scheduleWindowSave,
+  } from './lib/os/session';
   import { handleCloseRequested } from './lib/os/window';
   import { listenForAdoption, listenForReveal } from './lib/os/windows';
   import { renderDelayMs } from './lib/render/scrollSync';
@@ -28,6 +35,8 @@
   import StatusBar from './lib/ui/StatusBar.svelte';
 
   const RECENT_SHOWN = 5;
+  const NOTICE_MS = 10_000;
+  const label = getCurrentWindow().label;
 
   let host: HTMLElement;
   let handlers = $state<MenuHandlers | null>(null);
@@ -50,6 +59,28 @@
     const timer = setTimeout(() => (words = countWords(text)), delay);
     return () => clearTimeout(timer);
   });
+
+  // Pin, mode and outline changes fire no layout event, so they are watched here (Ruling 209).
+  $effect(() => {
+    for (const doc of docs.values()) void [doc.pinned, doc.mode];
+    void outline.visible;
+    untrack(() => scheduleWindowSave(label));
+  });
+
+  // Until the next key or click, or 10 s (Ruling 212).
+  let notice = $state<string | null>(null);
+  function showNotice(text: string) {
+    notice = text;
+    const clear = () => {
+      notice = null;
+      clearTimeout(timer);
+      window.removeEventListener('keydown', clear, true);
+      window.removeEventListener('pointerdown', clear, true);
+    };
+    const timer = setTimeout(clear, NOTICE_MS);
+    window.addEventListener('keydown', clear, true);
+    window.addEventListener('pointerdown', clear, true);
+  }
 
   // Open Recent's first entries for the empty window; the stored list first, then the checked one.
   let recent = $state<string[]>([]);
@@ -88,7 +119,11 @@
       );
     };
     syncSplit();
-    const stopLayout = workspace.onLayoutChange(syncSplit);
+    const stopLayout = workspace.onLayoutChange(() => {
+      syncSplit();
+      scheduleWindowSave(label);
+    });
+    const stopQuit = listenForQuitRequests();
     const stopRecent = onRecentChanged(() => {
       if (docs.size === 0) loadRecent();
     });
@@ -114,7 +149,18 @@
         stopTheme = followTheme(() => settings);
         stopEditorFont = followEditorFont();
         stopMenu = syncAppMenu(menuHandlers, showError);
+        // After the settings, which the restored docs' previews read.
+        void restoreSession();
       });
+    async function restoreSession() {
+      try {
+        const { missing } = await restoreWindow(label);
+        if (missing.length > 0 && !disposed) showNotice(missingNotice(missing.length));
+        if (label === 'main') await restoreAllWindows();
+      } catch (err) {
+        console.error('Could not restore the last session:', err);
+      }
+    }
     const unlistenClose = getCurrentWindow().onCloseRequested((event) =>
       handleCloseRequested(event, workspace),
     );
@@ -136,6 +182,7 @@
       stopEditorFont();
       stopActive();
       stopLayout();
+      stopQuit();
       stopRecent();
       stopReveal();
       stopAdoption();
@@ -167,7 +214,7 @@
       saveState={saveStateOf(active)}
       lintCount={null}
       lintFixable={false}
-      notice={null}
+      {notice}
       update="none"
       reading={active.mode === 'read'}
     />

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { message } from '@tauri-apps/plugin-dialog';
 import { createDoc, docs, trackHandoff, untitledCounter } from '../docs/store.svelte';
+import { forgetWindowSession, saveWindowSession } from './session';
 import { closeTabOrWindow, handleCloseRequested } from './window';
+import { docWindowLabels } from './windows';
 
 vi.mock('../ipc', () => ({
   normalizePath: vi.fn(async (path: string) => path),
@@ -17,6 +19,12 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
   save: vi.fn(),
 }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ label: 'main' }) }));
+vi.mock('./session', () => ({
+  forgetWindowSession: vi.fn(async () => {}),
+  saveWindowSession: vi.fn(async () => {}),
+}));
+vi.mock('./windows', () => ({ docWindowLabels: vi.fn(async () => ['main']) }));
 
 const messageDialog = vi.mocked(message);
 
@@ -30,6 +38,66 @@ beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
   messageDialog.mockReset();
+  vi.mocked(forgetWindowSession).mockClear();
+  vi.mocked(saveWindowSession).mockClear();
+  vi.mocked(docWindowLabels).mockResolvedValue(['main']);
+});
+
+const noTabs = { docIdsInOrder: () => [], activate: vi.fn() };
+
+describe('the session when a window closes (spec: Session lifetime, Ruling 209)', () => {
+  it('closing window w-1 while main is open calls forgetWindowSession(\'w-1\')', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+
+    await handleCloseRequested({ preventDefault: vi.fn() }, noTabs, 'w-1');
+
+    expect(forgetWindowSession).toHaveBeenCalledWith('w-1');
+    expect(saveWindowSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session of the last window, saved for the next launch', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['w-1']);
+
+    await handleCloseRequested({ preventDefault: vi.fn() }, noTabs, 'w-1');
+
+    expect(saveWindowSession).toHaveBeenCalledWith('w-1');
+    expect(forgetWindowSession).not.toHaveBeenCalled();
+  });
+
+  it('touches no session when the close is cancelled', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    const a = dirtyDoc('/a.md');
+    messageDialog.mockResolvedValue('Cancel');
+
+    await handleCloseRequested({ preventDefault: vi.fn() }, { docIdsInOrder: () => [a.id], activate: vi.fn() }, 'w-1');
+
+    expect(forgetWindowSession).not.toHaveBeenCalled();
+    expect(saveWindowSession).not.toHaveBeenCalled();
+  });
+
+  it('forgets an empty window closed with Cmd+W before destroying it', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    const win = { destroy: vi.fn(async () => {}) };
+
+    await closeTabOrWindow({ activeDocId: () => null, closeDoc: vi.fn() }, win, 'w-1');
+
+    expect(forgetWindowSession).toHaveBeenCalledWith('w-1');
+    expect(vi.mocked(forgetWindowSession).mock.invocationCallOrder[0]).toBeLessThan(
+      win.destroy.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('still closes the window when the session cannot be written', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    vi.mocked(forgetWindowSession).mockRejectedValueOnce(new Error('store down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const event = { preventDefault: vi.fn() };
+
+    await handleCloseRequested(event, noTabs, 'w-1');
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
 });
 
 describe('handleCloseRequested', () => {
