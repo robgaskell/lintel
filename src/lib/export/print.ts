@@ -17,9 +17,11 @@ const PDF_HINTS: Record<Platform, string> = {
 };
 
 let shown: { docId: string; text: string; root: HTMLElement } | null = null;
-// Set from the print call until the next key, click or focus after it returns, as the
-// sheet blocks those; stale checks meanwhile wait for the end (Ruling 311).
+// Set from the print call until the next key, click or window focus after it returns, as
+// the sheet blocks those; stale checks meanwhile wait for the end (Rulings 311, 322).
 let printing: AbortController | null = null;
+// Ends the hold if the print call never settles.
+const PRINT_HOLD_LIMIT_MS = 60_000;
 let checkAfterPrint: { active: { id: string; text: string } | undefined } | null = null;
 
 /**
@@ -46,16 +48,21 @@ export async function printDoc(doc: DocState, opts: { pdfHint: boolean }): Promi
   if (shown?.root !== root) return;
   const ended = new AbortController();
   printing = ended;
+  const limit = setTimeout(() => printing === ended && endPrint(), PRINT_HOLD_LIMIT_MS);
   try {
     // On macOS Tauri's override returns a promise, which rejects without core:webview:allow-print.
     await (window.print() as unknown);
   } catch (err) {
     endPrint();
     throw err;
+  } finally {
+    clearTimeout(limit);
   }
-  for (const type of ['keydown', 'pointerdown', 'focus']) {
-    window.addEventListener(type, () => endPrint(), { capture: true, once: true, signal: ended.signal });
-  }
+  const options = { capture: true, signal: ended.signal };
+  window.addEventListener('keydown', () => endPrint(), options);
+  window.addEventListener('pointerdown', () => endPrint(), options);
+  // An element taking focus, such as the editor, is not the window coming back.
+  window.addEventListener('focus', (event) => event.target === event.currentTarget && endPrint(), options);
 }
 
 /**

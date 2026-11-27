@@ -13,6 +13,7 @@ import {
   setsWindowAppearance,
 } from './theme';
 import { setWindowAppearance } from '../ipc';
+import builtAppCss from '../../app.css?inline';
 
 const fake = vi.hoisted(() => ({
   settingsChanged: null as ((s: Settings) => void) | null,
@@ -279,6 +280,11 @@ describe('app.css', () => {
         expect(value, `${b.selector} ${name}`).toMatch(/^var\(--[a-z-]+\)$/);
       }
     }
+  });
+
+  it('brings in the token block, as the app sheet the build ships (Ruling 322)', () => {
+    expect(builtAppCss).toContain('--editor-bg: var(--bg);');
+    expect(builtAppCss).toContain("--preview-code-keyword: #1d4ed8;");
   });
 
   it('puts the tab strip, outline, toolbar and status bar on the chrome tone', () => {

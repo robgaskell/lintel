@@ -389,6 +389,13 @@ describe('Preview layout', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Two');
     expect(container.querySelector('.preview')?.classList.contains('reading')).toBe(true);
   });
+
+  it('loads article.css, which styles its .article root (Ruling 322)', () => {
+    const { container } = show('# One\n');
+    expect(container.querySelector('.preview')!.classList.contains('article')).toBe(true);
+    const sheets = [...document.querySelectorAll('style')].map((style) => style.textContent ?? '');
+    expect(sheets.some((css) => css.includes('.article.reading .page'))).toBe(true);
+  });
 });
 
 describe('Preview scroll sync', () => {

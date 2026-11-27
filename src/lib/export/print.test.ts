@@ -318,6 +318,65 @@ describe('printDoc', () => {
     expect(document.querySelector('.print-root')).not.toBeNull();
   });
 
+  it('keeps the hold when an element takes focus; only the window\'s own focus ends it (Ruling 322)', async () => {
+    const printedDoc = doc('# Kept\n');
+    await printDoc(printedDoc, { pdfHint: false });
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+
+    const input = document.createElement('input');
+    document.body.append(input);
+    input.focus();
+    input.remove();
+    expect(document.querySelector('.print-root')).not.toBeNull();
+
+    window.dispatchEvent(new FocusEvent('focus'));
+    expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('ends the hold after 60 s if print never settles (Ruling 322)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const printedDoc = doc('# Kept\n');
+      print.mockImplementationOnce(() => new Promise(() => {}) as never);
+      void printDoc(printedDoc, { pdfHint: false });
+      await vi.waitFor(() => expect(print).toHaveBeenCalled());
+      dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+
+      vi.advanceTimersByTime(59_000);
+      expect(document.querySelector('.print-root')).not.toBeNull();
+      vi.advanceTimersByTime(1_000);
+      expect(document.querySelector('.print-root')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts a new print with no hold left from the last one (Ruling 322)', async () => {
+    await printDoc(doc('# First\n'), { pdfHint: false });
+    // No input since: the first print still holds. A stale check while the next renders drops it.
+    const second = printDoc(doc('# Second\n\n![Chart](img/c.png)\n'), { pdfHint: false });
+    await vi.waitFor(() => expect(document.querySelector('.print-root h1')?.textContent).toBe('Second'));
+    dropStalePrintRoot({ id: 'other', text: '' });
+    await second;
+
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('leaves no listener behind that could end a later print (Ruling 322)', async () => {
+    await printDoc(doc('# First\n'), { pdfHint: false });
+    endPrint();
+    const printedDoc = doc('# Second\n');
+    // An event while the second print call runs belongs to no hold yet.
+    print.mockImplementationOnce(() => {
+      dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+      window.dispatchEvent(new Event('pointerdown'));
+      window.dispatchEvent(new FocusEvent('focus'));
+    });
+    await printDoc(printedDoc, { pdfHint: false });
+    expect(document.querySelector('.print-root')).not.toBeNull();
+  });
+
   it('drops the root and prints nothing when rendering fails (Ruling 302)', async () => {
     vi.mocked(renderMarkdown).mockImplementationOnce(() => {
       throw new Error('render failed');
