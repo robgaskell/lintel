@@ -1,5 +1,6 @@
 mod appearance;
 mod files;
+mod open_queue;
 mod remote;
 mod session;
 mod startup;
@@ -8,7 +9,9 @@ mod windows;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tauri::menu::Menu;
-use tauri::{Manager, RunEvent, Runtime, Url, Window, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, Runtime, Url, Window, WindowEvent};
+
+use open_queue::OpenQueue;
 
 /// Label of the Settings window that the frontend opens (settingsWindow.ts).
 const SETTINGS: &str = "settings";
@@ -19,6 +22,10 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     startup::disable_appkit_restoration();
     let mut builder = tauri::Builder::default()
+        // First, so a second launch hands over its files and exits before other plugins start.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
+        }))
         // The default menu's Quit skips the unsaved-changes prompt; the frontend builds the menu.
         .enable_macos_default_menu(false)
         .plugin(navigation_guard())
@@ -37,9 +44,15 @@ pub fn run() {
     for plugin in session::geometry_plugins() {
         builder = builder.plugin(plugin);
     }
+    // Opening a file from Finder or `open -g` must not take focus from the app in front.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.activate_ignoring_other_apps(false);
+    }
     builder
         .manage(windows::PathRegistry::default())
         .manage(windows::FocusOrder::default())
+        .manage(Mutex::new(OpenQueue::default()))
         .on_window_event(windows::on_doc_window_event)
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -47,6 +60,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 startup::prepare_main_window(&window);
             }
+            open_launch_args(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -62,10 +76,29 @@ pub fn run() {
             windows::complete_handoff,
             windows::cancel_handoff,
             windows::handoff_status,
-            appearance::set_window_appearance
+            appearance::set_window_appearance,
+            open_queue::frontend_ready
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Lintel");
+        .build(tauri::generate_context!())
+        .expect("error while building Lintel")
+        .run(on_run_event);
+}
+
+fn open_launch_args<R: Runtime>(app: &AppHandle<R>) {
+    let args = std::env::args_os().map(|arg| arg.to_string_lossy().into_owned());
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let paths = open_queue::paths_from_args(args, &cwd.to_string_lossy());
+    open_queue::open_from_outside(app, paths);
+}
+
+// macOS passes files from Finder, `open` and the Dock here, not through argv.
+fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    #[cfg(target_os = "macos")]
+    if let RunEvent::Opened { urls } = event {
+        open_queue::open_from_outside(app, open_queue::paths_from_urls(&urls));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, event);
 }
 
 /// Lets each webview load the app once; any later top-level navigation, even to the
@@ -251,6 +284,57 @@ mod tests {
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let granted = main["permissions"].as_array().unwrap();
         assert!(granted.contains(&serde_json::json!("allow-set-window-appearance")));
+    }
+
+    #[test]
+    fn document_windows_may_ask_for_opened_files() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let granted = main["permissions"].as_array().unwrap();
+        assert!(granted.contains(&serde_json::json!("allow-frontend-ready")));
+    }
+
+    #[test]
+    fn markdown_files_are_associated_with_lintel() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["bundle"]["fileAssociations"],
+            serde_json::json!([{
+                "ext": ["md", "markdown"],
+                "contentTypes": ["net.daringfireball.markdown"],
+                "mimeType": "text/markdown",
+                "name": "Lintel.Markdown",
+                "description": "Markdown document",
+                "role": "Editor",
+                "rank": "Default"
+            }])
+        );
+    }
+
+    #[test]
+    fn macos_imports_the_markdown_type_rather_than_exporting_it() {
+        let plist = include_str!("../Info.plist");
+        assert!(plist.contains("<key>UTImportedTypeDeclarations</key>"));
+        assert!(plist.contains("<string>net.daringfireball.markdown</string>"));
+        assert!(!plist.contains("UTExportedTypeDeclarations"));
+    }
+
+    #[test]
+    fn linux_desktop_entry_passes_the_files_it_opens() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        for format in ["deb", "rpm"] {
+            assert_eq!(
+                conf["bundle"]["linux"][format]["desktopTemplate"],
+                "linux/lintel.desktop"
+            );
+        }
+        let entry = include_str!("../linux/lintel.desktop");
+        assert!(entry.lines().any(|l| l == "Exec=lintel %F"));
+        assert!(entry
+            .lines()
+            .any(|l| l == "MimeType=text/markdown;text/x-markdown;"));
     }
 
     fn url(s: &str) -> Url {

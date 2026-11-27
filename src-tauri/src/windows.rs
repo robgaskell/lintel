@@ -4,6 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{Emitter, Manager, Runtime, State, Window, WindowEvent};
 
+use crate::open_queue::{self, OpenQueue};
 use crate::SETTINGS;
 
 /// Sent to the window that owns a path when another window tries to open it.
@@ -259,6 +260,10 @@ fn claim_or_reveal(
 pub struct FocusOrder(Mutex<Vec<String>>);
 
 impl FocusOrder {
+    fn front(&self) -> Option<String> {
+        self.labels().first().cloned()
+    }
+
     fn labels(&self) -> MutexGuard<'_, Vec<String>> {
         self.0
             .lock()
@@ -266,14 +271,20 @@ impl FocusOrder {
     }
 }
 
-/// The app's window-event hook: keeps the registry and focus order current, and hands the
-/// app menu on when a document window closes.
+/// The app's window-event hook: keeps the registry, focus order and open queue current, and
+/// hands the app menu on when a document window closes.
 pub fn on_doc_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let app = window.app_handle();
     let open = || app.webview_windows().into_keys().collect();
     let registry = window.state::<PathRegistry>();
     let focus = window.state::<FocusOrder>();
-    if let Some(owner) = on_window_event(&registry, &focus, window.label(), event, open) {
+    let claim = on_window_event(&registry, &focus, window.label(), event, open);
+    open_queue::lock(&window.state::<Mutex<OpenQueue>>()).window_event(
+        window.label(),
+        event,
+        focus.front(),
+    );
+    if let Some(owner) = claim {
         if let Err(err) = app.emit_to(owner.as_str(), MENU_CLAIM, ()) {
             eprintln!("Could not hand the menu to {owner}: {err}");
         }
@@ -619,6 +630,7 @@ mod tests {
             mock_builder()
                 .manage(PathRegistry::default())
                 .manage(FocusOrder::default())
+                .manage(Mutex::new(OpenQueue::default()))
                 .build(mock_context(noop_assets()))
                 .unwrap()
         }
@@ -671,6 +683,26 @@ mod tests {
 
             assert_eq!(claim_path(main.clone(), app.state(), A.to_owned()), None);
             assert_eq!(claims_in_main.lock().unwrap().len(), 1);
+        }
+
+        #[test]
+        fn opened_files_follow_the_focus_and_skip_a_closed_window() {
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            let in_main = heard(&main, open_queue::OPEN_FILES);
+            let in_w1 = heard(&w1, open_queue::OPEN_FILES);
+            open_queue::frontend_ready(main.clone(), app.state());
+            open_queue::frontend_ready(w1.clone(), app.state());
+            on_doc_window_event(&main, &WindowEvent::Focused(true));
+            on_doc_window_event(&w1, &WindowEvent::Focused(true));
+
+            open_queue::open_from_outside(app.handle(), vec!["/a.md".to_owned()]);
+            on_doc_window_event(&w1, &WindowEvent::Destroyed);
+            open_queue::open_from_outside(app.handle(), vec!["/b.md".to_owned()]);
+
+            assert_eq!(*in_w1.lock().unwrap(), [r#"{"paths":["/a.md"]}"#]);
+            assert_eq!(*in_main.lock().unwrap(), [r#"{"paths":["/b.md"]}"#]);
         }
     }
 }

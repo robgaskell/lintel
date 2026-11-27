@@ -26,6 +26,7 @@
     "allow-cancel-handoff",
     "allow-handoff-status",
     "allow-set-window-appearance",
+    "allow-frontend-ready",
     "clipboard-manager:allow-write-text",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },

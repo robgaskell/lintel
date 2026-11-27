@@ -15,6 +15,7 @@ fn main() {
         "cancel_handoff",
         "handoff_status",
         "set_window_appearance",
+        "frontend_ready",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
         .expect("failed to run tauri-build");
