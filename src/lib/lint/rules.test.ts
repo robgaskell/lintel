@@ -13,6 +13,7 @@ describe('rules.ts (Ruling 269)', () => {
   it('matches the installed markdownlint, so an upgrade cannot leave it stale', () => {
     const fresh = execFileSync(node, ['scripts/gen-lint-rules.mjs', '--stdout'], { encoding: 'utf8' });
 
-    expect(readFileSync('src/lib/lint/rules.ts', 'utf8')).toBe(fresh);
+    // A Windows checkout may turn LF into CRLF.
+    expect(readFileSync('src/lib/lint/rules.ts', 'utf8').replaceAll('\r\n', '\n')).toBe(fresh);
   });
 });
