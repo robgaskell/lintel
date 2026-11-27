@@ -1057,7 +1057,7 @@ mod tests {
         use crate::open_queue::OpenQueue;
         use crate::windows::{self, FocusOrder, PathRegistry};
         use tauri::async_runtime::block_on;
-        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::test::{mock_builder, MockRuntime};
         use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
         fn app() -> tauri::App<MockRuntime> {
@@ -1065,7 +1065,7 @@ mod tests {
                 .manage(PathRegistry::default())
                 .manage(FocusOrder::default())
                 .manage(Mutex::new(OpenQueue::default()))
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap();
             app.manage(Watcher::for_app(app.handle().clone()));
             app

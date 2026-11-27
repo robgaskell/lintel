@@ -3,7 +3,8 @@
 
 use std::ffi::OsString;
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -136,7 +137,8 @@ pub trait Found: Send + Sync + 'static {
 /// The steps of an install, for the app to act on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InstallStep {
-    /// Windows lock; files opened from outside wait.
+    /// Files opened from outside wait. Windows lock themselves on hearing the installing
+    /// state, which the service sends next.
     Started,
     /// Windows unlock; waiting files open.
     Failed,
@@ -167,8 +169,8 @@ struct Ready<U> {
 struct Inner<U> {
     state: UpdateState,
     ready: Option<Ready<U>>,
-    /// None: due at the next tick.
-    next_check: Option<SystemTime>,
+    /// When the last scheduled check ran, and how long until the next.
+    last_check: Option<(SystemTime, Duration)>,
     failures: u32,
 }
 
@@ -184,6 +186,8 @@ pub struct Service<F: Feed> {
     schedule: Schedule,
     hooks: Hooks,
     inner: Mutex<Inner<F::Found>>,
+    scheduled: AtomicBool,
+    stopped: AtomicBool,
 }
 
 impl<F: Feed> Service<F> {
@@ -203,9 +207,11 @@ impl<F: Feed> Service<F> {
                     revision: 0,
                 },
                 ready: None,
-                next_check: None,
+                last_check: None,
                 failures: 0,
             }),
+            scheduled: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         }
     }
 
@@ -215,7 +221,7 @@ impl<F: Feed> Service<F> {
 
     /// The scheduled check, at wall-clock time `now`: runs when due and auto-check is on.
     pub async fn tick_at(&self, now: SystemTime) {
-        let due = self.lock().next_check.is_none_or(|next| now >= next);
+        let due = self.lock().last_check.is_none_or(|(at, wait)| due(at, wait, now));
         if !due || !(self.hooks.auto_check)() {
             return;
         }
@@ -228,7 +234,13 @@ impl<F: Feed> Service<F> {
             inner.failures = 0;
             self.schedule.every
         };
-        inner.next_check = Some(now + wait);
+        inner.last_check = Some((now, wait));
+    }
+
+    /// Ends the schedule at its next tick.
+    #[cfg(test)]
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
     }
 
     /// Checks, and downloads any update found. None when it did not run: a check already
@@ -350,6 +362,15 @@ impl<F: Feed> Service<F> {
     }
 }
 
+// A last check dated after `now` means the clock was set back since: check now, rather
+// than wait for the wrong date to come round again.
+fn due(last: SystemTime, wait: Duration, now: SystemTime) -> bool {
+    match now.duration_since(last) {
+        Ok(since) => since >= wait,
+        Err(_) => true,
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -358,10 +379,14 @@ fn now_ms() -> u64 {
 
 /// Looks at the clock `first` after the start, then every `tick`, until the service is dropped.
 pub fn run_schedule<F: Feed>(service: &Arc<Service<F>>, first: Duration, tick: Duration) {
+    service.scheduled.store(true, Ordering::SeqCst);
     let service: Weak<Service<F>> = Arc::downgrade(service);
     std::thread::spawn(move || {
         std::thread::sleep(first);
         while let Some(service) = service.upgrade() {
+            if service.stopped.load(Ordering::SeqCst) {
+                break;
+            }
             tauri::async_runtime::block_on(service.tick_at(SystemTime::now()));
             drop(service);
             std::thread::sleep(tick);
@@ -404,11 +429,38 @@ fn configure<R: Runtime, B: UpdaterSetup>(
     }
 }
 
+const MAIN_THREAD_WAIT: Duration = Duration::from_secs(5);
+
 /// What exit would have saved. The session is saved already, by the quit rounds.
 pub fn before_windows_install<R: Runtime>(app: &AppHandle<R>) {
-    crate::session::save_geometry_now(app);
-    // The plugin's own hook, which this one replaces.
-    app.cleanup_before_exit();
+    let handle = app.clone();
+    let saved = run_and_wait(
+        |job| app.run_on_main_thread(job).map_err(|err| err.to_string()),
+        move || {
+            crate::session::save_geometry_now(&handle);
+            // The plugin's own hook, which this one replaces.
+            handle.cleanup_before_exit();
+        },
+        MAIN_THREAD_WAIT,
+    );
+    if !saved {
+        eprintln!("Window sizes were not saved before the update: the app did not answer");
+    }
+}
+
+// The save runs on the main thread: off it, each window read waits for the main thread,
+// which may be waiting for a lock the save holds (Ruling 351). False if it did not finish.
+fn run_and_wait(
+    dispatch: impl FnOnce(Box<dyn FnOnce() + Send>) -> Result<(), String>,
+    work: impl FnOnce() + Send + 'static,
+    wait: Duration,
+) -> bool {
+    let (done, finished) = mpsc::channel();
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+        work();
+        let _ = done.send(());
+    });
+    dispatch(job).is_ok() && finished.recv_timeout(wait).is_ok()
 }
 
 /// The real feed: tauri-plugin-updater with the endpoint in tauri.conf.json.
@@ -455,15 +507,28 @@ pub type AppUpdates<R> = Arc<Service<PluginFeed<R>>>;
 
 /// Starts the service: managed for the commands, answering Settings, and checking on schedule.
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
-    let plan = Plan::for_this_build(|name| std::env::var_os(name));
-    start_with(app, plan, run_schedule);
+    start_from_env(app, |name| std::env::var_os(name));
 }
 
-fn start_with<R, S>(app: &AppHandle<R>, plan: Plan, schedule: S) -> AppUpdates<R>
+fn start_from_env<R: Runtime>(
+    app: &AppHandle<R>,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> AppUpdates<R> {
+    let plan = Plan::for_this_build(env);
+    start_with(app, plan, run_schedule, AppHandle::request_restart)
+}
+
+fn start_with<R, S>(
+    app: &AppHandle<R>,
+    plan: Plan,
+    schedule: S,
+    restart: impl Fn(&AppHandle<R>) + Send + Sync + 'static,
+) -> AppUpdates<R>
 where
     R: Runtime,
     S: FnOnce(&AppUpdates<R>, Duration, Duration),
 {
+    app.manage(InstallLock::default());
     let (publisher, settings, installer) = (app.clone(), app.clone(), app.clone());
     let hooks = Hooks {
         publish: Box::new(move |state| {
@@ -472,7 +537,7 @@ where
             }
         }),
         auto_check: Box::new(move || crate::settings::auto_check(&settings)),
-        on_install: Box::new(move |step| on_install_step(&installer, step)),
+        on_install: Box::new(move |step| on_install_step(&installer, step, &restart)),
     };
     let feed = PluginFeed {
         app: app.clone(),
@@ -488,12 +553,36 @@ where
     service
 }
 
-fn on_install_step<R: Runtime>(app: &AppHandle<R>, step: InstallStep) {
+/// Set while an update installs, so the app does not quit under it.
+#[derive(Default)]
+struct InstallLock(AtomicBool);
+
+fn on_install_step<R: Runtime>(
+    app: &AppHandle<R>,
+    step: InstallStep,
+    restart: &dyn Fn(&AppHandle<R>),
+) {
+    let lock = &app.state::<InstallLock>().0;
     match step {
-        InstallStep::Started => crate::open_queue::hold(app),
-        InstallStep::Failed => crate::open_queue::release(app),
-        InstallStep::Installed => app.request_restart(),
+        InstallStep::Started => {
+            lock.store(true, Ordering::SeqCst);
+            crate::open_queue::hold(app);
+        }
+        InstallStep::Failed => {
+            lock.store(false, Ordering::SeqCst);
+            crate::open_queue::release(app);
+        }
+        InstallStep::Installed => restart(app),
     }
+}
+
+/// Whether to refuse a quit the user asked for, such as closing the last window, while an
+/// update installs. The relaunch and Lintel's own exits name a `code`, and are not refused.
+pub fn holds_exit<R: Runtime>(app: &AppHandle<R>, code: Option<i32>) -> bool {
+    code.is_none()
+        && app
+            .try_state::<InstallLock>()
+            .is_some_and(|lock| lock.0.load(Ordering::SeqCst))
 }
 
 #[derive(Deserialize)]
@@ -885,7 +974,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(probe.checks(), 1);
-        service.lock().next_check = None;
+        service.lock().last_check = None;
         while probe.checks() == 1 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -895,6 +984,58 @@ mod tests {
         let checks = probe.checks();
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(probe.checks(), checks);
+    }
+
+    #[test]
+    fn a_last_check_dated_after_now_counts_as_due() {
+        let (service, probe) = service_with(&[Ok(None); 4], true, true);
+        // The clock was a year ahead at the check, then put right.
+        run(service.tick_at(t0() + 365 * 24 * HOUR));
+        run(service.tick_at(t0()));
+        assert_eq!(probe.checks(), 2);
+        run(service.tick_at(t0() + 10 * MIN));
+        assert_eq!(probe.checks(), 2);
+        run(service.tick_at(t0() + 24 * HOUR));
+        assert_eq!(probe.checks(), 3);
+        assert!(due(t0() + HOUR, 24 * HOUR, t0()));
+        assert!(!due(t0(), 24 * HOUR, t0() + 23 * HOUR));
+    }
+
+    #[test]
+    fn the_first_check_comes_at_first_not_after_a_tick() {
+        let (service, probe) = service_with(&[Ok(None)], true, true);
+        let service = Arc::new(service);
+        run_schedule(&service, Duration::ZERO, HOUR);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while probe.checks() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        service.stop();
+        assert_eq!(probe.checks(), 1);
+    }
+
+    #[test]
+    fn the_windows_hook_waits_for_the_main_thread_to_finish_the_save() {
+        let saved = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&saved);
+        let finished = run_and_wait(
+            |job| {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    job();
+                });
+                Ok(())
+            },
+            move || flag.store(true, Ordering::SeqCst),
+            Duration::from_secs(5),
+        );
+        assert!(finished);
+        assert!(saved.load(Ordering::SeqCst), "returned before the save ran");
+
+        let dropped = run_and_wait(|_job| Ok(()), || {}, Duration::from_secs(5));
+        assert!(!dropped);
+        let refused = run_and_wait(|_job| Err("no".to_owned()), || {}, Duration::from_secs(5));
+        assert!(!refused);
     }
 
     /// Records the builder calls `configure` makes, and keeps the before-exit hook.
@@ -923,13 +1064,14 @@ mod tests {
 
     mod in_app {
         use super::*;
-        use crate::session::test_support::{geometry_app, note_size, saved_size, temp_dir};
+        use crate::session::test_support::{geometry_app, note_size, saved_size};
+        use crate::test_support::temp_dir;
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
-        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::test::{mock_builder, MockRuntime};
 
         fn app_with(service: Arc<Service<Stub>>) -> tauri::App<MockRuntime> {
-            let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+            let app = mock_builder().build(crate::test_support::mock_context()).unwrap();
             app.manage(Arc::clone(&service));
             answer_settings(app.handle(), service);
             app
@@ -983,26 +1125,41 @@ mod tests {
         fn plain_app() -> tauri::App<MockRuntime> {
             mock_builder()
                 .manage(Mutex::new(crate::open_queue::OpenQueue::default()))
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap()
         }
 
-        fn start_recorded(plan: Plan) -> (AppUpdates<MockRuntime>, Vec<(Duration, Duration)>) {
+        type Restarts = Shared<usize>;
+        type Started = (
+            AppUpdates<MockRuntime>,
+            Vec<(Duration, Duration)>,
+            Restarts,
+            tauri::App<MockRuntime>,
+        );
+
+        fn start_recorded(plan: Plan) -> Started {
             let app = plain_app();
             let mut scheduled = Vec::new();
-            let service = start_with(app.handle(), plan, |_, first, tick| scheduled.push((first, tick)));
-            (service, scheduled)
+            let restarts = Restarts::default();
+            let counted = restarts.clone();
+            let service = start_with(
+                app.handle(),
+                plan,
+                |_, first, tick| scheduled.push((first, tick)),
+                move |_| *counted.lock().unwrap() += 1,
+            );
+            (service, scheduled, restarts, app)
         }
 
         #[test]
         fn start_schedules_checks_only_when_the_plan_allows_them() {
-            let (service, scheduled) = start_recorded(Plan::new(true, env(&[])));
+            let (service, scheduled, _, _) = start_recorded(Plan::new(true, env(&[])));
             assert!(scheduled.is_empty());
             assert!(!service.enabled);
 
             let both = [(TEST_VAR, "1"), (TEST_URL_VAR, STUB)];
             let plan = Plan::new(true, env(&both));
-            let (service, scheduled) = start_recorded(plan.clone());
+            let (service, scheduled, _, _) = start_recorded(plan.clone());
             assert_eq!(scheduled, [(Duration::from_secs(10), 10 * MIN)]);
             assert!(service.enabled);
             assert_eq!(service.schedule, plan.schedule);
@@ -1010,13 +1167,45 @@ mod tests {
         }
 
         #[test]
-        fn install_steps_hold_opened_files_then_let_them_go() {
-            let app = plain_app();
+        fn install_steps_hold_opened_files_and_quits_then_let_them_go() {
+            let (service, _, restarts, app) = start_recorded(Plan::new(true, env(&[])));
             let queue = || crate::open_queue::lock(&app.state::<Mutex<crate::open_queue::OpenQueue>>()).is_held();
-            on_install_step(app.handle(), InstallStep::Started);
+            let handle = app.handle();
+            assert!(!holds_exit(handle, None));
+
+            (service.hooks.on_install)(InstallStep::Started);
             assert!(queue());
-            on_install_step(app.handle(), InstallStep::Failed);
+            assert!(holds_exit(handle, None), "closing the last window waits");
+            assert!(!holds_exit(handle, Some(0)), "Lintel's own exit is not held");
+            assert!(!holds_exit(handle, Some(tauri::RESTART_EXIT_CODE)), "nor the relaunch");
+
+            (service.hooks.on_install)(InstallStep::Failed);
             assert!(!queue());
+            assert!(!holds_exit(handle, None));
+            assert_eq!(*restarts.lock().unwrap(), 0);
+        }
+
+        #[test]
+        fn a_finished_install_relaunches_through_the_restarter() {
+            let (service, _, restarts, _app) = start_recorded(Plan::new(true, env(&[])));
+            (service.hooks.on_install)(InstallStep::Installed);
+            assert_eq!(*restarts.lock().unwrap(), 1);
+        }
+
+        #[test]
+        fn start_checks_only_if_this_build_and_the_environment_allow_it() {
+            let app = plain_app();
+            let service = start_from_env(app.handle(), env(&[]));
+            assert!(!service.enabled, "a debug build makes no network calls");
+            assert!(!service.scheduled.load(Ordering::SeqCst));
+
+            let app = plain_app();
+            let service = start_from_env(app.handle(), env(&[(TEST_VAR, "1"), (TEST_URL_VAR, STUB)]));
+            service.stop();
+            assert!(service.enabled);
+            assert!(service.scheduled.load(Ordering::SeqCst));
+            assert_eq!(service.schedule, SCHEDULE);
+            assert_eq!(service.feed.options.test_url, Some(Url::parse(STUB).unwrap()));
         }
 
         #[test]
@@ -1084,8 +1273,11 @@ mod tests {
             base
         }
 
-        fn feed_against(url: String, timeout: Duration) -> PluginFeed<MockRuntime> {
-            let mut context = mock_context(noop_assets());
+        const CHECK_LIMIT: Duration = Duration::from_millis(300);
+        const DOWNLOAD_LIMIT: Duration = Duration::from_millis(700);
+
+        fn feed_against(url: String) -> PluginFeed<MockRuntime> {
+            let mut context = crate::test_support::mock_context();
             context.config_mut().plugins.0.insert(
                 "updater".into(),
                 serde_json::json!({ "pubkey": "none", "endpoints": ["https://example.invalid/latest.json"] }),
@@ -1095,8 +1287,8 @@ mod tests {
                 .build(context)
                 .unwrap();
             let options = FeedOptions {
-                check_timeout: timeout,
-                download_timeout: timeout,
+                check_timeout: CHECK_LIMIT,
+                download_timeout: DOWNLOAD_LIMIT,
                 test_url: Some(Url::parse(&url).unwrap()),
             };
             PluginFeed {
@@ -1117,7 +1309,7 @@ mod tests {
         #[test]
         fn a_check_that_gets_no_answer_gives_up_at_its_timeout() {
             let base = hanging_server();
-            let feed = feed_against(format!("{base}/hang"), Duration::from_millis(300));
+            let feed = feed_against(format!("{base}/hang"));
             let result = within(move || run(feed.check()).map(|found| found.is_some()));
             assert!(result.is_err(), "{result:?}");
         }
@@ -1125,9 +1317,9 @@ mod tests {
         #[test]
         fn a_download_that_stalls_gives_up_at_its_own_timeout() {
             let base = hanging_server();
-            let feed = feed_against(format!("{base}/latest.json"), Duration::from_millis(300));
+            let feed = feed_against(format!("{base}/latest.json"));
             let update = within(move || run(feed.check())).unwrap().expect("an update");
-            assert_eq!(update.timeout, Some(Duration::from_millis(300)));
+            assert_eq!(update.timeout, Some(DOWNLOAD_LIMIT), "its own limit, not the check's");
             let result = within(move || run(update.download_bytes()).map(|bytes| bytes.len()));
             assert!(result.is_err(), "{result:?}");
         }

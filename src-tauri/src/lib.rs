@@ -8,6 +8,8 @@ mod remote;
 mod session;
 mod settings;
 mod startup;
+#[cfg(test)]
+mod test_support;
 mod updater;
 mod watch;
 mod windows;
@@ -136,14 +138,19 @@ fn on_second_instance<R: Runtime>(app: &AppHandle<R>, args: Vec<String>, cwd: St
     open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
 }
 
-// macOS passes files from Finder, `open` and the Dock here, not through argv.
 fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: RunEvent) {
+    // Closing the last window waits for an update's install (Ruling 351). On macOS a Dock
+    // Quit or log out never comes here: tao offers no way to refuse them (known-issues.md).
+    if let RunEvent::ExitRequested { code, api, .. } = &event {
+        if updater::holds_exit(app, *code) {
+            api.prevent_exit();
+        }
+    }
+    // macOS passes files from Finder, `open` and the Dock here, not through argv.
     #[cfg(target_os = "macos")]
     if let RunEvent::Opened { urls } = event {
         open_queue::open_from_outside(app, open_queue::paths_from_urls(&urls));
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, event);
 }
 
 /// Lets each webview load the app once; any later top-level navigation, even to the
@@ -306,7 +313,7 @@ mod tests {
     mod open_routes {
         use super::*;
         use std::sync::Arc;
-        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::test::{mock_builder, MockRuntime};
         use tauri::{Listener, WebviewUrl, WebviewWindowBuilder};
 
         type Heard = Arc<Mutex<Vec<String>>>;
@@ -315,7 +322,7 @@ mod tests {
         fn app() -> (tauri::App<MockRuntime>, Heard) {
             let app = mock_builder()
                 .manage(Mutex::new(OpenQueue::default()))
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap();
             let main = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default())
                 .build()
@@ -345,6 +352,25 @@ mod tests {
             let (app, heard) = app();
             setup_app(&app, args(&["lintel", "a.md", "-v"]), Some("/tmp/x".into()));
             assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/x/a.md"]}"#]);
+        }
+
+        #[test]
+        fn setup_also_opens_the_files_held_while_the_last_run_installed_an_update() {
+            let (app, heard) = app();
+            let file = open_queue::held_file(app.handle()).unwrap();
+            assert!(file.starts_with(std::env::temp_dir()), "{}", file.display());
+            let dir = file.parent().unwrap().to_owned();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&file, r#"["/tmp/held.md"]"#).unwrap();
+
+            setup_app(&app, args(&["lintel", "a.md"]), Some("/tmp/x".into()));
+
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [r#"{"paths":["/tmp/x/a.md","/tmp/held.md"]}"#]
+            );
+            assert!(!file.exists(), "they open once");
+            std::fs::remove_dir_all(&dir).unwrap();
         }
 
         #[test]
@@ -502,6 +528,15 @@ mod tests {
                 "https://github.com/robgaskell/lintel/releases/latest/download/latest.json"
             ])
         );
+    }
+
+    // ExitRequestApi cannot be made outside tauri, so the wiring is checked as written;
+    // holds_exit itself is tested in updater.rs.
+    #[test]
+    fn an_exit_request_during_an_install_is_refused() {
+        let lib = include_str!("lib.rs");
+        let wiring = concat!("if updater::holds_exit(app, *code) {\n", "            api.prevent_exit();");
+        assert_eq!(lib.matches(wiring).count(), 1);
     }
 
     // The hook itself is tested in updater.rs.

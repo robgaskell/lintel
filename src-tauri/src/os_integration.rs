@@ -1134,13 +1134,13 @@ mod tests {
 
     mod events {
         use super::*;
-        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::test::mock_builder;
         use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
         type Heard = Arc<Mutex<Vec<serde_json::Value>>>;
 
         fn settings_app() -> (tauri::App<tauri::test::MockRuntime>, Heard) {
-            let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+            let app = mock_builder().build(crate::test_support::mock_context()).unwrap();
             let settings = WebviewWindowBuilder::new(&app, crate::SETTINGS, WebviewUrl::default())
                 .build()
                 .unwrap();

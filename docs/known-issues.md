@@ -12,6 +12,13 @@ On Linux, a drive that ignores letter case, such as a USB stick formatted as FAT
 lets one file be opened as `Notes.md` and as `notes.md`. Lintel then opens it in two tabs,
 and saving one can overwrite edits made in the other. Open each file with one spelling.
 
+## Quitting or logging out during an update
+
+While an update installs, Lintel stays open when its last window is closed. It cannot
+refuse a quit from the Dock, a log out or a shut down, and on macOS these end the install
+part way. Wait for Lintel to relaunch first. If Lintel then does not open, download it
+again from the GitHub releases page.
+
 ## Saving breaks hard links
 
 Lintel saves by writing a new file and moving it over the old one, so a failed save never

@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn while_an_update_installs_opened_files_wait_in_a_file_and_open_if_it_fails() {
-        let dir = crate::session::test_support::temp_dir("held-opens");
+        let dir = crate::test_support::temp_dir("held-opens");
         let file = dir.join(HELD_FILE);
         let sent = Sent::default();
         let mut queue = OpenQueue::default();
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn the_launch_after_an_update_takes_the_kept_files_once() {
-        let dir = crate::session::test_support::temp_dir("held-launch");
+        let dir = crate::test_support::temp_dir("held-launch");
         let file = dir.join(HELD_FILE);
         std::fs::write(&file, r#"["/a.md","/b.md"]"#).unwrap();
 
@@ -481,14 +481,14 @@ mod tests {
     mod in_the_app {
         use super::*;
         use std::sync::Arc;
-        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri::test::mock_builder;
         use tauri::{Listener, WebviewUrl, WebviewWindowBuilder};
 
         #[test]
         fn a_push_after_ready_reaches_only_the_ready_window() {
             let app = mock_builder()
                 .manage(Mutex::new(OpenQueue::default()))
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap();
             let mut heard = Vec::new();
             for label in ["main", "w-1"] {

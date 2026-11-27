@@ -407,7 +407,7 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
         use std::time::Instant;
         use tauri::async_runtime::block_on;
-        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::test::{mock_builder, MockRuntime};
         use tauri::Manager;
 
         const SLOW: Duration = Duration::from_secs(3);
@@ -418,7 +418,7 @@ mod tests {
                     finder,
                     running: Arc::default(),
                 })
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap()
         }
 

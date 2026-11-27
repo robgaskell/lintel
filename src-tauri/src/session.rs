@@ -285,14 +285,14 @@ fn pruned(saved: &str, keep: &HashSet<String>) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+    use tauri::test::{mock_builder, MockRuntime};
 
     /// A window "main" as window-state saved it last time.
     pub const SAVED: &str = r#"{"main":{"width":10,"height":10,"x":0,"y":0,"prev_x":0,"prev_y":0,"maximized":false,"visible":true,"decorated":true,"fullscreen":false}}"#;
 
     /// window-state reads and writes `state`, which holds SAVED until the app is built and
-    /// is then removed, so only a new save makes it again. No window is open: on macOS a
-    /// mock window's frame cannot be read.
+    /// is then removed, so only a new save makes it again. The app's own folders are in
+    /// `state`'s folder. No window is open: on macOS a mock window's frame cannot be read.
     pub fn geometry_app(state: &Path) -> tauri::App<MockRuntime> {
         std::fs::write(state, SAVED).unwrap();
         let window_state = configure(tauri_plugin_window_state::Builder::new())
@@ -300,7 +300,7 @@ pub(crate) mod test_support {
         let app = mock_builder()
             .plugin(window_state.build())
             .plugin(keep_window_sizes())
-            .build(mock_context(noop_assets()))
+            .build(crate::test_support::mock_context_in(state.parent().unwrap()))
             .unwrap();
         std::fs::remove_file(state).unwrap();
         app
@@ -317,25 +317,13 @@ pub(crate) mod test_support {
         Some((entry["width"].as_u64()?, entry["height"].as_u64()?))
     }
 
-    /// A fresh folder per test, so tests can run in parallel.
-    pub fn temp_dir(name: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "lintel-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::test_support::*;
     use super::*;
+    use crate::test_support::temp_dir;
     use std::sync::Arc;
 
     #[test]

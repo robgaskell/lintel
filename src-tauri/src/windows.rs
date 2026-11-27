@@ -632,7 +632,7 @@ mod tests {
     mod in_the_app {
         use super::*;
         use std::sync::Arc;
-        use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+        use tauri::test::{mock_builder, MockRuntime};
         use tauri::{Listener, WebviewUrl, WebviewWindowBuilder};
 
         fn app() -> tauri::App<MockRuntime> {
@@ -640,7 +640,7 @@ mod tests {
                 .manage(PathRegistry::default())
                 .manage(FocusOrder::default())
                 .manage(Mutex::new(OpenQueue::default()))
-                .build(mock_context(noop_assets()))
+                .build(crate::test_support::mock_context())
                 .unwrap()
         }
 

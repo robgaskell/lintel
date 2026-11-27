@@ -201,29 +201,44 @@ fn with_defaults(stored: Option<Value>, default: Option<&Value>) -> Option<Value
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
-    use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+    use tauri::test::{mock_builder, MockRuntime};
     use tauri::{Listener, Manager};
 
     fn app() -> tauri::App<MockRuntime> {
         mock_builder()
             .plugin(tauri_plugin_store::Builder::default().build())
             .manage(SettingsLock::default())
-            .build(mock_context(noop_assets()))
+            .build(crate::test_support::mock_context())
             .unwrap()
     }
 
-    // A fresh file per test, so tests can run in parallel.
-    fn temp_file() -> std::path::PathBuf {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "lintel-settings-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("settings.json")
+    /// A fresh file per test, so tests can run in parallel. Its folder goes when dropped.
+    struct TempFile(std::path::PathBuf);
+
+    impl std::ops::Deref for TempFile {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempFile {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    fn temp_file() -> TempFile {
+        TempFile(crate::test_support::temp_path("settings-test").join("settings.json"))
     }
 
     fn object(value: Value) -> Map<String, Value> {
@@ -429,7 +444,7 @@ mod tests {
             .into_iter()
             .map(|window| {
                 let handle = app.handle().clone();
-                let file = file.clone();
+                let file = file.to_path_buf();
                 let start = Arc::clone(&start);
                 std::thread::spawn(move || {
                     start.wait();
