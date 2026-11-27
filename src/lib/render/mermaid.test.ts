@@ -386,4 +386,23 @@ describe('renderMermaidToSvg', () => {
     expect(config).not.toHaveProperty('htmlLabels');
     expect(config.secure).not.toContain('flowchart');
   });
+
+  it('never lets Word renders push the preview\'s diagrams out of its cache (Ruling 327)', async () => {
+    await renderMermaidIn(page('graph TD; Kept'), 'light');
+    for (let i = 0; i < 80; i++) await renderMermaidToSvg(`graph TD; W${i}`, 'light', { htmlLabels: false });
+    const renders = mermaid.render.mock.calls.length;
+
+    await renderMermaidIn(page('graph TD; Kept'), 'light');
+
+    expect(mermaid.render).toHaveBeenCalledTimes(renders);
+  });
+
+  it('keeps only a few Word renders (Ruling 327)', async () => {
+    for (let i = 0; i < 20; i++) await renderMermaidToSvg(`graph TD; W${i}`, 'light', { htmlLabels: false });
+    await renderMermaidToSvg('graph TD; W19', 'light', { htmlLabels: false });
+    expect(mermaid.render).toHaveBeenCalledTimes(20);
+
+    await renderMermaidToSvg('graph TD; W0', 'light', { htmlLabels: false });
+    expect(mermaid.render).toHaveBeenCalledTimes(21);
+  });
 });

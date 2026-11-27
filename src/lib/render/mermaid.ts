@@ -152,9 +152,12 @@ function errorBox(message: string): HTMLElement {
 // each other out (Ruling 115).
 const MIN_CACHED = 64;
 let capacity = MIN_CACHED;
-const cache = new Map<string, { source: string; outcome: Outcome }>(); // least recently used first
+// Word renders keep their own few, so an export never pushes out the preview's (Ruling 327).
+const WORD_CACHED = 16;
+const caches: Record<Labels, Map<string, { source: string; outcome: Outcome }>> = { html: new Map(), svg: new Map() };
 
 function cached(source: string, theme: DiagramTheme, labels: Labels): Outcome | undefined {
+  const cache = caches[labels];
   const key = cacheKey(source, theme, labels);
   const entry = cache.get(key);
   if (entry?.source !== source) return undefined;
@@ -164,11 +167,13 @@ function cached(source: string, theme: DiagramTheme, labels: Labels): Outcome | 
 }
 
 function remember(source: string, theme: DiagramTheme, labels: Labels, outcome: Outcome) {
+  const cache = caches[labels];
   const key = cacheKey(source, theme, labels);
   cache.delete(key);
   cache.set(key, { source, outcome });
+  const limit = labels === 'svg' ? WORD_CACHED : capacity;
   for (const oldest of cache.keys()) {
-    if (cache.size <= capacity) break;
+    if (cache.size <= limit) break;
     cache.delete(oldest);
   }
 }
