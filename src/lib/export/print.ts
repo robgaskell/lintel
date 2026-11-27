@@ -16,6 +16,10 @@ const PDF_HINTS: Record<Platform, string> = {
 };
 
 let shown: { docId: string; text: string; root: HTMLElement } | null = null;
+// Set from the print call until the next key, click or focus after it returns, as the
+// sheet blocks those; stale checks meanwhile wait for the end (Ruling 311).
+let printing: AbortController | null = null;
+let checkAfterPrint: { active: { id: string; text: string } | undefined } | null = null;
 
 /**
  * Prints the doc as the preview shows it, in the light palette. The root stays in the page
@@ -23,6 +27,7 @@ let shown: { docId: string; text: string; root: HTMLElement } | null = null;
  */
 export async function printDoc(doc: DocState, opts: { pdfHint: boolean }): Promise<void> {
   if (opts.pdfHint) await message(PDF_HINTS[currentPlatform()], { title: 'Export as PDF', kind: 'info' });
+  endPrint();
   dropPrintRoot();
   const root = document.createElement('div');
   root.className = 'print-root';
@@ -38,8 +43,18 @@ export async function printDoc(doc: DocState, opts: { pdfHint: boolean }): Promi
   }
   // Replaced by a later print, or dropped as stale.
   if (shown?.root !== root) return;
-  // On macOS Tauri's override returns a promise, which rejects without core:webview:allow-print.
-  await (window.print() as unknown);
+  const ended = new AbortController();
+  printing = ended;
+  try {
+    // On macOS Tauri's override returns a promise, which rejects without core:webview:allow-print.
+    await (window.print() as unknown);
+  } catch (err) {
+    endPrint();
+    throw err;
+  }
+  for (const type of ['keydown', 'pointerdown', 'focus']) {
+    window.addEventListener(type, () => endPrint(), { capture: true, once: true, signal: ended.signal });
+  }
 }
 
 /**
@@ -68,7 +83,20 @@ export async function renderFrozen(doc: Pick<DocState, 'id' | 'path' | 'text'>, 
 
 /** Drops the print root unless `active`, this window's active doc, is the one printed as it was. */
 export function dropStalePrintRoot(active: { id: string; text: string } | undefined): void {
+  if (printing) {
+    checkAfterPrint = { active };
+    return;
+  }
   if (shown && (shown.docId !== active?.id || shown.text !== active.text)) dropPrintRoot();
+}
+
+// Ends the print in progress and runs the stale check it held back.
+function endPrint() {
+  printing?.abort();
+  printing = null;
+  const held = checkAfterPrint;
+  checkAfterPrint = null;
+  if (held) dropStalePrintRoot(held.active);
 }
 
 function dropPrintRoot() {

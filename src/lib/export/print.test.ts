@@ -2,17 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { message } from '@tauri-apps/plugin-dialog';
 import type { DocState } from '../docs/store.svelte';
-import { fetchRemoteImage, readImageAsDataUri } from '../ipc';
+import { createDoc } from '../docs/store.svelte';
+import { handleFileChanged } from '../docs/reload';
+import { fetchRemoteImage, readImageAsDataUri, readTextFile } from '../ipc';
 import { currentPlatform } from '../os/platform';
 import { DEFAULT_SETTINGS, settings, type Settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
+import { renderMarkdown } from '../render/markdown';
 import { dropStalePrintRoot, printDoc } from './print';
 
 vi.mock('../ipc', () => ({
   readImageAsDataUri: vi.fn(),
   fetchRemoteImage: vi.fn(),
+  readTextFile: vi.fn(),
   setWindowAppearance: vi.fn(async () => {}),
 }));
+vi.mock('../render/markdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../render/markdown')>();
+  return { ...actual, renderMarkdown: vi.fn(actual.renderMarkdown) };
+});
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
   updateSettings: vi.fn(async () => {}),
@@ -62,7 +70,13 @@ beforeEach(() => {
   );
 });
 
+// The print sheet has closed: the user pressed a key (Ruling 311).
+function endPrint() {
+  window.dispatchEvent(new KeyboardEvent('keydown'));
+}
+
 afterEach(() => {
+  endPrint();
   dropStalePrintRoot(undefined);
   applyTheme(withTheme('light'));
 });
@@ -184,6 +198,7 @@ describe('printDoc', () => {
   it('drops the root when its text changes (Ruling 302)', async () => {
     const printedDoc = doc('# Kept\n');
     await printDoc(printedDoc, { pdfHint: false });
+    endPrint();
 
     dropStalePrintRoot({ id: printedDoc.id, text: '# Kept, edited\n' });
     expect(document.querySelector('.print-root')).toBeNull();
@@ -191,10 +206,12 @@ describe('printDoc', () => {
 
   it('drops the root when another tab or none is active (Ruling 302)', async () => {
     await printDoc(doc('# Kept\n'), { pdfHint: false });
+    endPrint();
     dropStalePrintRoot({ id: 'other', text: '# Kept\n' });
     expect(document.querySelector('.print-root')).toBeNull();
 
     await printDoc(doc('# Kept\n'), { pdfHint: false });
+    endPrint();
     dropStalePrintRoot(undefined);
     expect(document.querySelector('.print-root')).toBeNull();
   });
@@ -224,6 +241,9 @@ describe('printDoc', () => {
   it('rejects when the print call rejects, so the menu shows the error (Ruling 303)', async () => {
     print.mockImplementationOnce(() => Promise.reject(new Error('print is not allowed')) as never);
     await expect(printDoc(doc('# A\n'), { pdfHint: false })).rejects.toThrow('print is not allowed');
+    // No print is in progress, so a stale root goes at once.
+    dropStalePrintRoot({ id: 'other', text: '' });
+    expect(document.querySelector('.print-root')).toBeNull();
   });
 
   it('sets up no resize observer for the print preview (Ruling 304)', async () => {
@@ -243,6 +263,87 @@ describe('printDoc', () => {
       globalThis.ResizeObserver = Original;
     }
     expect(made).not.toHaveBeenCalled();
+  });
+
+  it('keeps the root through an outside reload during the print, until the next key (Ruling 311)', async () => {
+    const reloaded = createDoc({ path: '/notes/reloaded.md', raw: '# Before\n', hash: 'h1', mode: 'read' });
+    vi.mocked(readTextFile).mockResolvedValue({ text: '# After\n', hash: 'h2' } as never);
+    // What App's effect does whenever the active doc or its text changes.
+    const appEffect = () => dropStalePrintRoot({ id: reloaded.id, text: reloaded.text });
+    // On macOS print returns before its sheet opens; the reload lands while it is up.
+    await printDoc(reloaded, { pdfHint: false });
+    await handleFileChanged({ path: '/notes/reloaded.md', hash: 'h2' } as never);
+    expect(reloaded.text).toBe('# After\n');
+    appEffect();
+
+    const root = document.querySelector('.print-root');
+    expect(root?.isConnected).toBe(true);
+    expect(root!.querySelector('h1')!.textContent).toBe('Before');
+
+    endPrint();
+    expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('keeps the root when a stale check comes during the print call itself (Ruling 311)', async () => {
+    const printedDoc = doc('# Kept\n');
+    print.mockImplementationOnce(() => {
+      dropStalePrintRoot({ id: 'other', text: '' });
+      printed.push({ root: document.querySelector('.print-root'), html: '', connected: true });
+    });
+    await printDoc(printedDoc, { pdfHint: false });
+    expect(document.querySelector('.print-root')).not.toBeNull();
+  });
+
+  it.each([
+    ['a key', () => window.dispatchEvent(new KeyboardEvent('keydown'))],
+    ['a click', () => window.dispatchEvent(new Event('pointerdown'))],
+    ['focus', () => window.dispatchEvent(new FocusEvent('focus'))],
+  ])('ends the print at %s, then drops a root that went stale meanwhile (Ruling 311)', async (_name, input) => {
+    const printedDoc = doc('# Kept\n');
+    await printDoc(printedDoc, { pdfHint: false });
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+    expect(document.querySelector('.print-root')).not.toBeNull();
+
+    input();
+    expect(document.querySelector('.print-root')).toBeNull();
+  });
+
+  it('keeps the root at the end of the print when the latest check found it current (Ruling 311)', async () => {
+    const printedDoc = doc('# Kept\n');
+    await printDoc(printedDoc, { pdfHint: false });
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Edited\n' });
+    dropStalePrintRoot({ id: printedDoc.id, text: '# Kept\n' });
+
+    endPrint();
+    expect(document.querySelector('.print-root')).not.toBeNull();
+  });
+
+  it('drops the root and prints nothing when rendering fails (Ruling 302)', async () => {
+    vi.mocked(renderMarkdown).mockImplementationOnce(() => {
+      throw new Error('render failed');
+    });
+    await expect(printDoc(doc('# A\n'), { pdfHint: false })).rejects.toThrow('render failed');
+    expect(document.querySelector('.print-root')).toBeNull();
+    expect(print).not.toHaveBeenCalled();
+  });
+
+  it('waits for the copied images to decode before printing (Ruling 302)', async () => {
+    let decoded!: () => void;
+    const decode = vi.fn(() => new Promise<void>((resolve) => (decoded = resolve)));
+    const original = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = decode;
+    try {
+      const printing = printDoc(doc('![Chart](img/c.png)\n'), { pdfHint: false });
+      await vi.waitFor(() => expect(decode).toHaveBeenCalled());
+      await later(null);
+      expect(print).not.toHaveBeenCalled();
+
+      decoded();
+      await printing;
+      expect(print).toHaveBeenCalledTimes(1);
+    } finally {
+      HTMLImageElement.prototype.decode = original;
+    }
   });
 
   it.each([

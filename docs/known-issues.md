@@ -108,5 +108,5 @@ tried yet. The release smoke test checks it.
 
 On Windows, the WebView2 browser engine has its own Ctrl+P shortcut, and Lintel does not
 turn off WebView2's own print shortcut yet. Ctrl+P prints a blank page; use File > Print.
-Straight after File > Print, Ctrl+P can print that same document again, until you edit it
-or switch tabs.
+Straight after File > Print, Ctrl+P can print that same document again, until you edit it,
+switch tabs, or it reloads from disk.
