@@ -66,23 +66,35 @@ const HANDOFF_WAIT_MS = 30_000;
 
 type QuitOrder = Pick<Workspace, 'docIdsInOrder' | 'activate'>;
 
-let quitting: Promise<void> | null = null;
+/** 'proceed': the round passed every prompt and ran the `then` it started with. */
+export type QuitOutcome = 'cancelled' | 'proceed';
+
+let quitting: Promise<QuitOutcome> | null = null;
 // The window running a quit round elsewhere, as announced by QUIT_ROUND.
 let roundElsewhere: string | null = null;
 
+/** Exits once every window's prompts have passed (Rulings 32, 211). */
+export async function quitApp(workspace?: QuitOrder): Promise<void> {
+  await runQuitRounds(workspace, () => exit(0));
+}
+
 /**
  * Asks every document window, this one first, about its dirty docs and saves its session,
- * then exits. Cancel in any window stops the quit and closes nothing (Rulings 32, 211).
- * A Cmd+Q while a quit round is running joins that round (Ruling 219).
+ * then runs `then`: exit, or install an update (Ruling 343). Cancel in any window stops the
+ * round and closes nothing. A call while a round runs joins it; its own `then` never runs
+ * (Ruling 219).
  */
-export async function quitApp(workspace?: QuitOrder): Promise<void> {
+export async function runQuitRounds(
+  workspace: QuitOrder | undefined,
+  then: () => Promise<unknown>,
+): Promise<QuitOutcome> {
   if (quitting) return quitting;
   if (answering) {
     await answering.catch(() => {});
-    return;
+    return 'cancelled';
   }
-  if (await roundRunsElsewhere()) return;
-  quitting ??= runQuit(workspace).finally(() => (quitting = null));
+  if (await roundRunsElsewhere()) return 'cancelled';
+  quitting ??= runQuit(workspace, then).finally(() => (quitting = null));
   return quitting;
 }
 
@@ -108,13 +120,16 @@ export function listenForQuitRequests(): () => void {
   };
 }
 
-async function runQuit(workspace?: QuitOrder): Promise<void> {
+async function runQuit(
+  workspace: QuitOrder | undefined,
+  then: () => Promise<unknown>,
+): Promise<QuitOutcome> {
   const self = getCurrentWindow().label;
   const round = crypto.randomUUID();
   await announceRound(self, true);
   try {
     // Docs on their way between windows land first, and the window list is read after.
-    if (!(await handoffsQuiet())) return;
+    if (!(await handoffsQuiet())) return 'cancelled';
     // After the first pass, every window is asked again until a pass shows no prompt, so a
     // doc taken in, edited or made dirty after its window answered is asked about (Ruling 237).
     const abandoned = new Set<string>();
@@ -123,19 +138,21 @@ async function runQuit(workspace?: QuitOrder): Promise<void> {
       let asked = false;
       for (const label of labels.filter((label) => !abandoned.has(label))) {
         const answer = label === self ? await answerQuit(self, round, workspace) : await askWindow(label, round);
-        if (!answer.ok) return;
+        if (!answer.ok) return 'cancelled';
         if (answer.abandoned) abandoned.add(label);
         asked ||= answer.asked;
       }
-      if (!(await handoffsQuiet())) return;
+      if (!(await handoffsQuiet())) return 'cancelled';
       if (pass > 0 && !asked) break;
     }
     // Size stays with Rust: on macOS a docked Web Inspector shrinks the size read here.
     await saveWindowState(GEOMETRY).catch((err) => console.error('Could not save window positions:', err));
-    // exit() raises no close-requested event, so the window prompt does not run again.
-    await exit(0);
+    // Neither exit nor an update's relaunch raises close-requested, so no prompt runs again.
+    await then();
+    return 'proceed';
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
+    return 'cancelled';
   } finally {
     await announceRound(self, false);
   }

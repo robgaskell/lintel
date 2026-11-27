@@ -14,6 +14,7 @@ import {
   QUIT_REQUEST,
   QUIT_ROUND,
   quitApp,
+  runQuitRounds,
   type QuitRequestEvent,
 } from './quit';
 import { forgetWindowSession, saveWindowSession } from './session';
@@ -739,5 +740,63 @@ describe('a quit round before exit (Ruling 237)', () => {
 
     expect(messageDialog).toHaveBeenCalledTimes(2);
     expect(exitApp).not.toHaveBeenCalled();
+  });
+});
+
+describe('runQuitRounds for an update (Ruling 343)', () => {
+  it('runs its own step, not exit, once every window has answered yes and saved', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    windowAnswering('w-1');
+    const install = vi.fn(async () => {});
+
+    expect(await runQuitRounds(undefined, install)).toBe('proceed');
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(exitApp).not.toHaveBeenCalled();
+    expect(vi.mocked(saveWindowSession).mock.calls).toEqual([['main'], ['w-1']]);
+    expect(vi.mocked(saveWindowState).mock.invocationCallOrder[0]).toBeLessThan(install.mock.invocationCallOrder[0]);
+  });
+
+  it('returns cancelled on Cancel, so nothing installs and the update stays ready', async () => {
+    dirtyDoc('/a.md');
+    messageDialog.mockResolvedValue('Cancel');
+    const install = vi.fn(async () => {});
+
+    expect(await runQuitRounds(undefined, install)).toBe('cancelled');
+
+    expect(install).not.toHaveBeenCalled();
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('says why a failed install failed, and quits nothing', async () => {
+    const install = vi.fn(async () => {
+      throw 'No update is ready to install.';
+    });
+
+    expect(await runQuitRounds(undefined, install)).toBe('cancelled');
+
+    expect(messageDialog).toHaveBeenCalledWith(
+      'No update is ready to install.',
+      expect.objectContaining({ kind: 'error' }),
+    );
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('a Quit during the update round joins it, so it never exits over the install', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    windowAnswering('w-1');
+    const install = vi.fn(async () => {});
+
+    await Promise.all([runQuitRounds(undefined, install), quitApp()]);
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('quitApp still exits, once', async () => {
+    await quitApp();
+
+    expect(exitApp).toHaveBeenCalledOnce();
+    expect(exitApp).toHaveBeenCalledWith(0);
   });
 });
