@@ -1,16 +1,15 @@
 name: Release
 
-# A v* tag builds every installer and puts them on a draft release. A manual run
-# builds and signs the same way but uploads nothing.
+# A v* tag builds every installer, signs the updates and puts them on one draft release.
+# A manual run builds and signs the same way but releases nothing.
+# Ruling 342: the signing key and a write token never reach a job that runs build code.
 on:
   push:
     tags: ['v*']
-    # GitHub does not apply path filters to tag pushes; kept for the repo rule.
-    paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -22,17 +21,19 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.16.0
           cache: pnpm
 
       # cargo tree and cargo metadata only; nothing is compiled.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-27
         with:
           toolchain: 1.97.1
 
@@ -48,29 +49,34 @@ jobs:
           test "$GITHUB_REF_NAME" = "v$version" || { echo "Tag $GITHUB_REF_NAME does not match app version $version"; exit 1; }
 
   build:
-    name: ${{ matrix.os }}
+    name: build ${{ matrix.os }}
     needs: check
-    # Creates the draft release on a tag.
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
-            args: --target universal-apple-darwin
+            bundle: macos
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
           - os: windows-latest
+            bundle: windows
           - os: ubuntu-22.04
+            bundle: linux-x64
           - os: ubuntu-22.04-arm
+            bundle: linux-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.16.0
           cache: pnpm
@@ -81,23 +87,190 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev build-essential
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-27
         with:
           toolchain: 1.97.1
           targets: ${{ matrix.rust-targets }}
 
       - run: pnpm install --frozen-lockfile
 
-      # tauri.conf.json picks the packages for each OS. With no tag name, nothing is uploaded.
-      - uses: tauri-apps/tauri-action@v1
+      - run: echo "VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
+
+      # The bundler signs the app ad hoc with Apple's codesign, which needs no key.
+      # Without updater artifacts it asks for no updater key either.
+      - name: Build the app and .dmg
+        if: runner.os == 'macOS'
+        run: pnpm tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Build the installers
+        if: runner.os != 'macOS'
+        run: pnpm tauri build --no-sign
+
+      # The update archive has the bundler's layout: Lintel.app at the top. No AppleDouble
+      # files, which would break the app's seal.
+      - name: Collect the macOS bundles
+        if: runner.os == 'macOS'
+        run: |
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          mkdir out
+          cp "$bundle/dmg/Lintel_${VERSION}_universal.dmg" out/
+          COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "out/Lintel_${VERSION}_universal.app.tar.gz" -C "$bundle/macos" Lintel.app
+
+      - name: Check the ad hoc signature in the .app, the archive and the .dmg
+        if: runner.os == 'macOS'
+        run: |
+          codesign --verify --deep --strict --verbose=2 src-tauri/target/universal-apple-darwin/release/bundle/macos/Lintel.app
+          mkdir unpacked
+          tar -xzf "out/Lintel_${VERSION}_universal.app.tar.gz" -C unpacked
+          codesign --verify --deep --strict --verbose=2 unpacked/Lintel.app
+          codesign -dv unpacked/Lintel.app 2>&1 | grep -E 'Signature=adhoc'
+          archs=$(lipo -archs unpacked/Lintel.app/Contents/MacOS/lintel)
+          echo "Architectures: $archs"
+          [[ $archs == *x86_64* && $archs == *arm64* ]]
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "out/Lintel_${VERSION}_universal.dmg"
+          codesign --verify --deep --strict --verbose=2 "$mnt/Lintel.app"
+          hdiutil detach "$mnt" || hdiutil detach -force "$mnt"
+
+      - name: Collect the Windows installer
+        if: runner.os == 'Windows'
+        run: |
+          mkdir out
+          cp "src-tauri/target/release/bundle/nsis/Lintel_${VERSION}_x64-setup.exe" out/
+
+      - name: Collect the Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          mkdir out
+          cp src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm out/
+
+      # The signing job checks these, so it signs the bytes built here.
+      - name: Checksums
+        working-directory: out
+        run: |
+          if command -v sha256sum >/dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
+          $sum -- * > "../SHA256SUMS-${{ matrix.bundle }}"
+          mv "../SHA256SUMS-${{ matrix.bundle }}" .
+          cat "SHA256SUMS-${{ matrix.bundle }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundle-${{ matrix.bundle }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+
+  # Runs only the Tauri signer and scripts/release.mjs (Node built-ins): no install, no build.
+  sign:
+    name: sign the updates
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.16.0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundle-*
+          path: release
+          merge-multiple: true
+
+      - name: Check the bundles arrived unchanged
+        working-directory: release
+        run: |
+          sha256sum -c SHA256SUMS-*
+          rm SHA256SUMS-*
+
+      - name: Install the Tauri signer
+        run: |
+          version=$(node -p "require('./package.json').devDependencies['@tauri-apps/cli']")
+          mkdir "$RUNNER_TEMP/signer"
+          cd "$RUNNER_TEMP/signer"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "@tauri-apps/cli@$version"
+
+      - name: List the files to sign
+        run: |
+          echo "VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
+          node scripts/release.mjs updaters > "$RUNNER_TEMP/updaters.txt"
+          cat "$RUNNER_TEMP/updaters.txt"
+
+      - name: Sign the updates
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          while read -r file; do
+            "$RUNNER_TEMP/signer/node_modules/.bin/tauri" signer sign --app-version "$VERSION" "release/$file"
+          done < "$RUNNER_TEMP/updaters.txt"
+
+      - run: node scripts/release.mjs manifest release
+
+      # Fails unless every latest.json key has a signature that tauri.conf.json's key accepts.
+      - name: Check latest.json and every signature
+        run: |
+          node scripts/release.mjs check release
+          cat release/latest.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
-          releaseName: Lintel ${{ github.ref_name }}
-          releaseBody: See the README for install steps on each system.
-          releaseDraft: true
-          uploadUpdaterJson: true
-          args: ${{ matrix.args }}
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 3
+
+  # The one job that may write. It runs no build code and holds no signing key.
+  publish:
+    name: draft release
+    needs: sign
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: CI passed on the tagged commit
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq .total_count)
+          test "$passed" -gt 0 || { echo "CI has not passed on $GITHUB_SHA"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.16.0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      - run: node scripts/release.mjs check release
+
+      - name: Create the draft release
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release for $TAG already exists"
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Lintel $TAG" --notes "See the README for install steps on each system." release/*
+
+      - name: Check there is one draft and its files verify
+        run: |
+          count=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq "[.[] | select(.tag_name == \"$TAG\")] | length" | awk '{n += $1} END {print n}')
+          test "$count" = 1 || { echo "Expected one release for $TAG, found $count"; exit 1; }
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir uploaded
+          node scripts/release.mjs check uploaded

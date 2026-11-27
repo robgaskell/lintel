@@ -1,3 +1,5 @@
 # Generated notices and the licence texts they print are compared byte for byte.
 THIRD_PARTY_NOTICES.md text eol=lf
 scripts/licence-texts/** text eol=lf
+# Signed release fixtures are compared byte for byte.
+scripts/fixtures/release/** -text
