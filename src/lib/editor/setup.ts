@@ -34,9 +34,10 @@ const lock = { on: false };
 export const lockExempt = Annotation.define<boolean>();
 
 /**
- * While locked, keys other than moving and copying, paste, cut, drop and typed input are
- * swallowed before any other handler, so no command runs from them; and any document
- * change not marked lockExempt is dropped, whatever made it.
+ * While locked, keys (except moving and copying), typed input, paste, cut and drop are
+ * swallowed before any other handler, and the change filter drops changes not marked
+ * lockExempt. History changes skip that filter, so history is blocked at its keys; selection
+ * undo and redo, which ignore read-only, have their keys bound to nothing here.
  */
 export function lockExtension(locked: boolean): Extension {
   if (!locked) return [];
@@ -52,14 +53,17 @@ export function lockExtension(locked: boolean): Extension {
         beforeinput: (event) => swallow(event),
       }),
     ),
+    Prec.highest(keymap.of(SELECTION_HISTORY_KEYS.map((key) => ({ key, run: () => true })))),
     EditorState.transactionFilter.of((tr) => (tr.docChanged && !tr.annotation(lockExempt) ? [] : tr)),
   ];
 }
 
+// historyKeymap's undoSelection and redoSelection keys, on every platform.
+const SELECTION_HISTORY_KEYS = ['Mod-u', 'Alt-u', 'Mod-Shift-u'];
+
 const MOVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
 const LONE_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'Escape']);
-// With Cmd or Ctrl: copy, select all, find, find next and previous. Shift+C inserts a
-// code block, so case matters.
+// With Cmd or Ctrl: copy, select all, find, find next; with Shift too, find previous.
 const COPY_KEYS = new Set(['c', 'a', 'f', 'g', 'G']);
 
 // Alt with an arrow moves or copies lines, so it is not a plain move.
@@ -67,7 +71,15 @@ function movesOrCopies(event: KeyboardEvent): boolean {
   if (LONE_MODIFIERS.has(event.key)) return true;
   if (MOVE_KEYS.has(event.key)) return !event.altKey;
   const mod = event.metaKey || event.ctrlKey;
-  return mod && !event.altKey && COPY_KEYS.has(event.key);
+  return mod && !event.altKey && COPY_KEYS.has(event.key) && copyKeyIsWhatItSays(event);
+}
+
+// CodeMirror also looks a key up by its keyCode, so a 'c' with U's keyCode runs Mod-u.
+// Shift is for find previous only: Caps Lock turns Mod-Shift-c (code block) into 'c'.
+function copyKeyIsWhatItSays(event: KeyboardEvent): boolean {
+  const letter = event.key.toLowerCase();
+  if (event.keyCode !== letter.toUpperCase().charCodeAt(0)) return false;
+  return !event.shiftKey || letter === 'g';
 }
 
 function swallow(event: Event, allowed = false): boolean {

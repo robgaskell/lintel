@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { EditorState, Prec } from '@codemirror/state';
-import { EditorView, type KeyBinding } from '@codemirror/view';
+import { EditorView, runScopeHandlers, type KeyBinding } from '@codemirror/view';
 import { defaultKeymap, historyKeymap, redo, redoSelection, undo, undoSelection } from '@codemirror/commands';
 import { markdownKeymap } from '@codemirror/lang-markdown';
 import {
@@ -15,6 +15,7 @@ import * as commands from './commands';
 import { editorExtensions, lockCompartment, lockExempt, lockExtension } from './setup';
 import { registerView, setEditorsLocked } from './views';
 import { fixAll, fixOne, lintText } from '../lint/lint';
+import { eventFor, selectionHistoryKeys } from '../../test/lockKeys';
 
 // Every editing path a 922-path probe found (verifier, Ruling 353), on a locked editor.
 
@@ -118,6 +119,34 @@ function paste(view: EditorView, text: string) {
   view.contentDOM.dispatchEvent(event);
 }
 
+/** A locked editor with a handler just below the lock that records what reaches it. */
+function spied(): { view: EditorView; heard: string[] } {
+  const heard: string[] = [];
+  const spy = (event: Event) => {
+    heard.push(event instanceof KeyboardEvent ? event.key : event.type);
+    return false;
+  };
+  const view = new EditorView({
+    parent: document.body,
+    state: EditorState.create({
+      doc: '- item',
+      selection: { anchor: 6 },
+      extensions: [
+        editorExtensions(() => {}),
+        Prec.high(EditorView.domEventHandlers({ keydown: spy, paste: spy, cut: spy, drop: spy, beforeinput: spy })),
+      ],
+    }),
+  });
+  const forget = registerView(`lock-spy-${open.length}`, view);
+  open.push(() => {
+    forget();
+    view.destroy();
+  });
+  view.focus();
+  setEditorsLocked(true);
+  return { view, heard };
+}
+
 /** Runs `act` on each doc, both history variants, and returns the paths that edited. */
 function edits(name: string, act: (view: EditorView) => void, locked = true): string[] {
   // One editor, given each state in turn: thousands of editors would slow jsdom down.
@@ -208,39 +237,42 @@ describe('the editor lock (Rulings 349, 353)', () => {
     expect(edited).toEqual([]);
   });
 
-  it('lets no other handler see a key, paste, drop or typed input, but moving and copying', () => {
-    const heard: string[] = [];
-    const spy = (event: Event) => {
-      heard.push(event instanceof KeyboardEvent ? event.key : event.type);
-      return false;
-    };
-    const view = new EditorView({
-      parent: document.body,
-      state: EditorState.create({
-        doc: '- item',
-        selection: { anchor: 6 },
-        extensions: [
-          editorExtensions(() => {}),
-          Prec.high(EditorView.domEventHandlers({ keydown: spy, paste: spy, drop: spy, beforeinput: spy })),
-        ],
-      }),
-    });
-    const forget = registerView('lock-spy', view);
-    open.push(() => {
-      forget();
-      view.destroy();
-    });
-    view.focus();
-    setEditorsLocked(true);
-
+  it('lets no other handler see a key, paste, cut, drop or typed input, but moving and copying', () => {
+    const { view, heard } = spied();
     for (const [, init] of KEYS) key(view, init);
     paste(view, 'https://example.com');
-    for (const type of ['drop', 'beforeinput']) view.contentDOM.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+    for (const type of ['cut', 'drop', 'beforeinput']) {
+      view.contentDOM.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+    }
     expect(heard).toEqual([]);
 
     key(view, { key: 'ArrowLeft', keyCode: 37 });
     key(view, { key: 'c', keyCode: 67, ctrlKey: true });
     expect(heard).toEqual(['ArrowLeft', 'c']);
+  });
+
+  // A key named c whose keyCode is U ran selection undo through CodeMirror's keyCode
+  // fallback; Caps Lock with Shift sends c and ran insert code block (Ruling 354).
+  it('swallows a copy key whose keyCode is another letter, and copy keys with Shift', () => {
+    const odd: [string, KeyboardEventInit][] = [
+      ['Ctrl+c with the keyCode of U', { key: 'c', keyCode: 85, ctrlKey: true }],
+      ['Caps Lock Ctrl+Shift+c', { key: 'c', keyCode: 67, ctrlKey: true, shiftKey: true }],
+    ];
+    // Before spied(): its lock would also lock the states edits() makes.
+    const edited = odd.flatMap(([name, init]) => edits(name, (v) => key(v, init)));
+    const { view, heard } = spied();
+    for (const [, init] of odd) key(view, init);
+    expect(edited).toEqual([]);
+    expect(heard).toEqual([]);
+  });
+
+  it('binds every selection undo and redo key to nothing', () => {
+    // Straight to the keymaps, as the keyCode fallback would reach them past the key check.
+    const run = (name: string) => (v: EditorView) =>
+      runScopeHandlers(v, new KeyboardEvent('keydown', eventFor(name, false)), 'editor');
+    const names = selectionHistoryKeys(editor('', { anchor: 0 }));
+    expect(names.flatMap((name) => edits(name, run(name), false))).not.toEqual([]);
+    expect(names.flatMap((name) => edits(name, run(name)))).toEqual([]);
   });
 
   it('still moves the cursor, and takes the file’s own text from disk', () => {

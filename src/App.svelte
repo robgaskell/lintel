@@ -362,8 +362,9 @@
     gap: 12px;
   }
 
-  /* Blocks the mouse. The editor lock (setup.ts) swallows keys, paste and drop, and drops
-     every edit; close requests are refused. */
+  /* Blocks the mouse; close requests are refused. The editor lock (setup.ts) swallows keys
+     (except moving and copying), typed input, paste, cut and drop, and its change filter
+     drops other changes. History changes skip that filter, so history is blocked at its keys. */
   .installing {
     position: fixed;
     inset: 0;
