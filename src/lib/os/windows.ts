@@ -149,16 +149,16 @@ async function moveToNewWindow(docId: string): Promise<void> {
 }
 
 /**
- * Takes in docs handed over by other windows, then tells them this window is ready.
- * Returns a function that stops listening.
+ * Takes in docs handed over by other windows, then tells them this window is ready, once
+ * `alsoReady` (the file listeners) has settled too. Returns a function that stops listening.
  */
-export function listenForAdoption(): () => void {
+export function listenForAdoption(alsoReady: Promise<void> = Promise.resolve()): () => void {
   const label = getCurrentWindow().label;
   const stop = listenHere<AdoptDocEvent>(label, ADOPT_DOC, (event) => {
     // Counted as a hand-over, so a quit round waits until the doc is in (Ruling 235).
     trackHandoff(adopt(label, event).catch((err) => console.error('Could not take in the document:', err)));
   });
-  void stop.ready
+  void Promise.all([stop.ready, alsoReady])
     .then(() => emit(WINDOW_READY, { label } satisfies WindowReadyEvent))
     .catch((err) => console.error('Could not announce the window:', err));
   return stop.stop;

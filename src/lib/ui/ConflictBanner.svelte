@@ -4,7 +4,7 @@
 </script>
 
 <div class="conflict" role="alert">
-  <span><strong>{fileName} changed on disk</strong> while you have unsaved edits.</span>
+  <span class="message"><strong>{fileName} changed on disk</strong> while you have unsaved edits.</span>
   <!-- One row, so a later "Compare" button can join it (spec: room for a diff view). -->
   <span class="actions">
     <button type="button" class="keep" onclick={onKeep}>Keep my edits</button>
@@ -16,7 +16,7 @@
   /* The Reload artboard's amber, mixed from the theme so it holds in dark mode too. */
   .conflict {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
@@ -27,13 +27,21 @@
     font-size: 13px;
   }
 
+  /* The buttons stay on one line; a narrow pane wraps the message instead (Ruling 265). */
+  .message {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .actions {
     display: flex;
-    flex-wrap: wrap;
+    flex: none;
+    flex-wrap: nowrap;
     gap: 8px;
   }
 
   button {
+    white-space: nowrap;
     height: 30px;
     padding: 0 12px;
     border-radius: 6px;

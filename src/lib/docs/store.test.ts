@@ -25,6 +25,7 @@ import {
   saveSettled,
   setTabShower,
   saveDocAs,
+  setWatchFailureReporter,
   untitledCounter,
 } from './store.svelte';
 
@@ -855,5 +856,18 @@ describe('watching files on disk (Ruling 257)', () => {
 
     expect(watch.mock.calls).toEqual([['/notes/new.md', 'h1']]);
     expect(unwatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('a watch that fails (Ruling 265)', () => {
+  it('is reported, so the window can say live reload is off', async () => {
+    const report = vi.fn();
+    setWatchFailureReporter(report);
+    vi.mocked(watchPath).mockRejectedValueOnce('Could not watch /notes: too many open files');
+
+    createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h-a', mode: 'edit' });
+
+    await vi.waitFor(() => expect(report).toHaveBeenCalledWith('Could not watch /notes: too many open files'));
+    setWatchFailureReporter(() => {});
   });
 });

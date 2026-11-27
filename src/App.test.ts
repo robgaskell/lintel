@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
-import { listenForFileEvents, setReloadNoticeShower } from './lib/docs/reload';
-import { createDoc, docs } from './lib/docs/store.svelte';
+import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
+import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
 import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
@@ -40,6 +40,7 @@ vi.mock('./lib/layout/workspace', () => ({
       return () => fake.layoutListeners.delete(cb);
     }
     isAloneInGroup = (id: string) => fake.alone.has(id);
+    isVisible = (id: string) => id === fake.active;
     dispose() {}
   },
 }));
@@ -77,6 +78,10 @@ vi.mock('./lib/os/open', () => ({
   openPaths: vi.fn(async () => {}),
   newUntitled: vi.fn(),
   largeFileNotices: new Set(),
+}));
+vi.mock('./lib/docs/store.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/docs/store.svelte')>()),
+  setWatchFailureReporter: vi.fn(),
 }));
 vi.mock('./lib/docs/reload', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./lib/docs/reload')>()),
@@ -534,5 +539,14 @@ describe('App live reload (M5.3)', () => {
     setActive(a.id);
 
     expect(a.external).toBe('none');
+  });
+});
+
+describe('App live reload switched off (Ruling 265)', () => {
+  it('hands the store the reporter, and announces the window once the file listeners are ready', () => {
+    render(App);
+
+    expect(setWatchFailureReporter).toHaveBeenCalledWith(reportLiveReloadOff);
+    expect(listenForAdoption).toHaveBeenCalledWith(fake.fileEventsReady);
   });
 });

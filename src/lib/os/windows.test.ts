@@ -773,3 +773,16 @@ describe('reveal while the session restores (Ruling 205)', () => {
     expect(sent.map(([, p]) => p)).toEqual([{ path: '/notes/other.md', shown: false }]);
   });
 });
+
+describe('listenForAdoption and the file listeners (Ruling 265)', () => {
+  it('announces the window only once the other listeners it is given are ready too', async () => {
+    let fileListenersReady = () => {};
+    listenForAdoption(new Promise((resolve) => (fileListenersReady = resolve)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(emit).not.toHaveBeenCalledWith(WINDOW_READY, expect.anything());
+
+    fileListenersReady();
+
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(WINDOW_READY, { label: 'main' }));
+  });
+});

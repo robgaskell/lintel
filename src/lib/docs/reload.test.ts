@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listen } from '@tauri-apps/api/event';
+import { message } from '@tauri-apps/plugin-dialog';
 import { undo } from '@codemirror/commands';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type ChangeSet } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { FILE_CHANGED, FILE_REMOVED, readTextFile, writeTextFile } from '../ipc';
+import { FILE_CHANGED, FILE_REMOVED, pathsExist, readTextFile, writeTextFile } from '../ipc';
 import { editorExtensions } from '../editor/setup';
 import { registerView, setActiveDocSource } from '../editor/views';
 import {
+  followWorkspace,
   handleFileChanged,
   handleFileRemoved,
   keepMine,
   listenForFileEvents,
   loadDisk,
   markSeen,
+  reportLiveReloadOff,
   setReloadNoticeShower,
 } from './reload';
 import { createDoc, docs, isDirty, saveDoc, type DocState } from './store.svelte';
@@ -22,6 +25,7 @@ vi.mock('../ipc', async (importOriginal) => ({
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
+  pathsExist: vi.fn(async (paths: string[]) => paths.map(() => false)),
   claimPath: vi.fn(async () => null),
   releasePath: vi.fn(async () => {}),
   watchPath: vi.fn(async () => {}),
@@ -41,6 +45,8 @@ beforeEach(() => {
   docs.clear();
   read.mockReset();
   write.mockReset();
+  vi.mocked(message).mockReset();
+  vi.mocked(pathsExist).mockClear();
   notices.length = 0;
   setReloadNoticeShower((text) => notices.push(text));
   active = null;
@@ -56,13 +62,18 @@ function openDoc(raw: string, path = '/notes/plan.md'): DocState {
   return createDoc({ path, raw, hash: 'h-old', mode: 'edit' });
 }
 
-// The editor as DocPane mounts it: edits flow into doc.text.
-function editorFor(doc: DocState): EditorView {
+// The editor as DocPane mounts it: edits flow into doc.text. `changes` records each edit.
+function editorFor(doc: DocState, changes: ChangeSet[] = []): EditorView {
   const view = new EditorView({
     parent: document.body,
     state: EditorState.create({
       doc: doc.text,
-      extensions: editorExtensions((text) => (doc.text = text)),
+      extensions: [
+        editorExtensions((text) => (doc.text = text)),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) changes.push(update.changes);
+        }),
+      ],
     }),
   });
   registerView(doc.id, view);
@@ -76,6 +87,11 @@ function cursorLine(view: EditorView): number {
 
 function diskHas(text: string, hash: string) {
   read.mockResolvedValueOnce({ text, hash });
+}
+
+async function conflictOver(doc: DocState, disk: string, hash: string) {
+  diskHas(disk, hash);
+  await handleFileChanged({ path: doc.path!, hash });
 }
 
 describe('handleFileChanged', () => {
@@ -97,6 +113,21 @@ describe('handleFileChanged', () => {
     expect(notices).toEqual(['plan.md reloaded from disk']);
   });
 
+  it('replaces only what changed, so an appended line leaves the rest and the cursor alone', async () => {
+    const doc = openDoc('one\ntwo\n');
+    const changes: ChangeSet[] = [];
+    const view = editorFor(doc, changes);
+    view.dispatch({ selection: { anchor: 5 } });
+    diskHas('one\ntwo\nmore\n', 'h-new');
+
+    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-new' });
+
+    const touched: [number, number, string][] = [];
+    changes[0].iterChanges((from, to, _f, _t, inserted) => touched.push([from, to, inserted.toString()]));
+    expect(touched).toEqual([[8, 8, 'more\n']]);
+    expect(view.state.selection.main.head).toBe(5);
+  });
+
   it('reloads a clean inactive doc and marks it updated', async () => {
     const doc = openDoc('old\n');
     active = 'another-doc';
@@ -112,13 +143,25 @@ describe('handleFileChanged', () => {
     expect(notices).toEqual(['plan.md reloaded from disk']);
   });
 
+  it('does not mark a doc updated while another group shows it (Ruling 265)', async () => {
+    const doc = openDoc('old\n');
+    active = 'another-doc';
+    const stop = followWorkspace({ onActiveChange: () => () => {}, isVisible: (id) => id === doc.id });
+    diskHas('new\n', 'h-new');
+
+    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-new' });
+    stop();
+
+    expect(doc.text).toBe('new\n');
+    expect(doc.external).toBe('none');
+  });
+
   it('holds the disk version of a dirty doc as a conflict and changes nothing else', async () => {
     const doc = openDoc('old\n');
     const view = editorFor(doc);
     view.dispatch({ changes: { from: 3, insert: ' mine' } });
-    diskHas('theirs\r\n', 'h-theirs');
 
-    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-theirs' });
+    await conflictOver(doc, 'theirs\r\n', 'h-theirs');
 
     expect(doc.external).toBe('conflict');
     expect(doc.diskText).toBe('theirs\n');
@@ -138,16 +181,37 @@ describe('handleFileChanged', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('leaves a doc that was edited while the disk version was read as a conflict', async () => {
+  it('drops a read that a save finished during, then finds the file is the saved one (Ruling 263)', async () => {
+    const doc = openDoc('old\n');
+    const view = editorFor(doc);
+    write.mockResolvedValueOnce('h-mine');
+    read.mockImplementationOnce(async () => {
+      view.dispatch({ changes: { from: 3, insert: ' mine' } });
+      await saveDoc(doc.id);
+      return { text: 'theirs\n', hash: 'h-theirs' };
+    });
+    diskHas('old mine\n', 'h-mine');
+
+    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-theirs' });
+
+    expect(view.state.doc.toString()).toBe('old mine\n');
+    expect(doc.savedText).toBe('old mine\n');
+    expect(doc.diskHash).toBe('h-mine');
+    expect(doc.external).toBe('none');
+  });
+
+  it('looks again when the doc was edited during the read, and holds a conflict', async () => {
     const doc = openDoc('old\n');
     read.mockImplementationOnce(async () => {
       doc.text = 'typed meanwhile\n';
       return { text: 'theirs\n', hash: 'h-theirs' };
     });
+    diskHas('theirs\n', 'h-theirs');
 
     await handleFileChanged({ path: '/notes/plan.md', hash: 'h-theirs' });
 
     expect(doc.external).toBe('conflict');
+    expect(doc.diskText).toBe('theirs\n');
     expect(doc.text).toBe('typed meanwhile\n');
   });
 
@@ -185,8 +249,7 @@ describe('keepMine', () => {
   it('drops the disk version, and the next save writes my text over it', async () => {
     const doc = openDoc('old\n');
     doc.text = 'mine\n';
-    diskHas('theirs\n', 'h-theirs');
-    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-theirs' });
+    await conflictOver(doc, 'theirs\n', 'h-theirs');
 
     keepMine(doc.id);
 
@@ -201,24 +264,41 @@ describe('keepMine', () => {
 });
 
 describe('loadDisk', () => {
-  it('replaces text and savedText with the disk version in the editor', async () => {
+  it('loads the file as it is now, with its line ending, into the editor (Ruling 263)', async () => {
     const doc = openDoc('old\n');
     const view = editorFor(doc);
     view.dispatch({ changes: { from: 3, insert: ' mine' } });
-    diskHas('theirs\r\n', 'h-theirs');
-    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-theirs' });
+    await conflictOver(doc, 'theirs\n', 'h-theirs');
+    diskHas('newest\r\n', 'h-newest');
 
-    loadDisk(doc.id);
+    await loadDisk(doc.id);
 
-    expect(view.state.doc.toString()).toBe('theirs\n');
-    expect(doc.text).toBe('theirs\n');
-    expect(doc.savedText).toBe('theirs\n');
+    expect(view.state.doc.toString()).toBe('newest\n');
+    expect(doc.text).toBe('newest\n');
+    expect(doc.savedText).toBe('newest\n');
     expect(doc.lineEnding).toBe('\r\n');
-    expect(doc.diskHash).toBe('h-theirs');
+    expect(doc.diskHash).toBe('h-newest');
     expect(doc.diskText).toBeNull();
     expect(doc.external).toBe('none');
     undo(view);
     expect(doc.text).toBe('old mine\n');
+  });
+
+  it('shows why the file could not be read and keeps the banner', async () => {
+    const doc = openDoc('old\n');
+    doc.text = 'mine\n';
+    await conflictOver(doc, 'theirs\n', 'h-theirs');
+    read.mockRejectedValueOnce('Could not read /notes/plan.md: gone');
+
+    await loadDisk(doc.id);
+
+    expect(message).toHaveBeenCalledWith(
+      'Could not read /notes/plan.md: gone',
+      expect.objectContaining({ kind: 'error' }),
+    );
+    expect(doc.external).toBe('conflict');
+    expect(doc.diskText).toBe('theirs\n');
+    expect(doc.text).toBe('mine\n');
   });
 });
 
@@ -227,7 +307,7 @@ describe('handleFileRemoved', () => {
     const doc = openDoc('kept\n');
     write.mockResolvedValueOnce('h-kept');
 
-    handleFileRemoved({ path: '/notes/plan.md' });
+    await handleFileRemoved({ path: '/notes/plan.md' });
     expect(doc.external).toBe('deleted');
 
     expect(await saveDoc(doc.id)).toBe(true);
@@ -236,9 +316,30 @@ describe('handleFileRemoved', () => {
     expect(doc.external).toBe('none');
   });
 
+  it('does nothing when the file is there after all, as after a save that raced it (Ruling 263)', async () => {
+    const doc = openDoc('kept\n');
+    vi.mocked(pathsExist).mockResolvedValueOnce([true]);
+
+    await handleFileRemoved({ path: '/notes/plan.md' });
+
+    expect(pathsExist).toHaveBeenCalledWith(['/notes/plan.md']);
+    expect(doc.external).toBe('none');
+  });
+
+  it('drops the disk version a conflict held', async () => {
+    const doc = openDoc('old\n');
+    doc.text = 'mine\n';
+    await conflictOver(doc, 'theirs\n', 'h-theirs');
+
+    await handleFileRemoved({ path: '/notes/plan.md' });
+
+    expect(doc.external).toBe('deleted');
+    expect(doc.diskText).toBeNull();
+  });
+
   it('clears the mark when the file comes back as it was', async () => {
     const doc = openDoc('kept\n');
-    handleFileRemoved({ path: '/notes/plan.md' });
+    await handleFileRemoved({ path: '/notes/plan.md' });
     diskHas('kept\n', 'h-old');
 
     await handleFileChanged({ path: '/notes/plan.md', hash: 'h-old' });
@@ -264,9 +365,32 @@ describe('markSeen', () => {
   });
 });
 
+describe('live reload switched off (Ruling 265)', () => {
+  it('says so once per window, with the first reason', () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    reportLiveReloadOff('Could not watch /notes: too many open files');
+    reportLiveReloadOff(new Error('again'));
+
+    expect(notices).toEqual(['Live reload is off: Could not watch /notes: too many open files']);
+    quiet.mockRestore();
+  });
+
+  it('says so when this window cannot listen for file events', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(listen).mockRejectedValueOnce(new Error('no event plugin'));
+
+    await listenForFileEvents('w-1').ready;
+
+    expect(notices).toEqual(['Live reload is off: no event plugin']);
+    quiet.mockRestore();
+  });
+});
+
 describe('listenForFileEvents', () => {
   it("listens for this window's changes and removals only", async () => {
     const doc = openDoc('kept\n');
+    vi.mocked(listen).mockClear();
     const { ready } = listenForFileEvents('w-1');
     await ready;
 
@@ -277,6 +401,6 @@ describe('listenForFileEvents', () => {
     ]);
     const removed = calls[1][1] as (e: { payload: { path: string } }) => void;
     removed({ payload: { path: '/notes/plan.md' } });
-    expect(doc.external).toBe('deleted');
+    await vi.waitFor(() => expect(doc.external).toBe('deleted'));
   });
 });

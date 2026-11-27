@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import { message } from '@tauri-apps/plugin-dialog';
-import { clearUpdatesOnActivation } from '../docs/reload';
+import { followWorkspace } from '../docs/reload';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
 import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
 import { fakePreviewLayout } from '../../test/layout';
@@ -908,7 +908,7 @@ describe('Workspace groups and the outline under the pointer (Ruling 195)', () =
 
 describe('live reload marks (M5.3)', () => {
   it("clears a doc's Updated mark when its tab becomes active, and only then", () => {
-    const stop = clearUpdatesOnActivation(ws);
+    const stop = followWorkspace(ws);
     const a = fileDoc('a.md');
     const b = fileDoc('b.md');
     ws.openDoc(a);
@@ -926,5 +926,23 @@ describe('live reload marks (M5.3)', () => {
     expect(b.external).toBe('updated');
     expect(tabFor(a.id).textContent).not.toContain('Updated');
     stop();
+  });
+});
+
+describe('isVisible (Ruling 265)', () => {
+  it("is true for each group's shown tab, whichever group is active", () => {
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    const c = fileDoc('c.md');
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.openDoc(c);
+    ws.split(c.id, 'right');
+    ws.activate(a.id);
+    flushSync();
+
+    expect(ws.activeDocId()).toBe(a.id);
+    expect([a, b, c].map((doc) => ws.isVisible(doc.id))).toEqual([true, false, true]);
+    expect(ws.isVisible('no-such-doc')).toBe(false);
   });
 });

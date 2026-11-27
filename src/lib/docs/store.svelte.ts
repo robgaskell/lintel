@@ -380,12 +380,19 @@ async function release(path: string): Promise<void> {
   }
 }
 
+let reportWatchFailure: (err: unknown) => void = (err) => console.error(err);
+
+/** How a failed watch is reported; the window then says live reload is off (Ruling 265). */
+export function setWatchFailureReporter(report: (err: unknown) => void): void {
+  reportWatchFailure = report;
+}
+
 // Unwatched, the file only stops reloading; nothing is lost.
 async function watch(path: string, hash: string): Promise<void> {
   try {
     await watchPath(path, hash);
   } catch (err) {
-    console.error(`Could not watch ${path}:`, err);
+    reportWatchFailure(err);
   }
 }
 

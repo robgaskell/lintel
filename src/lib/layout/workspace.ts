@@ -175,6 +175,12 @@ export class Workspace {
     return this.api.activePanel?.id ?? null;
   }
 
+  /** Whether a group shows the doc's tab now, active group or not. */
+  isVisible(id: string): boolean {
+    const panel = this.api.getPanel(id);
+    return panel !== undefined && panel.group.activePanel === panel;
+  }
+
   /** Left to right and top to bottom across groups, then tab order within each group. */
   docIdsInOrder(): string[] {
     const root = this.api.toJSON().grid.root as unknown as GridNode;

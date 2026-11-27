@@ -114,7 +114,7 @@ impl Watcher {
                 }
             },
         )
-        .map_err(|e| format!("Lintel cannot watch files for changes: {e}"));
+        .map_err(|e| format!("the file watcher could not start: {e}"));
         if let Err(err) = &started {
             eprintln!("{err}");
         }

@@ -11,6 +11,13 @@ import { outline, outlinePlacement, outlineSources } from './outline.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
+// Load disk version reads the file again (Ruling 263).
+vi.mock('../ipc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ipc')>()),
+  readTextFile: vi.fn(async () => ({ text: 'theirs\n', hash: 'h-theirs' })),
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
+}));
 
 const NOTICE = 'Large file: preview is off. Switch to Split or Read to render it.';
 
@@ -197,7 +204,7 @@ describe('DocPane conflict banner', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Load disk version' }));
 
-    expect(editor.state.doc.toString()).toBe('theirs\n');
+    await vi.waitFor(() => expect(editor.state.doc.toString()).toBe('theirs\n'));
     expect(doc.text).toBe('theirs\n');
     expect(queryByRole('alert')).toBeNull();
   });
