@@ -286,19 +286,29 @@ fn check(
     rescan: bool,
 ) -> (Vec<(String, Notice)>, Vec<PathBuf>) {
     let mut files = lock(files);
+    // Windows reports no event for its watched folder's own rename, so any batch checks
+    // whether a watched folder is gone.
+    let vanished: HashSet<PathBuf> = files
+        .folder_counts
+        .keys()
+        .filter(|folder| !folder.is_dir())
+        .cloned()
+        .collect();
     let mut notices = Vec::new();
     for (key, watched) in files.by_key.iter_mut() {
         let folder = folder_of(key);
-        let touched =
-            rescan || paths.contains(key) || paths.iter().any(|path| folder.starts_with(path));
+        let touched = rescan
+            || paths.contains(key)
+            || paths.iter().any(|path| folder.starts_with(path))
+            || vanished.contains(folder);
         if !touched {
             continue;
         }
         // Windows may refuse to stat a file in a folder that is pending deletion.
-        let now = if folder.is_dir() {
-            disk_hash(key)
-        } else {
+        let now = if vanished.contains(folder) {
             Some(None)
+        } else {
+            disk_hash(key)
         };
         let Some(now) = now else { continue };
         if now == watched.hash {
@@ -307,11 +317,9 @@ fn check(
         notices.push((watched.owner.clone(), notice_for(&watched.path, &now)));
         watched.hash = now;
     }
-    let gone: Vec<PathBuf> = files
-        .folder_counts
-        .keys()
-        .filter(|folder| !files.lost.contains(*folder) && !folder.is_dir())
-        .cloned()
+    let gone: Vec<PathBuf> = vanished
+        .into_iter()
+        .filter(|folder| !files.lost.contains(folder))
         .collect();
     files.lost.extend(gone.iter().cloned());
     (notices, gone)
@@ -499,6 +507,8 @@ mod tests {
             path
         };
         let (a, b) = (file("a.md"), file("b.md"));
+        // Lets the events of setting up pass, so the test sees only those it causes.
+        thread::sleep(DEBOUNCE * 2);
         (folder, a, b)
     }
 
