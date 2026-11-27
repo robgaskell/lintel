@@ -286,8 +286,8 @@ fn check(
     rescan: bool,
 ) -> (Vec<(String, Notice)>, Vec<PathBuf>) {
     let mut files = lock(files);
-    // Windows reports no event for its watched folder's own rename, so any batch checks
-    // whether a watched folder is gone.
+    // Windows sends no event for its watched folder's own rename, so any batch checks
+    // whether a watched folder is gone; a rename alone is noticed at the next event.
     let vanished: HashSet<PathBuf> = files
         .folder_counts
         .keys()
@@ -676,6 +676,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "ReadDirectoryChangesW sends no event when its own folder is renamed"
+    )]
     fn renaming_the_folder_reports_each_file_in_it_removed() {
         let dir = TempDir::new();
         let (watcher, notices) = watcher();
