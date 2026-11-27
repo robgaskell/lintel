@@ -6,6 +6,7 @@ import { saveWindowState } from '@tauri-apps/plugin-window-state';
 import { createDoc, docs, isDirty, saveDoc, trackHandoff, untitledCounter } from '../docs/store.svelte';
 import { writeTextFile } from '../ipc';
 import {
+  HANDOFF_STUCK,
   listenForQuitRequests,
   NOT_RESPONDING,
   QUIT_PROGRESS,
@@ -190,7 +191,7 @@ describe('quitApp across windows (Ruling 211)', () => {
     await emitTo('w-1', QUIT_REQUEST, { requestId: 'r1' });
     await vi.waitFor(() => expect(replies).toHaveLength(1));
 
-    expect(replies[0]).toEqual({ requestId: 'r1', label: 'w-1', ok: false });
+    expect(replies[0]).toEqual({ requestId: 'r1', label: 'w-1', ok: false, asked: true });
     expect(String(messageDialog.mock.calls[0][0])).toContain('a.md');
     expect(win.setFocus.mock.invocationCallOrder[0]).toBeLessThan(messageDialog.mock.invocationCallOrder[0]);
     expect(saveWindowSession).not.toHaveBeenCalled();
@@ -260,6 +261,8 @@ describe('quitApp across windows (Ruling 211)', () => {
     let request = '';
     let beat: ReturnType<typeof setInterval> | undefined;
     fakeWindow('w-1', (requestId) => {
+      // The sweep before exit asks again; by then nothing has changed.
+      if (request) return send(QUIT_REPLY, { requestId, label: 'w-1', ok: true });
       request = requestId;
       const progress = () => send(QUIT_PROGRESS, { requestId, label: 'w-1', prompting: true });
       progress();
@@ -401,7 +404,7 @@ describe('a window answering a quit stays seen as alive (Ruling 219)', () => {
     chooseNothing(null);
     await saving;
     await vi.advanceTimersByTimeAsync(10);
-    expect(replies).toEqual([{ requestId: 'r1', label: 'w-1', ok: false }]);
+    expect(replies).toEqual([expect.objectContaining({ requestId: 'r1', label: 'w-1', ok: false })]);
   });
 
   it('beats every 2 s while a hand-over is running, then answers', async () => {
@@ -416,7 +419,7 @@ describe('a window answering a quit stays seen as alive (Ruling 219)', () => {
 
     settle();
     await vi.advanceTimersByTimeAsync(10);
-    expect(replies).toEqual([{ requestId: 'r1', label: 'w-1', ok: true }]);
+    expect(replies).toEqual([expect.objectContaining({ requestId: 'r1', label: 'w-1', ok: true })]);
     const count = progress.length;
     await vi.advanceTimersByTimeAsync(6000);
     expect(progress).toHaveLength(count);
@@ -435,7 +438,7 @@ describe('a window answering a quit stays seen as alive (Ruling 219)', () => {
     expect(of('r1').at(-1)?.prompting).toBe(true);
     answer("Don't Save");
     await vi.advanceTimersByTimeAsync(10);
-    expect(replies).toEqual([{ requestId: 'r1', label: 'w-1', ok: true }]);
+    expect(replies).toEqual([expect.objectContaining({ requestId: 'r1', label: 'w-1', ok: true })]);
   });
 
   it('tells a second asker that joins an open prompt that the prompt is open', async () => {
@@ -454,7 +457,7 @@ describe('a window answering a quit stays seen as alive (Ruling 219)', () => {
     answer('Cancel');
     await vi.advanceTimersByTimeAsync(10);
     await quitting;
-    expect(replies).toEqual([{ requestId: 'r2', label: 'main', ok: false }]);
+    expect(replies).toEqual([expect.objectContaining({ requestId: 'r2', label: 'main', ok: false })]);
   });
 
   it('a second Cmd+Q in a window answering a quit joins that answer and starts no round', async () => {
@@ -477,7 +480,7 @@ describe('a window answering a quit stays seen as alive (Ruling 219)', () => {
     expect(emitTo).not.toHaveBeenCalled();
     expect(messageDialog).toHaveBeenCalledTimes(1);
     expect(exitApp).not.toHaveBeenCalled();
-    expect(replies).toEqual([{ requestId: 'r1', label: 'w-1', ok: true }]);
+    expect(replies).toEqual([expect.objectContaining({ requestId: 'r1', label: 'w-1', ok: true })]);
   });
 
   it('a Cmd+Q while another window runs a quit round joins it, until that round stops', async () => {
@@ -634,5 +637,105 @@ describe('quitApp', () => {
     await quitting;
     expect(messageDialog).not.toHaveBeenCalled();
     expect(exitApp).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('a quit round before exit (Ruling 237)', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it('cancels the quit and says so when a hand-over never settles, never exiting', async () => {
+    dirtyDoc('/a.md');
+    status.current = { pending: 1, completed: 0, adopters: [] };
+    messageDialog.mockResolvedValue("Don't Save");
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(70_000);
+    await quitting;
+
+    expect(messageDialog).toHaveBeenCalledWith(HANDOFF_STUCK, expect.objectContaining({ kind: 'error' }));
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('asks the quitting window again about a doc typed in while another window was asked', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-b']);
+    const a = dirtyDoc('/a.md');
+    // w-b's prompt is open while the user types in main's a.md, then w-b answers.
+    fakeWindow('w-b', (requestId) => {
+      a.text = 'typed after the answer';
+      send(QUIT_REPLY, { requestId, label: 'w-b', ok: true, asked: true });
+    });
+    messageDialog.mockResolvedValueOnce("Don't Save").mockResolvedValue('Cancel');
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(1000);
+    await quitting;
+
+    expect(messageDialog.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('a.md'),
+      expect.stringContaining('a.md'),
+    ]);
+    expect(exitApp).not.toHaveBeenCalled();
+  });
+
+  it('sweeps every window once more just before exit', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-a']);
+    const requests: string[] = [];
+    fakeWindow('w-a', (requestId) => {
+      requests.push(requestId);
+      send(QUIT_REPLY, { requestId, label: 'w-a', ok: true, asked: false });
+    });
+
+    const quitting = quitApp();
+    await vi.advanceTimersByTimeAsync(1000);
+    await quitting;
+
+    expect(requests).toHaveLength(2);
+    expect(exitApp).toHaveBeenCalledTimes(1);
+  });
+
+  it('a window asked again in the same round asks only about docs changed since its answer', async () => {
+    windowAnswering('w-a');
+    const a = dirtyDoc('/a.md');
+    dirtyDoc('/b.md');
+    messageDialog.mockResolvedValue("Don't Save");
+    const replies: unknown[] = [];
+    bus.listeners.add({ event: QUIT_REPLY, label: null, handler: ({ payload }) => replies.push(payload) });
+
+    await emitTo('w-a', QUIT_REQUEST, { requestId: 'r1', round: 'R' });
+    await vi.advanceTimersByTimeAsync(10);
+    a.text = 'changed since';
+    await emitTo('w-a', QUIT_REQUEST, { requestId: 'r2', round: 'R' });
+    await vi.advanceTimersByTimeAsync(10);
+    await emitTo('w-a', QUIT_REQUEST, { requestId: 'r3', round: 'R' });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(messageDialog.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('a.md'),
+      expect.stringContaining('b.md'),
+      expect.stringContaining('a.md'),
+    ]);
+    expect(replies).toEqual([
+      expect.objectContaining({ requestId: 'r1', asked: true }),
+      expect.objectContaining({ requestId: 'r2', asked: true }),
+      expect.objectContaining({ requestId: 'r3', asked: false }),
+    ]);
+  });
+
+  it('asks again in a new round about a doc answered in a cancelled one', async () => {
+    vi.mocked(docWindowLabels).mockResolvedValue(['main', 'w-1']);
+    dirtyDoc('/a.md');
+    fakeWindow('w-1', (requestId) => send(QUIT_REPLY, { requestId, label: 'w-1', ok: false }));
+    messageDialog.mockResolvedValue("Don't Save");
+    const first = quitApp();
+    await vi.advanceTimersByTimeAsync(1000);
+    await first;
+    expect(messageDialog).toHaveBeenCalledTimes(1);
+
+    const second = quitApp();
+    await vi.advanceTimersByTimeAsync(1000);
+    await second;
+
+    expect(messageDialog).toHaveBeenCalledTimes(2);
+    expect(exitApp).not.toHaveBeenCalled();
   });
 });

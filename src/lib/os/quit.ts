@@ -11,7 +11,7 @@ import {
   isDirty,
   savesSettled,
 } from '../docs/store.svelte';
-import { handoffStatus, type HandoffStatus } from '../ipc';
+import { handoffStatus } from '../ipc';
 import type { Workspace } from '../layout/workspace';
 import { requireWorkspace } from './open';
 import { saveWindowSession } from './session';
@@ -36,6 +36,8 @@ export interface QuitReplyEvent {
   requestId: string;
   label: string;
   ok: boolean;
+  // True when the window showed a prompt; the round then sweeps once more.
+  asked?: boolean;
 }
 
 export interface QuitRoundEvent {
@@ -52,6 +54,8 @@ export interface QuitProgressEvent {
 export const NOT_RESPONDING =
   'A Lintel window is not responding. Quit anyway? Unsaved changes in it may be lost.';
 const QUIT_ANYWAY = 'Quit Anyway';
+export const HANDOFF_STUCK =
+  'Lintel could not finish moving a document between windows, so it did not quit.';
 const REPLY_TIMEOUT_MS = 5000;
 // Rust saves geometry on exit too; saved here, while the windows exist, maximised is current.
 const GEOMETRY = StateFlags.POSITION | StateFlags.MAXIMIZED;
@@ -110,21 +114,21 @@ async function runQuit(workspace?: QuitOrder): Promise<void> {
   await announceRound(self, true);
   try {
     // Docs on their way between windows land first, and the window list is read after.
-    let mark = (await handoffsQuiet(0)).completed;
-    const others = (await docWindowLabels()).filter((label) => label !== self);
-    if (!(await answerQuit(self, round, workspace))) return;
-    for (const label of others) {
-      if (!(await askWindow(label, round))) return;
-    }
-    // A window that took a doc in during the round answers again for it (Ruling 235).
-    for (;;) {
-      const status = await handoffsQuiet(mark);
-      if (status.adopters.length === 0) break;
-      mark = status.completed;
-      for (const label of status.adopters) {
-        const ok = label === self ? await answerQuit(self, round, workspace) : await askWindow(label, round);
-        if (!ok) return;
+    if (!(await handoffsQuiet())) return;
+    // After the first pass, every window is asked again until a pass shows no prompt, so a
+    // doc taken in, edited or made dirty after its window answered is asked about (Ruling 237).
+    const abandoned = new Set<string>();
+    for (let pass = 0; ; pass++) {
+      const labels = [self, ...(await docWindowLabels()).filter((label) => label !== self)];
+      let asked = false;
+      for (const label of labels.filter((label) => !abandoned.has(label))) {
+        const answer = label === self ? await answerQuit(self, round, workspace) : await askWindow(label, round);
+        if (!answer.ok) return;
+        if (answer.abandoned) abandoned.add(label);
+        asked ||= answer.asked;
       }
+      if (!(await handoffsQuiet())) return;
+      if (pass > 0 && !asked) break;
     }
     // Size stays with Rust: on macOS a docked Web Inspector shrinks the size read here.
     await saveWindowState(GEOMETRY).catch((err) => console.error('Could not save window positions:', err));
@@ -137,14 +141,20 @@ async function runQuit(workspace?: QuitOrder): Promise<void> {
   }
 }
 
-/** Resolves once no hand-over is pending app-wide, or after 30 s. */
-async function handoffsQuiet(since: number): Promise<HandoffStatus> {
+/**
+ * True once no hand-over is pending app-wide. After 30 s the doc in flight cannot be asked
+ * about, so the quit stops and says so; it never exits over it (Ruling 237).
+ */
+async function handoffsQuiet(): Promise<boolean> {
   const giveUp = Date.now() + HANDOFF_WAIT_MS;
-  for (;;) {
-    const status = await handoffStatus(since);
-    if (status.pending === 0 || Date.now() >= giveUp) return status;
+  while ((await handoffStatus(0)).pending > 0) {
+    if (Date.now() >= giveUp) {
+      await message(HANDOFF_STUCK, { title: 'Lintel', kind: 'error' });
+      return false;
+    }
     await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
   }
+  return true;
 }
 
 // A round whose window has since closed is over.
@@ -163,32 +173,43 @@ async function announceRound(label: string, running: boolean): Promise<void> {
   }
 }
 
-let answering: Promise<boolean> | null = null;
+let answering: Promise<Answer> | null = null;
 
-// Doc arrival keys already asked about in `askedRound`, so answering again asks only new docs.
+// Each doc answered in `askedRound`, by arrival key, with its text then: asking again asks
+// only about docs that are new or have changed since.
 let askedRound: string | null = null;
-const askedInRound = new Set<string>();
+const askedInRound = new Map<string, string>();
+// The round each window label last saved its session in.
+const savedRound = new Map<string, string>();
+
+interface Answer {
+  ok: boolean;
+  asked: boolean;
+  // The user chose Quit Anyway for a window that did not answer.
+  abandoned?: boolean;
+}
 
 // Two quits at once share one round of prompts in this window.
-function answerQuit(label: string, round: string, workspace?: QuitOrder): Promise<boolean> {
+function answerQuit(label: string, round: string, workspace?: QuitOrder): Promise<Answer> {
   answering ??= runAnswer(label, round, workspace ?? requireWorkspace()).finally(
     () => (answering = null),
   );
   return answering;
 }
 
-async function runAnswer(label: string, round: string, workspace: QuitOrder): Promise<boolean> {
+async function runAnswer(label: string, round: string, workspace: QuitOrder): Promise<Answer> {
   if (askedRound !== round) {
     askedRound = round;
     askedInRound.clear();
   }
+  const firstInRound = savedRound.get(label) !== round;
   // A doc mid-save is still dirty: asking now would offer to exit mid-write.
   await savesSettled();
   // A doc on its way to or from this window may land here, and must then be asked about.
   await handoffsSettled();
   const ordered = workspace.docIdsInOrder();
   const ids = [...ordered, ...[...docs.keys()].filter((id) => !ordered.includes(id))].filter(
-    (id) => !askedInRound.has(arrivalKey(id)),
+    (id) => askedInRound.get(arrivalKey(id)) !== docs.get(id)?.text,
   );
   const asking = ids.some((id) => {
     const doc = docs.get(id);
@@ -204,14 +225,20 @@ async function runAnswer(label: string, round: string, workspace: QuitOrder): Pr
   } finally {
     if (asking) setPrompting(false);
   }
-  if (ok) for (const id of ids) if (docs.has(id)) askedInRound.add(arrivalKey(id));
-  if (!ok) return false;
+  if (!ok) return { ok, asked: asking };
+  for (const id of ids) {
+    const doc = docs.get(id);
+    if (doc) askedInRound.set(arrivalKey(id), doc.text);
+  }
+  // A sweep that found nothing new leaves the session as saved.
+  if (!firstInRound && ids.length === 0) return { ok, asked: asking };
+  savedRound.set(label, round);
   try {
     await saveWindowSession(label);
   } catch (err) {
     console.error('Could not save the session:', err);
   }
-  return true;
+  return { ok, asked: asking };
 }
 
 // Every request this window is answering, joined ones included, by id; each hears progress.
@@ -224,9 +251,9 @@ async function replyToQuit(label: string, requestId: string, round: string): Pro
   // At once, then every 2 s, so a slow save or hand-over never looks like a hang (Ruling 219).
   reportProgress();
   heartbeat ??= setInterval(reportProgress, HEARTBEAT_MS);
-  let ok = false;
+  let answer: Answer = { ok: false, asked: false };
   try {
-    ok = await answerQuit(label, round);
+    answer = await answerQuit(label, round);
   } catch (err) {
     await message(String(err), { title: 'Lintel', kind: 'error' });
   } finally {
@@ -237,7 +264,7 @@ async function replyToQuit(label: string, requestId: string, round: string): Pro
     }
   }
   try {
-    await emit(QUIT_REPLY, { requestId, label, ok } satisfies QuitReplyEvent);
+    await emit(QUIT_REPLY, { requestId, label, ...answer } satisfies QuitReplyEvent);
   } catch (err) {
     console.error('Could not answer the quit:', err);
   }
@@ -268,14 +295,17 @@ async function bringForward(): Promise<void> {
   }
 }
 
-async function askWindow(label: string, round: string): Promise<boolean> {
+async function askWindow(label: string, round: string): Promise<Answer> {
   const requestId = crypto.randomUUID();
   const answer = await waitForAnswer(requestId, label);
   try {
     await emitTo(label, QUIT_REQUEST, { requestId, round } satisfies QuitRequestEvent);
     const result = await answer.result;
-    if (result === 'silent') return (await message(NOT_RESPONDING, notRespondingOptions)) === QUIT_ANYWAY;
-    return result === 'ok';
+    if (result === 'silent') {
+      const quitAnyway = (await message(NOT_RESPONDING, notRespondingOptions)) === QUIT_ANYWAY;
+      return { ok: quitAnyway, asked: false, abandoned: true };
+    }
+    return result;
   } finally {
     answer.stop();
   }
@@ -293,17 +323,17 @@ const notRespondingOptions = {
 async function waitForAnswer(
   requestId: string,
   label: string,
-): Promise<{ result: Promise<'ok' | 'cancel' | 'silent'>; stop: () => void }> {
+): Promise<{ result: Promise<Answer | 'silent'>; stop: () => void }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let settle: (result: 'ok' | 'cancel' | 'silent') => void = () => {};
-  const result = new Promise<'ok' | 'cancel' | 'silent'>((resolve) => (settle = resolve));
+  let settle: (result: Answer | 'silent') => void = () => {};
+  const result = new Promise<Answer | 'silent'>((resolve) => (settle = resolve));
   const wait = () => {
     clearTimeout(timer);
     timer = setTimeout(() => settle('silent'), REPLY_TIMEOUT_MS);
   };
   const mine = (e: { requestId: string; label: string }) => e.requestId === requestId && e.label === label;
   const stopReply = await listen<QuitReplyEvent>(QUIT_REPLY, ({ payload }) => {
-    if (mine(payload)) settle(payload.ok ? 'ok' : 'cancel');
+    if (mine(payload)) settle({ ok: payload.ok, asked: payload.asked === true });
   });
   let stopProgress: () => void = () => {};
   try {
