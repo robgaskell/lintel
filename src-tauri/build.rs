@@ -17,6 +17,28 @@ fn main() {
         "set_window_appearance",
         "frontend_ready",
     ]);
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
-        .expect("failed to run tauri-build");
+    let mut attributes = tauri_build::Attributes::new().app_manifest(manifest);
+    if is_windows_msvc() {
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        embed_windows_manifest_everywhere();
+    }
+    tauri_build::try_build(attributes).expect("failed to run tauri-build");
+}
+
+fn is_windows_msvc() -> bool {
+    let var = |name| std::env::var(name).unwrap_or_default();
+    var("CARGO_CFG_TARGET_OS") == "windows" && var("CARGO_CFG_TARGET_ENV") == "msvc"
+}
+
+/// tauri-build links its manifest into binaries only. Without the Common Controls v6
+/// dependency it declares, a test binary dies at load with STATUS_ENTRYPOINT_NOT_FOUND.
+/// The linker embeds it in every target instead, as tauri's own build.rs does for its tests.
+fn embed_windows_manifest_everywhere() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", path.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", path.display());
+    // Keeps the app's manifest as tauri-build wrote it, with no added UAC section.
+    println!("cargo:rustc-link-arg=/MANIFESTUAC:NO");
 }

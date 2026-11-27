@@ -82,16 +82,19 @@ pub fn disable_window_tabbing() {
 
 /// AppKit's own window restoration stays off: the session brings Lintel's windows back,
 /// and nothing else, such as the Colors panel, reopens at launch (Ruling 218).
+#[cfg(any(target_os = "macos", test))]
 pub const NO_APPKIT_RESTORATION: [(&str, bool); 2] = [
     ("NSQuitAlwaysKeepsWindows", false),
     ("ApplePersistenceIgnoreState", true),
 ];
 
 /// Where the AppKit keys go; a test records them instead of writing the user's defaults.
+#[cfg(any(target_os = "macos", test))]
 pub trait BoolDefaults {
     fn set_bool(&mut self, key: &str, value: bool);
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn disable_appkit_restoration_in(defaults: &mut impl BoolDefaults) {
     for (key, value) in NO_APPKIT_RESTORATION {
         defaults.set_bool(key, value);

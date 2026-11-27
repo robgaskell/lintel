@@ -275,6 +275,8 @@ mod tests {
         }
     }
 
+    // Their paths are Unix paths.
+    #[cfg(not(windows))]
     mod open_routes {
         use super::*;
         use std::sync::Arc;
@@ -305,7 +307,6 @@ mod tests {
             list.iter().map(|s| s.to_string()).collect()
         }
 
-        #[cfg(not(windows))]
         #[test]
         fn a_second_launch_opens_its_files_from_its_own_folder() {
             let (app, heard) = app();
@@ -313,7 +314,6 @@ mod tests {
             assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/x/a.md"]}"#]);
         }
 
-        #[cfg(not(windows))]
         #[test]
         fn setup_opens_the_launch_arguments() {
             let (app, heard) = app();
@@ -321,7 +321,6 @@ mod tests {
             assert_eq!(*heard.lock().unwrap(), [r#"{"paths":["/tmp/x/a.md"]}"#]);
         }
 
-        #[cfg(not(windows))]
         #[test]
         fn setup_leaves_relative_paths_relative_when_its_folder_is_unknown() {
             let (app, heard) = app();
