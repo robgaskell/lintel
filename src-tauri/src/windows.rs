@@ -33,6 +33,16 @@ struct Handoff {
     from: String,
     to: String,
     path: Option<String>,
+    /// Set when one of the two windows has closed: only the other may then decide it.
+    left_to: Option<String>,
+}
+
+impl Handoff {
+    fn may_decide(&self, label: &str) -> bool {
+        self.left_to
+            .as_deref()
+            .is_none_or(|survivor| survivor == label)
+    }
 }
 
 impl PathRegistry {
@@ -65,6 +75,7 @@ impl PathRegistry {
             from: from.to_owned(),
             to: to.to_owned(),
             path,
+            left_to: None,
         };
         claims.handoffs.insert(id, handoff);
         id
@@ -73,7 +84,11 @@ impl PathRegistry {
     /// True when `label` may take the doc in: the hand-over was to it and is not cancelled.
     fn complete_handoff(&self, label: &str, id: u64) -> bool {
         let mut claims = self.claims();
-        if claims.handoffs.get(&id).is_none_or(|h| h.to != label) {
+        if claims
+            .handoffs
+            .get(&id)
+            .is_none_or(|h| h.to != label || !h.may_decide(label))
+        {
             return false;
         }
         let Some(handoff) = claims.handoffs.remove(&id) else {
@@ -92,14 +107,39 @@ impl PathRegistry {
     /// True when `label` may keep the doc: the hand-over was from it and is not completed.
     fn cancel_handoff(&self, label: &str, id: u64) -> bool {
         let mut claims = self.claims();
-        if claims.handoffs.get(&id).is_none_or(|h| h.from != label) {
+        if claims
+            .handoffs
+            .get(&id)
+            .is_none_or(|h| h.from != label || !h.may_decide(label))
+        {
             return false;
         }
         claims.handoffs.remove(&id).is_some()
     }
 
+    /// Drops a closed window's claims. Its pending hand-overs go to the other window, so
+    /// the doc is not lost with it, and none is kept once both windows are gone (Ruling 217).
     pub fn drop_window(&self, label: &str) {
-        self.claims().paths.retain(|_, owner| owner != label);
+        let mut claims = self.claims();
+        claims.paths.retain(|_, owner| owner != label);
+        claims
+            .handoffs
+            .retain(|_, h| h.left_to.as_deref() != Some(label));
+        for handoff in claims.handoffs.values_mut() {
+            if handoff.left_to.is_some() {
+                continue;
+            }
+            if handoff.from == label {
+                handoff.left_to = Some(handoff.to.clone());
+            } else if handoff.to == label {
+                handoff.left_to = Some(handoff.from.clone());
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn pending(&self) -> usize {
+        self.claims().handoffs.len()
     }
 
     fn claims(&self) -> MutexGuard<'_, Claims> {
@@ -319,6 +359,40 @@ mod tests {
             "too late to take it in"
         );
         assert_eq!(registry.claim("w-1", A), Some("main".to_owned()));
+    }
+
+    #[test]
+    fn the_new_window_takes_the_doc_when_the_opener_dies_mid_hand_over() {
+        let registry = PathRegistry::default();
+        registry.claim("main", A);
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
+        registry.drop_window("main");
+        assert!(!registry.cancel_handoff("main", id));
+        assert!(registry.complete_handoff("w-1", id));
+        assert_eq!(registry.claim("w-2", A), Some("w-1".to_owned()));
+        assert_eq!(registry.pending(), 0);
+    }
+
+    #[test]
+    fn the_opener_keeps_the_doc_when_the_new_window_dies_mid_hand_over() {
+        let registry = PathRegistry::default();
+        let id = registry.begin_handoff("main", "w-1", Some(A.to_owned()));
+        registry.drop_window("w-1");
+        assert!(!registry.complete_handoff("w-1", id));
+        assert!(registry.cancel_handoff("main", id));
+        assert_eq!(registry.pending(), 0);
+    }
+
+    #[test]
+    fn no_hand_over_is_kept_once_both_windows_are_gone() {
+        let registry = PathRegistry::default();
+        registry.begin_handoff("main", "w-1", None);
+        registry.begin_handoff("main", "w-2", None);
+        registry.drop_window("main");
+        registry.drop_window("w-1");
+        assert_eq!(registry.pending(), 1, "w-2 may still take its doc");
+        registry.drop_window("w-2");
+        assert_eq!(registry.pending(), 0);
     }
 
     #[test]

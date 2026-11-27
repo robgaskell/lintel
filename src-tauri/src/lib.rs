@@ -322,6 +322,14 @@ mod tests {
         assert_eq!(dev_server(false, Some(&dev)), None);
     }
 
+    // Tauri's mock runtime raises no window events, so the hook's registration is checked
+    // as written; the hook itself is tested in windows.rs (Ruling 217).
+    #[test]
+    fn every_window_event_goes_to_the_document_window_hook() {
+        let registration = concat!(".on_window_event(", "windows::on_doc_window_event)");
+        assert_eq!(include_str!("lib.rs").matches(registration).count(), 1);
+    }
+
     #[test]
     fn csp_matches_ruling_69() {
         const RULING_69: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
