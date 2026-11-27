@@ -41,6 +41,7 @@ export interface MenuHandlers {
   nextTab(): void;
   previousTab(): void;
   split(direction: 'right' | 'below'): void;
+  openNotices(): void;
 }
 
 type MenuEntry =
@@ -421,11 +422,16 @@ export function menuEntries(
             ...(mac ? [separator, { item: 'BringAllToFront' } as const] : []),
           ],
   };
+  const notices: MenuItemOptions = {
+    id: 'third-party-notices',
+    text: 'Third-Party Notices',
+    action: () => h.openNotices(),
+  };
   const help: SubmenuOptions = {
     id: '__tauri_help_menu__',
     text: 'Help',
-    // macOS fills its Help menu with a search field; elsewhere About lives here.
-    items: mac ? [] : [{ item: { About: null } }],
+    // macOS adds a search field to its Help menu; elsewhere About lives here.
+    items: mac ? [notices] : [{ item: { About: null } }, separator, notices],
   };
 
   return [

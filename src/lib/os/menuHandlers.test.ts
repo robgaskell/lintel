@@ -11,6 +11,8 @@ import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settin
 import { printDoc } from '../export/print';
 import { exportHtml } from '../export/html';
 import { exportDocx } from '../export/docx';
+import { resolveResource } from '@tauri-apps/api/path';
+import { openPath } from '@tauri-apps/plugin-opener';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -22,6 +24,10 @@ vi.mock('./window', () => ({ closeTabOrWindow: vi.fn() }));
 vi.mock('../export/print', () => ({ printDoc: vi.fn(async () => {}) }));
 vi.mock('../export/html', () => ({ exportHtml: vi.fn(async () => {}) }));
 vi.mock('../export/docx', () => ({ exportDocx: vi.fn(async () => {}) }));
+vi.mock('@tauri-apps/api/path', () => ({
+  resolveResource: vi.fn(async (name: string) => `/Applications/Lintel.app/Contents/Resources/${name}`),
+}));
+vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn(async () => {}) }));
 vi.mock('../../settings/settingsWindow', () => ({
   focusedSettingsWindow: vi.fn(async () => null),
   openSettingsWindow: vi.fn(async () => {}),
@@ -275,6 +281,28 @@ describe('makeMenuHandlers', () => {
     await vi.waitFor(() => expect(openSettingsWindow).toHaveBeenCalledTimes(2));
     expect(openSettingsWindow).toHaveBeenNthCalledWith(1, undefined);
     expect(openSettingsWindow).toHaveBeenNthCalledWith(2, 'files');
+  });
+
+  it('opens the bundled third-party notices in the system viewer (Ruling 328)', async () => {
+    makeMenuHandlers(deps()).openNotices();
+
+    await vi.waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith('/Applications/Lintel.app/Contents/Resources/THIRD_PARTY_NOTICES.md'),
+    );
+    expect(resolveResource).toHaveBeenCalledWith('THIRD_PARTY_NOTICES.md');
+  });
+
+  it('shows a failure to open the notices in a dialog', async () => {
+    vi.mocked(openPath).mockRejectedValueOnce(new Error('No application knows how to open it.'));
+
+    makeMenuHandlers(deps()).openNotices();
+
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith('Error: No application knows how to open it.', {
+        title: 'Lintel',
+        kind: 'error',
+      }),
+    );
   });
 
   describe('with Settings focused (Ruling 142)', () => {

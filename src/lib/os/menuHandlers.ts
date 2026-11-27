@@ -1,4 +1,6 @@
+import { resolveResource } from '@tauri-apps/api/path';
 import { message, open } from '@tauri-apps/plugin-dialog';
+import { openPath } from '@tauri-apps/plugin-opener';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import { exportDocx } from '../export/docx';
@@ -126,6 +128,7 @@ export function makeMenuHandlers({
     openSettings: (section) => guarded(() => openSettingsWindow(section))(),
     nextTab: forDoc(() => workspace.nextTab()),
     previousTab: forDoc(() => workspace.previousTab()),
+    openNotices: guarded(openNotices),
     split: (direction) =>
       forDoc(() => {
         const id = workspace.activeDocId();
@@ -182,6 +185,14 @@ async function chooseFiles() {
   const filters = isMac() ? [markdown] : [markdown, { name: 'All files', extensions: ['*'] }];
   const paths = await open({ multiple: true, directory: false, filters });
   if (paths) await openPaths(paths);
+}
+
+/** The file bundled as a Tauri resource; the capability lets the opener open only this one. */
+export const NOTICES_FILE = 'THIRD_PARTY_NOTICES.md';
+
+// Shown in the system's viewer for .md files, so Lintel needs no read-only tab (Ruling 328).
+async function openNotices() {
+  await openPath(await resolveResource(NOTICES_FILE));
 }
 
 // Menu actions are fire-and-forget, so errors are shown here.

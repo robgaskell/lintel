@@ -407,6 +407,33 @@ mod tests {
     }
 
     #[test]
+    fn the_opener_may_open_only_the_bundled_notices() {
+        let main: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let open_path: Vec<&serde_json::Value> = main["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| {
+                p.as_str().or(p["identifier"].as_str()) == Some("opener:allow-open-path")
+            })
+            .collect();
+        assert_eq!(
+            open_path,
+            [&serde_json::json!({
+                "identifier": "opener:allow-open-path",
+                "allow": [{ "path": "$RESOURCE/THIRD_PARTY_NOTICES.md" }]
+            })]
+        );
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["bundle"]["resources"]["../THIRD_PARTY_NOTICES.md"],
+            "THIRD_PARTY_NOTICES.md"
+        );
+    }
+
+    #[test]
     fn every_window_writes_settings_through_the_one_command() {
         assert!(include_str!("../build.rs").contains("\"update_settings\""));
         for capability in [

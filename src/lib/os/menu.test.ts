@@ -154,6 +154,7 @@ function handlers(): MenuHandlers {
     nextTab: vi.fn(),
     previousTab: vi.fn(),
     split: vi.fn(),
+    openNotices: vi.fn(),
   };
 }
 
@@ -217,6 +218,22 @@ describe('menuEntries', () => {
     previousItem.action!();
     expect(h.nextTab).toHaveBeenCalledOnce();
     expect(h.previousTab).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['macos', ['third-party-notices']],
+    ['windows', ['About', 'Separator', 'third-party-notices']],
+    ['linux', ['About', 'Separator', 'third-party-notices']],
+  ] as const)('puts Third-Party Notices in the Help menu on %s (Ruling 328)', (platform, expected) => {
+    const h = handlers();
+    const help = (menuEntries(h, [], platform) as Entry[]).find((e) => e.text === 'Help')!;
+
+    const kinds = help.items!.map((e) => e.id ?? (typeof e.item === 'string' ? e.item : Object.keys(e.item!)[0]));
+    expect(kinds).toEqual(expected);
+    const item = byId(help.items!, 'third-party-notices');
+    expect(item.text).toBe('Third-Party Notices');
+    item.action!();
+    expect(h.openNotices).toHaveBeenCalledOnce();
   });
 
   it('has no predefined Quit, Close Window, Undo or Redo on any platform', () => {
