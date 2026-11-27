@@ -180,6 +180,39 @@ describe('DocPane large-file notice', () => {
   });
 });
 
+describe('DocPane conflict banner', () => {
+  function conflicted() {
+    const view = pane('edit', 'old\n');
+    const editor = EditorView.findFromDOM(view.container.querySelector('.cm-editor') as HTMLElement)!;
+    editor.dispatch({ changes: { from: 3, insert: ' mine' } });
+    view.doc.external = 'conflict';
+    view.doc.diskText = 'theirs\n';
+    flushSync();
+    return { ...view, editor };
+  }
+
+  it('shows the banner for a conflict only, and Load disk version puts the disk text in the editor', async () => {
+    const { doc, editor, getByRole, queryByRole } = conflicted();
+    expect(getByRole('alert').textContent).toContain('a.md changed on disk');
+
+    await fireEvent.click(getByRole('button', { name: 'Load disk version' }));
+
+    expect(editor.state.doc.toString()).toBe('theirs\n');
+    expect(doc.text).toBe('theirs\n');
+    expect(queryByRole('alert')).toBeNull();
+  });
+
+  it('Keep my edits hides the banner and leaves the editor alone', async () => {
+    const { doc, editor, getByRole, queryByRole } = conflicted();
+
+    await fireEvent.click(getByRole('button', { name: 'Keep my edits' }));
+
+    expect(editor.state.doc.toString()).toBe('old mine\n');
+    expect(doc.external).toBe('none');
+    expect(queryByRole('alert')).toBeNull();
+  });
+});
+
 describe('DocPane scroll sync', () => {
   let restoreLayout: () => void;
   beforeEach(() => (restoreLayout = fakePreviewLayout()));

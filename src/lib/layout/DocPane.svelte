@@ -9,7 +9,9 @@
   import Editor from '../editor/Editor.svelte';
   import Preview from '../ui/Preview.svelte';
   import Toolbar from '../ui/Toolbar.svelte';
+  import ConflictBanner from '../ui/ConflictBanner.svelte';
   import { setTopLine, takeStartCursor, takeStartTopLine, trackCursor } from '../docs/cursor.svelte';
+  import { keepMine, loadDisk } from '../docs/reload';
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { largeFileNotices } from '../os/open';
@@ -264,6 +266,9 @@
       <WindowOutline docId={outlinePlacement.docId} />
     {/if}
     <div class="doc-column">
+      {#if doc.external === 'conflict'}
+        <ConflictBanner fileName={doc.title} onKeep={() => keepMine(doc.id)} onLoad={() => loadDisk(doc.id)} />
+      {/if}
       {#if largeFileNotices.has(doc.id)}
         <div class="notice" role="status">Large file: preview is off. Switch to Split or Read to render it.</div>
       {/if}

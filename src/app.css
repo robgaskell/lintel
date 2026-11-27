@@ -19,6 +19,9 @@
   --tab-strip: var(--chrome);
   --tab-close: var(--muted);
   --tab-close-hover-bg: var(--hover);
+  /* Live reload's tab marks: the green and red that each theme already has. */
+  --tab-updated: var(--preview-code-string);
+  --tab-deleted: var(--editor-code);
   --preview-code-border: var(--border);
   --preview-quote-border: var(--border);
   --preview-quote-text: var(--muted-strong);

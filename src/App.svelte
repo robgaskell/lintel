@@ -3,6 +3,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { message } from '@tauri-apps/plugin-dialog';
   import { cursors } from './lib/docs/cursor.svelte';
+  import { clearUpdatesOnActivation, listenForFileEvents, setReloadNoticeShower } from './lib/docs/reload';
   import { countWords, saveStateOf } from './lib/docs/stats';
   import { docs } from './lib/docs/store.svelte';
   import { followEditorFont, setActiveDocSource } from './lib/editor/views';
@@ -115,6 +116,9 @@
     setWorkspace(workspace);
     setActiveDocSource(workspace);
     const stopReveal = listenForReveal(workspace);
+    // Before any doc arrives: watching a file that changed since it was read reports it at once.
+    const fileEvents = listenForFileEvents(label);
+    setReloadNoticeShower((text) => showNotice(text));
     // Last of the two: it tells the window that opened this one that it can hand a doc over.
     const stopAdoption = listenForAdoption();
     const stopDrops = listenForDrops();
@@ -122,6 +126,7 @@
     // onActiveChange makes no first call, so read the current value too (Ruling 111).
     activeId = workspace.activeDocId();
     const stopActive = workspace.onActiveChange((id) => (activeId = id));
+    const stopUpdates = clearUpdatesOnActivation(workspace);
     // View > Split Right and Split Down grey out for a lone tab, as in the tab menu (Ruling 192).
     const syncSplit = () => {
       const id = workspace.activeDocId();
@@ -175,6 +180,7 @@
     const openFilesDeadline = setTimeout(takeOpenedFiles, OPEN_FILES_DEADLINE_MS);
     async function restoreSession() {
       try {
+        await fileEvents.ready;
         const { missing } = await restoreWindow(label);
         if (disposed) return;
         takeOpenedFiles();
@@ -209,6 +215,8 @@
       stopTheme();
       stopEditorFont();
       stopActive();
+      stopUpdates();
+      fileEvents.stop();
       stopLayout();
       stopQuit();
       stopForgets();

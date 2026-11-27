@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
+import { listenForFileEvents, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs } from './lib/docs/store.svelte';
 import { outline } from './lib/layout/outline.svelte';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
@@ -23,6 +24,8 @@ const fake = vi.hoisted(() => ({
   label: 'main',
   focused: true,
   stopDrops: (() => {}) as () => void,
+  fileEventsReady: Promise.resolve(),
+  stopFileEvents: (() => {}) as () => void,
 }));
 
 vi.mock('./lib/layout/workspace', () => ({
@@ -75,6 +78,11 @@ vi.mock('./lib/os/open', () => ({
   newUntitled: vi.fn(),
   largeFileNotices: new Set(),
 }));
+vi.mock('./lib/docs/reload', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/docs/reload')>()),
+  listenForFileEvents: vi.fn(() => ({ ready: fake.fileEventsReady, stop: fake.stopFileEvents })),
+  setReloadNoticeShower: vi.fn(),
+}));
 vi.mock('./lib/os/quit', () => ({ listenForQuitRequests: vi.fn(() => () => {}), quitApp: vi.fn() }));
 vi.mock('./lib/os/session', async (importOriginal) => ({
   missingNotice: (await importOriginal<typeof import('./lib/os/session')>()).missingNotice,
@@ -121,6 +129,7 @@ beforeEach(() => {
   fake.focusHandler = null;
   fake.label = 'main';
   fake.focused = true;
+  fake.fileEventsReady = Promise.resolve();
   outline.visible = true;
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
@@ -480,5 +489,50 @@ describe('App after a restore (Ruling 235)', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(setOutlineChecked).not.toHaveBeenCalledWith(false);
+  });
+});
+
+describe('App live reload (M5.3)', () => {
+  beforeEach(() => {
+    vi.mocked(loadSettings).mockImplementation(async () => settings);
+  });
+
+  it("listens for this window's file changes before it restores any doc, and stops when it goes", async () => {
+    let listening = () => {};
+    fake.fileEventsReady = new Promise((resolve) => (listening = resolve));
+    fake.stopFileEvents = vi.fn();
+    fake.label = 'w-1';
+    const { unmount } = render(App);
+    expect(listenForFileEvents).toHaveBeenCalledWith('w-1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(restoreWindow).not.toHaveBeenCalled();
+
+    listening();
+    await vi.waitFor(() => expect(restoreWindow).toHaveBeenCalledWith('w-1'));
+    unmount();
+    expect(fake.stopFileEvents).toHaveBeenCalledOnce();
+  });
+
+  it('shows "<name> reloaded from disk" in the status bar', () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    const { container } = render(App);
+
+    vi.mocked(setReloadNoticeShower).mock.calls[0][0]('a.md reloaded from disk');
+    flushSync();
+
+    const status = container.querySelector('footer [role="status"]');
+    expect(status?.textContent).toBe('a.md reloaded from disk');
+    expect(status?.hasAttribute('title')).toBe(false);
+  });
+
+  it('clears the Updated mark of the tab that becomes active', () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    a.external = 'updated';
+    render(App);
+
+    setActive(a.id);
+
+    expect(a.external).toBe('none');
   });
 });

@@ -17,6 +17,11 @@
     </svg>
   {/if}
   <span class="name">{doc.title}</span>
+  {#if doc.external === 'updated'}
+    <span class="badge updated">Updated</span>
+  {:else if doc.external === 'deleted'}
+    <span class="badge deleted">Deleted on disk</span>
+  {/if}
   {#if dirty}
     <span class="dirty" role="img" aria-label="Unsaved changes"></span>
   {/if}
@@ -65,6 +70,20 @@
 
   .pin {
     flex-shrink: 0;
+  }
+
+  .badge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .updated {
+    color: var(--tab-updated);
+  }
+
+  .deleted {
+    color: var(--tab-deleted);
   }
 
   .dirty,

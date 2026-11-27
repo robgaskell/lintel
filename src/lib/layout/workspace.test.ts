@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import { message } from '@tauri-apps/plugin-dialog';
+import { clearUpdatesOnActivation } from '../docs/reload';
 import { createDoc, docs, untitledCounter, type DocState } from '../docs/store.svelte';
 import { DEFAULT_SETTINGS, type Settings } from '../settings/settings.svelte';
 import { fakePreviewLayout } from '../../test/layout';
@@ -11,6 +12,8 @@ import type { DockviewApi } from 'dockview-core';
 import { Workspace } from './workspace';
 
 vi.mock('../ipc', () => ({
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),
@@ -900,5 +903,28 @@ describe('Workspace groups and the outline under the pointer (Ruling 195)', () =
 
     press(host.querySelector(`[data-doc-pane="${b.id}"] .cm-scroller`)!);
     expect(ws.activeDocId()).toBe(b.id);
+  });
+});
+
+describe('live reload marks (M5.3)', () => {
+  it("clears a doc's Updated mark when its tab becomes active, and only then", () => {
+    const stop = clearUpdatesOnActivation(ws);
+    const a = fileDoc('a.md');
+    const b = fileDoc('b.md');
+    ws.openDoc(a);
+    ws.openDoc(b);
+    flushSync();
+    a.external = 'updated';
+    b.external = 'updated';
+    flushSync();
+    expect(tabFor(a.id).textContent).toContain('Updated');
+
+    ws.activate(a.id);
+    flushSync();
+
+    expect(a.external).toBe('none');
+    expect(b.external).toBe('updated');
+    expect(tabFor(a.id).textContent).not.toContain('Updated');
+    stop();
   });
 });
