@@ -657,6 +657,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_script_switches_to_utf8_for_a_non_ascii_tail_under_a_profile_variable() {
+        let exe = Path::new(r"C:\Users\José\AppData\Local\Lintel Éditeur\lintel.exe");
+        let script = windows_cmd(exe, &profile_dirs());
+        assert!(script.contains("chcp 65001 >nul\r\n"), "{script}");
+        assert!(
+            script.contains("start \"\" \"%LOCALAPPDATA%\\Lintel Éditeur\\lintel.exe\" %*\r\n"),
+            "{script}"
+        );
+    }
+
+    #[test]
     fn windows_script_does_not_take_a_lookalike_folder_for_the_profile() {
         let exe = Path::new(r"C:\Users\JoséX\lintel.exe");
         let script = windows_cmd(exe, &profile_dirs());
@@ -798,6 +809,28 @@ mod tests {
             "{output:?}"
         );
         assert_eq!(run.wait_for_log(), "a b.md\n");
+    }
+
+    // The program sleeps and writes output: a script that waits or leaks it is caught.
+    #[cfg(unix)]
+    #[test]
+    fn linux_nohup_fallback_returns_at_once_and_prints_nothing() {
+        let run = LinuxRun::new();
+        let nohup = ["/usr/bin/nohup", "/bin/nohup"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .unwrap();
+        std::os::unix::fs::symlink(nohup, run.dir.join("bin/nohup")).unwrap();
+        let chatty = run.dir.join("Chatty.AppImage");
+        write_program(&chatty, "#!/bin/sh\necho out\necho err >&2\n/bin/sleep 3\n");
+        let start = Instant::now();
+        let output = run.run(&chatty, &run.dir.join("bin").display().to_string());
+        assert!(start.elapsed() < Duration::from_millis(1500), "{output:?}");
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{output:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -1094,6 +1127,36 @@ mod tests {
         );
     }
 
+    // Stands in for stdin being /dev/null: any other stdin gets no PATH out of the shell.
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_gives_the_shell_no_stdin() {
+        let (_dir, shell) =
+            fake_shell("[ /dev/stdin -ef /dev/null ] || exit 0\nPATH=/ok /bin/sh -c \"$4\"");
+        assert_eq!(
+            login_shell_path(shell.as_os_str(), PROBE_TIMEOUT).as_deref(),
+            Some("/ok")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_takes_the_last_start_marker() {
+        let (_dir, shell) =
+            fake_shell("printf '<<lintel-path>>/from/rc'\nPATH=/real /bin/sh -c \"$4\"");
+        assert_eq!(
+            login_shell_path(shell.as_os_str(), PROBE_TIMEOUT).as_deref(),
+            Some("/real")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_path_is_none_for_an_empty_path() {
+        let (_dir, shell) = fake_shell("PATH= /bin/sh -c \"$4\"");
+        assert_eq!(login_shell_path(shell.as_os_str(), PROBE_TIMEOUT), None);
+    }
+
     #[test]
     fn linux_make_default_runs_xdg_mime_for_markdown() {
         assert_eq!(
@@ -1159,6 +1222,41 @@ mod tests {
         assert_eq!(
             launch_services::result(-50),
             Err("macOS could not make Lintel the default (error -50).".into())
+        );
+    }
+
+    // The real home and login shell stay untouched: both come from temp folders.
+    #[cfg(unix)]
+    #[test]
+    fn install_cli_action_reports_the_hint_and_the_new_folder() {
+        static ENV: Mutex<()> = Mutex::new(());
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let home = temp_dir();
+        let bin = home.join(".local/bin");
+        let on_path = format!("PATH={}:/usr/bin /bin/sh -c \"$4\"", bin.display());
+        let (_on, shell_on) = fake_shell(&on_path);
+        let (_off, shell_off) = fake_shell("PATH=/usr/bin /bin/sh -c \"$4\"");
+        std::env::set_var("LINTEL_DEBUG_HOME", &*home);
+        let ran = |shell: &Path| {
+            std::env::set_var("SHELL", shell);
+            run_action(OsAction::InstallCli).unwrap()
+        };
+        let installed = format!(
+            "Installed the lintel command at {}.",
+            bin.join("lintel").display()
+        );
+        let new_terminal = if cfg!(target_os = "linux") {
+            " Open a new terminal (or log in again) to use it."
+        } else {
+            ""
+        };
+
+        // First run makes the folder, and the folder is on PATH, so no hint.
+        assert_eq!(ran(&shell_on), format!("{installed}{new_terminal}"));
+        // Second run finds the folder; PATH lacks it, so the hint names it.
+        assert_eq!(
+            ran(&shell_off),
+            format!("{installed} Add ~/.local/bin to your PATH.")
         );
     }
 
