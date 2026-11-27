@@ -9,6 +9,7 @@ mod windows;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tauri::menu::Menu;
+use tauri::plugin::Plugin;
 use tauri::{AppHandle, Manager, RunEvent, Runtime, Url, Window, WindowEvent};
 
 use open_queue::OpenQueue;
@@ -22,27 +23,10 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     startup::disable_appkit_restoration();
     let mut builder = tauri::Builder::default()
-        // First, so a second launch hands over its files and exits before other plugins start.
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
-        }))
         // The default menu's Quit skips the unsaved-changes prompt; the frontend builds the menu.
-        .enable_macos_default_menu(false)
-        .plugin(navigation_guard())
-        .plugin(settings_window())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        // The preview's own click handler is the one path that opens links.
-        .plugin(
-            tauri_plugin_opener::Builder::new()
-                .open_js_links_on_click(false)
-                .build(),
-        )
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_store::Builder::default().build());
-    for plugin in session::geometry_plugins() {
-        builder = builder.plugin(plugin);
+        .enable_macos_default_menu(false);
+    for plugin in app_plugins() {
+        builder = builder.plugin_boxed(plugin);
     }
     // Opening a file from Finder or `open -g` must not take focus from the app in front.
     #[cfg(target_os = "macos")]
@@ -82,6 +66,33 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Lintel")
         .run(on_run_event);
+}
+
+/// Every plugin, in the order it is registered; plugins set up in this order (Ruling 237).
+fn app_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
+    let mut plugins: Vec<Box<dyn Plugin<R>>> = vec![
+        // First, so a second launch hands over its files and exits before other plugins start.
+        Box::new(tauri_plugin_single_instance::init(|app, args, cwd| {
+            open_queue::open_from_outside(app, open_queue::paths_from_args(args, &cwd));
+        })),
+        Box::new(navigation_guard()),
+        Box::new(settings_window()),
+        Box::new(tauri_plugin_clipboard_manager::init()),
+        Box::new(tauri_plugin_dialog::init()),
+        Box::new(tauri_plugin_fs::init()),
+        // The preview's own click handler is the one path that opens links.
+        Box::new(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        ),
+        Box::new(tauri_plugin_process::init()),
+        Box::new(tauri_plugin_store::Builder::default().build()),
+    ];
+    for plugin in session::geometry_plugins() {
+        plugins.push(Box::new(plugin));
+    }
+    plugins
 }
 
 fn open_launch_args<R: Runtime>(app: &AppHandle<R>) {
@@ -223,6 +234,23 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registers_single_instance_first_and_the_geometry_plugins_in_order() {
+        let names: Vec<String> = app_plugins::<tauri::test::MockRuntime>()
+            .iter()
+            .map(|plugin| plugin.name().to_owned())
+            .collect();
+        assert_eq!(names.first().map(String::as_str), Some("single-instance"));
+        let at = |name: &str| names.iter().position(|n| n == name).expect(name);
+        // The prune edits window-state's file before window-state reads it, and the size
+        // keeper's exit hook runs after window-state's save.
+        assert!(at("store") < at("prune-geometry"));
+        assert_eq!(
+            names[at("prune-geometry")..],
+            ["prune-geometry", "window-state", "keep-window-sizes"]
+        );
+    }
 
     #[test]
     fn settings_closes_with_the_last_document_window() {
