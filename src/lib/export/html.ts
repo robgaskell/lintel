@@ -145,11 +145,12 @@ function unlinkNetworkPaths(root: DocumentFragment) {
   }
 }
 
-// Drops raw styles and every attribute that could load something (Rulings 320, 329): a
-// value that starts with a scheme other than data:, `//` or `\\`; or one with a parenthesis
-// that holds such a scheme, a backslash or `//` anywhere, or a url() not within the page.
-// Other hrefs keep only a #fragment. Links are unlinkNetworkPaths' job, and an image's src
-// is the preview's, which keeps only data URIs.
+// Drops raw styles and every attribute that could load something (Rulings 320, 329, 331).
+// With tab, LF and CR removed first, as URL parsers do, a value goes if it starts with a
+// scheme other than data:, `//` or `\\`; or if it has a parenthesis and holds such a scheme,
+// a backslash or `//` anywhere, or a url() not within the page. Other hrefs keep only a
+// #fragment. alt, title and aria-* never load, so they stay. Links are unlinkNetworkPaths'
+// job, and an image's src is the preview's, which keeps only data URIs.
 function stripRemote(root: DocumentFragment) {
   for (const style of root.querySelectorAll('style')) style.remove();
   for (const el of root.querySelectorAll('*')) {
@@ -159,6 +160,7 @@ function stripRemote(root: DocumentFragment) {
     for (const attr of [...el.attributes]) {
       if (el.localName === 'a' && attr.localName === 'href') continue;
       if (el.localName === 'img' && attr.name === 'src') continue;
+      if (attr.name === 'alt' || attr.name === 'title' || attr.name.startsWith('aria-')) continue;
       // Only an in-page target may stay in an href, as in svg <use>.
       const off = attr.localName === 'href' ? !attr.value.startsWith('#') : pointsOffPage(attr.value);
       if (off) el.removeAttributeNode(attr);
@@ -167,11 +169,9 @@ function stripRemote(root: DocumentFragment) {
 }
 
 function pointsOffPage(value: string): boolean {
-  const target = value.trim();
+  const target = value.replace(/[\t\n\r]/g, '').trim();
   if (!target.includes('(')) return /^([a-z][a-z0-9+.-]*:\S|[\\/]{2})/i.test(target) && !isInPage(target);
-  // A CSS value (it has a parenthesis) goes if it holds anywhere, in any letter case, a
-  // scheme other than data:, a backslash or `//`, even inside a data: URI; or a url() not
-  // within the page (Ruling 329).
+  // Any letter case, and even inside a data: URI.
   const schemes = target.match(/[a-z][a-z0-9+.-]*:/gi) ?? [];
   if (schemes.some((scheme) => scheme.toLowerCase() !== 'data:') || /\\|\/\//.test(target)) return true;
   return /url\(/i.test(target.replace(/url\(\s*(['"]?)\s*(#|data:)[^'")]*\1\s*\)/gi, ''));

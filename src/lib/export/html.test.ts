@@ -288,6 +288,11 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
     ['src()', '<svg><rect width="9" height="9" mask="src(&quot;http:x.example/d&quot;)"/></svg>'],
     ['image-set with //host', '<svg><rect width="9" height="9" mask="image-set(&quot;//x.example/f&quot; 1x)"/></svg>'],
     ['image-set with \\\\host', '<svg><rect width="9" height="9" mask="image-set(&quot;\\\\x.example\\g&quot; 1x)"/></svg>'],
+    // URL parsers drop tab, LF and CR, so these still name http: and // (Ruling 331).
+    ['image-set with http&Tab;:', '<svg><rect width="9" height="9" mask="image-set(&quot;http&Tab;:x.example/h&quot; 1x)"/></svg>'],
+    ['-webkit-image-set with http&NewLine;:', '<svg><rect width="9" height="9" mask="-webkit-image-set(&quot;http&NewLine;:x.example/i&quot; 1x)"/></svg>'],
+    ['image-set with /&Tab;/', '<svg><rect width="9" height="9" mask="image-set(&quot;/&Tab;/x.example/j&quot; 1x)"/></svg>'],
+    ['relative url()', '<svg><rect width="9" height="9" fill="url(foo.png)"/></svg>'],
     ['data: URI that loads', '<svg><rect width="9" height="9" mask="url(data:image/svg+xml,%3Cimage href=%22http:x.example/e%22/%3E#m)"/></svg>'],
   ])('drops an SVG %s that points off the page', async (_name, markup) => {
     const html = await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' });
@@ -302,6 +307,37 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
   ])('drops any other attribute whose value is %s (Ruling 320)', async (_name, markup) => {
     const html = await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' });
     expect(parse(html).querySelector('.content blockquote')!.hasAttribute('cite')).toBe(false);
+  });
+
+  it('drops a plain value with a tab inside its scheme, even if the sanitiser let it through (Ruling 331)', async () => {
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({
+      ...actual(text),
+      html: '<p><object data="ht&Tab;tp://x.example/o"></object><q cite="/&#13;/x.example/q">q</q></p>',
+    }));
+    const page = parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' }));
+    expect(page.querySelector('.content object')!.hasAttribute('data')).toBe(false);
+    expect(page.querySelector('.content q')!.hasAttribute('cite')).toBe(false);
+  });
+
+  it('keeps alt, title and aria-* text, which never loads (Ruling 331)', async () => {
+    const text = '![Note: see (1)](img/a.png) <abbr title="Note: see (1)">n</abbr> <span aria-label="Note: see (1)">s</span>\n';
+    const page = parse(await buildStandaloneHtml(doc(text), { theme: 'light' }));
+    expect(page.querySelector('.content img')!.getAttribute('alt')).toBe('Note: see (1)');
+    expect(page.querySelector('.content abbr')!.getAttribute('title')).toBe('Note: see (1)');
+    expect(page.querySelector('.content span[aria-label]')!.getAttribute('aria-label')).toBe('Note: see (1)');
+  });
+
+  it('keeps data: in any letter case (Ruling 331)', async () => {
+    const markup = '<svg><rect width="9" height="9" mask="image-set(&quot;DATA:image/png;base64,AAAA&quot; 1x)"/><rect width="9" height="9" fill="url(DATA:image/png;base64,AAAA)"/></svg>';
+    const page = parse(await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' }));
+    expect(page.querySelector('.content rect[mask]')).not.toBeNull();
+    expect(page.querySelector('.content rect[fill]')).not.toBeNull();
+
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({ ...actual(text), html: '<p><q cite="DATA:text/plain,x">q</q></p>' }));
+    const plain = parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' }));
+    expect(plain.querySelector('.content q')!.getAttribute('cite')).toBe('DATA:text/plain,x');
   });
 
   it('keeps SVG references within the page', async () => {
