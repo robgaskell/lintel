@@ -157,7 +157,12 @@ export async function refreshConfig(doc: DocState, view?: EditorView): Promise<v
   if (failure === null) {
     failures.delete(doc.id);
     doc.lintConfigPath = found?.path ?? null;
-    watchOnly(doc.id, found ? new Map([[found.path, found.hash]]) : new Map());
+    const next = new Map(found ? [[found.path, found.hash]] : []);
+    // A deleted config stays watched while it would apply again, so its return is heard (Ruling 346).
+    for (const kept of watchedFor.get(doc.id) ?? []) {
+      if (!next.has(kept) && wouldApply(kept, path, found?.path)) next.set(kept, '');
+    }
+    watchOnly(doc.id, next);
   } else {
     failures.set(doc.id, { name: failure.path === null ? null : baseName(failure.path), message: failure.message });
     doc.lintConfigPath = null;
@@ -296,4 +301,20 @@ function settle(what: string, run: () => Promise<void>): void {
 
 function baseName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
+}
+
+/** Whether the search from `docPath` reaches `config`'s folder no later than the found config's. */
+function wouldApply(config: string, docPath: string | null, found: string | undefined): boolean {
+  if (docPath === null) return false;
+  const folder = folderOf(config);
+  return isWithin(folderOf(docPath), folder) && (found === undefined || isWithin(folder, folderOf(found)));
+}
+
+function folderOf(path: string): string {
+  return path.slice(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')));
+}
+
+// Both paths come canonical from Rust, so comparing text is enough.
+function isWithin(path: string, folder: string): boolean {
+  return path === folder || (path.startsWith(folder) && /[\\/]/.test(path.charAt(folder.length)));
 }

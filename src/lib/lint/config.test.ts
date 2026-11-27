@@ -477,7 +477,7 @@ describe('watching config files', () => {
     expect(findLintConfig).not.toHaveBeenCalled();
   });
 
-  it('moves to the farther config, and unwatches the old one, when it is deleted', async () => {
+  it('moves to the farther config when the nearer is deleted, and back when it returns (Ruling 346)', async () => {
     stop = followDocConfigs();
     const near = '/repo/docs/.markdownlint.yaml';
     vi.mocked(findLintConfig).mockResolvedValue(result('MD004: false', near, 'yaml'));
@@ -490,8 +490,14 @@ describe('watching config files', () => {
 
     expect(doc.lintConfigPath).toBe(REPO);
     expect(currentConfig(doc)).toEqual({ MD013: true });
-    expect(unwatchPath).toHaveBeenCalledWith(near);
+    expect(unwatchPath).not.toHaveBeenCalledWith(near);
     expect(watchPath).toHaveBeenCalledWith(REPO, 'hash of { "MD013": true }');
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('MD004: true', near, 'yaml'));
+    handleConfigFileEvent(near);
+    await settled();
+    expect(currentConfig(doc)).toEqual({ MD004: true });
+    expect(unwatchPath).toHaveBeenCalledWith(REPO);
   });
 
   it('looks again for every doc when the window asks, finding a new config', async () => {
@@ -715,6 +721,69 @@ describe('watching config files', () => {
     expect(configStatus(doc)).toBeNull();
     expect(currentConfig(doc)).toEqual({ MD004: true });
     expect(vi.mocked(watchPath).mock.calls.filter(([path]) => path === REPO)).toHaveLength(1);
+  });
+
+  it('keeps watching a deleted config, so its re-creation is heard (Ruling 346)', async () => {
+    stop = followDocConfigs();
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+    const doc = open();
+    await settled();
+
+    vi.mocked(findLintConfig).mockResolvedValue(null);
+    handleConfigFileEvent(REPO);
+    await settled();
+    expect(currentConfig(doc)).toEqual({ MD013: false });
+    // A later look, as on focus, still finds nothing and still keeps the watch.
+    refreshAllConfigs();
+    await settled();
+    expect(configSource(doc)).toBeNull();
+    expect(unwatchPath).not.toHaveBeenCalledWith(REPO);
+
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": true }'));
+    handleConfigFileEvent(REPO);
+    await settled();
+    expect(currentConfig(doc)).toEqual({ MD004: true });
+    expect(vi.mocked(watchPath).mock.calls.filter(([path]) => path === REPO)).toHaveLength(1);
+  });
+
+  it('keeps watching a deleted config with Windows paths too (Ruling 346)', async () => {
+    stop = followDocConfigs();
+    const config = 'C:\\repo\\.markdownlint.json';
+    vi.mocked(findLintConfig).mockResolvedValue(result('{}', config));
+    const inside = open('C:\\repo\\docs\\a.md');
+    open('C:\\repository\\b.md');
+    await settled();
+
+    vi.mocked(findLintConfig).mockResolvedValue(null);
+    handleConfigFileEvent(config);
+    await settled();
+    expect(unwatchPath).not.toHaveBeenCalledWith(config);
+
+    // C:\repository is not inside C:\repo, so that doc let go already.
+    removeDoc(inside.id);
+    await settled();
+    expect(unwatchPath).toHaveBeenCalledWith(config);
+  });
+
+  it('lets go of a deleted config once the doc moves where it cannot apply, or closes (Ruling 346)', async () => {
+    stop = followDocConfigs();
+    vi.mocked(findLintConfig).mockResolvedValue(result('{ "MD004": false }'));
+    const moved = open('/repo/docs/a.md');
+    const closed = open('/repo/b.md');
+    await settled();
+    vi.mocked(findLintConfig).mockResolvedValue(null);
+    handleConfigFileEvent(REPO);
+    await settled();
+
+    vi.mocked(save).mockResolvedValue('/other/a.md');
+    vi.mocked(normalizePath).mockImplementation(async (path) => path);
+    await saveDocAs(moved.id);
+    await settled();
+    expect(unwatchPath).not.toHaveBeenCalledWith(REPO);
+
+    removeDoc(closed.id);
+    await settled();
+    expect(unwatchPath).toHaveBeenCalledWith(REPO);
   });
 
   it('lets go of the failing file once the doc moves to another config or closes', async () => {

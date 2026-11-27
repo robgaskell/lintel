@@ -643,6 +643,24 @@ mod tests {
         assert_eq!(notice, ("main".to_owned(), changed(&path, "back")));
     }
 
+    /// A lint config made again is heard even with its old text (Ruling 346).
+    #[test]
+    fn a_deleted_config_made_again_with_the_same_text_is_reported_as_a_change() {
+        let dir = TempDir::new();
+        let path = dir.file(".markdownlint.json", "{}");
+        let (watcher, notices) = watcher();
+        watcher.watch("main", path.clone(), &hash("{}")).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        let notice = next(&notices, "a delete");
+        assert_eq!(notice, ("main".to_owned(), removed(&path)));
+
+        fs::write(&path, "{}").unwrap();
+        let notice = next(&notices, "the same file made again");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "{}")));
+        assert_quiet(&notices);
+    }
+
     #[test]
     fn two_watched_files_in_one_folder_share_one_folder_watch() {
         let dir = TempDir::new();
