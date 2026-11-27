@@ -45,10 +45,10 @@ export function fetchRemoteImage(url: string): Promise<string> {
 
 /**
  * Claims `path` for this window. Resolves to the label of another window that already has
- * it open (Rust then shows it there), or null once this window owns it.
+ * it open (Rust then shows it there, unless `reveal` is false), or null once this window owns it.
  */
-export function claimPath(path: string): Promise<string | null> {
-  return invoke<string | null>('claim_path', { path });
+export function claimPath(path: string, { reveal = true } = {}): Promise<string | null> {
+  return invoke<string | null>('claim_path', reveal ? { path } : { path, reveal });
 }
 
 /** Drops this window's claim on `path`. */

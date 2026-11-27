@@ -4,6 +4,7 @@ import { createDoc, docs, opening, type DocState } from '../docs/store.svelte';
 import { claimPath, fetchRemoteImage, readImageAsDataUri, releasePath, writeTextFile } from '../ipc';
 import { DEFAULT_SETTINGS, settings, type Settings } from '../settings/settings.svelte';
 import { applyTheme } from '../theme/theme';
+import { renderMarkdown } from '../render/markdown';
 import { buildStandaloneHtml, exportHtml } from './html';
 
 vi.mock('../ipc', () => ({
@@ -15,6 +16,10 @@ vi.mock('../ipc', () => ({
   releasePath: vi.fn(async () => {}),
   setWindowAppearance: vi.fn(async () => {}),
 }));
+vi.mock('../render/markdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../render/markdown')>();
+  return { ...actual, renderMarkdown: vi.fn(actual.renderMarkdown) };
+});
 vi.mock('../settings/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../settings/settings.svelte')>()),
   updateSettings: vi.fn(async () => {}),
@@ -201,7 +206,7 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
       }
     }
     for (const img of page.querySelectorAll('img')) expect(img.getAttribute('src')).toMatch(/^data:/);
-    expect(html).not.toMatch(/@import|url\(\s*['"]?https?:/i);
+    expect(html).not.toMatch(/@import|url\(\s*['"]?(?!#|data:)[a-z/\\]/i);
     expect(fetchRemoteImage).not.toHaveBeenCalled();
   }
 
@@ -267,9 +272,140 @@ describe('buildStandaloneHtml privacy (Ruling 307)', () => {
     }
   });
 
+  // The critic's vectors: SVG paint and effect references the CSP alone was stopping (Ruling 320).
+  it.each([
+    ['fill', '<svg><rect width="9" height="9" fill="url(https://x.example/fill#p)"/></svg>'],
+    ['stroke', '<svg><rect width="9" height="9" stroke="url(&quot;https://x.example/stroke#p&quot;)"/></svg>'],
+    ['mask', '<svg><rect width="9" height="9" mask="url(https://x.example/mask#m)"/></svg>'],
+    ['clip-path', '<svg><rect width="9" height="9" clip-path="url(//x.example/clip#c)"/></svg>'],
+    ['marker-end', '<svg><path d="M0 0L9 9" marker-end="url(https://x.example/marker#m)"/></svg>'],
+    ['filter', '<svg><rect width="9" height="9" filter="url(https://x.example/filter#f)"/></svg>'],
+    ['mask image-set', '<svg><rect width="9" height="9" mask="image-set(&quot;https://x.example/set&quot; 1x)"/></svg>'],
+  ])('drops an SVG %s that points off the page', async (_name, markup) => {
+    const html = await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' });
+
+    expectNothingRemote(html);
+    expect(parse(html).querySelector('.content rect, .content path')).not.toBeNull();
+  });
+
+  it.each([
+    ['a URL', '<blockquote cite="https://x.example/q">q</blockquote>'],
+    ['a network path', '<blockquote cite="\\\\x.example\\q">q</blockquote>'],
+  ])('drops any other attribute whose value is %s (Ruling 320)', async (_name, markup) => {
+    const html = await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' });
+    expect(parse(html).querySelector('.content blockquote')!.hasAttribute('cite')).toBe(false);
+  });
+
+  it('keeps SVG references within the page', async () => {
+    const markup = '<svg><defs><linearGradient id="h-g"></linearGradient></defs><rect width="9" height="9" fill="url(#h-g)"/></svg>';
+    const page = parse(await buildStandaloneHtml(doc(`${markup}\n`), { theme: 'light' }));
+    expect(page.querySelector('.content rect')!.getAttribute('fill')).toBe('url(#h-g)');
+  });
+
+  it('drops style attributes and <style> elements even if the sanitiser let them through (Ruling 320)', async () => {
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({
+      ...actual(text),
+      html: '<p style="color: red">styled</p><style>p { color: red }</style><svg><style>rect { fill: red }</style></svg>',
+    }));
+    const page = parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' }));
+
+    expect(page.querySelector('.content p')!.hasAttribute('style')).toBe(false);
+    expect(page.querySelectorAll('.content style')).toHaveLength(0);
+  });
+
+  it('leaves no local path in the file: alt boxes say only that the image is not available (Ruling 319)', async () => {
+    vi.mocked(readImageAsDataUri).mockImplementation(async (path) => {
+      throw `Could not read ${path}: No such file or directory`;
+    });
+    const text = '![Chart](img/a.png) ![](/Users/alice/private/b.png) ![Drive](C:/x.png) ![Far](ftp://x.example/f.png)\n';
+    const html = await buildStandaloneHtml(doc(text, '/Users/alice/notes/doc.md'), { theme: 'light' });
+
+    expect(html).not.toContain('/Users/alice');
+    expect(html).not.toContain('Could not read');
+    const boxes = [...parse(html).querySelectorAll('.image-alt')];
+    expect(boxes.map((box) => box.textContent)).toEqual(['Chart', 'Image', 'Drive', 'Far']);
+    for (const box of boxes) expect(box.getAttribute('title')).toBe('Image not available');
+  });
+
   it('keeps data: images as they are', async () => {
     const page = parse(await buildStandaloneHtml(doc('![d](data:image/png;base64,AAAA)\n'), { theme: 'light' }));
     expect(page.querySelector('img')!.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+  });
+});
+
+describe('buildStandaloneHtml links (Ruling 321)', () => {
+  it('drops network-path and file: hrefs but keeps relative and web links', async () => {
+    const text = [
+      '[unc](//host/share)',
+      '<a href="\\\\host\\share">back</a>',
+      '<a href="/\\host/mixed">mixed</a>',
+      // markdown-it refuses file: links; raw HTML can still write them.
+      '<a href="file://host/share">filehost</a>',
+      '<a href="FILE:///Users/alice/x.md">filelocal</a>',
+      '[rel](other.md)',
+      '[up](../up.md)',
+      '[web](https://example.com/)',
+    ].join(' ');
+    const links = [...parse(await buildStandaloneHtml(doc(`${text}\n`), { theme: 'light' })).querySelectorAll('.content a')];
+
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['unc', null],
+      ['back', null],
+      ['mixed', null],
+      ['filehost', null],
+      ['filelocal', null],
+      ['rel', 'other.md'],
+      ['up', '../up.md'],
+      ['web', 'https://example.com/'],
+    ]);
+  });
+});
+
+describe('buildStandaloneHtml file links (Ruling 321)', () => {
+  it('drops file: hrefs even if the sanitiser let them through', async () => {
+    const actual = vi.mocked(renderMarkdown).getMockImplementation()!;
+    vi.mocked(renderMarkdown).mockImplementationOnce((text) => ({
+      ...actual(text),
+      html: '<p><a href="file://host/share">f</a> <a href=" FILE:///Users/alice/x.md">g</a> <a href="other.md">h</a></p>',
+    }));
+    const links = [...parse(await buildStandaloneHtml(doc('x\n'), { theme: 'light' })).querySelectorAll('.content a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([null, null, 'other.md']);
+  });
+});
+
+describe('buildStandaloneHtml page', () => {
+  it('gives a heading id only to the heading, not to raw HTML that copies it (Ruling 322)', async () => {
+    const text = '<div id="h-intro">fake</div>\n\n<h1 id="h-intro">Intro</h1>\n\n# Intro\n\n[go](#Intro)\n';
+    const page = parse(await buildStandaloneHtml(doc(text), { theme: 'light' }));
+
+    const owners = [...page.querySelectorAll('[id="h-intro"]')];
+    expect(owners).toHaveLength(1);
+    expect(owners[0].getAttribute('data-source-line')).toBe('5');
+    expect(page.querySelector('.content a')!.getAttribute('href')).toBe('#h-intro');
+  });
+
+  it('renders in a hidden host that it removes afterwards (Ruling 322)', async () => {
+    const before = document.body.childElementCount;
+    const hosts: { el: HTMLElement; hidden: boolean }[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node instanceof HTMLElement) hosts.push({ el: node, hidden: node.hidden });
+      }
+    });
+    observer.observe(document.body, { childList: true });
+    try {
+      await buildStandaloneHtml(doc(SAMPLE), { theme: 'light' });
+      await later(null);
+    } finally {
+      observer.disconnect();
+    }
+    expect(hosts.length).toBeGreaterThan(0);
+    for (const host of hosts) {
+      expect(host.hidden).toBe(true);
+      expect(host.el.isConnected).toBe(false);
+    }
+    expect(document.body.childElementCount).toBe(before);
   });
 });
 
@@ -326,10 +462,11 @@ describe('exportHtml', () => {
     expect(message).toHaveBeenCalledWith('That file is open in Lintel. Choose another name.', { title: 'Lintel', kind: 'error' });
   });
 
-  it('refuses a file another window has open (Ruling 309)', async () => {
+  it('refuses a file another window has open, without showing it there (Rulings 309, 322)', async () => {
     vi.mocked(claimPath).mockResolvedValueOnce('w-2');
     await exportHtml(doc('# Title\n'));
 
+    expect(claimPath).toHaveBeenCalledWith('/out/doc.html', { reveal: false });
     expect(writeTextFile).not.toHaveBeenCalled();
     expect(message).toHaveBeenCalledWith('That file is open in Lintel. Choose another name.', { title: 'Lintel', kind: 'error' });
   });
@@ -341,7 +478,7 @@ describe('exportHtml', () => {
     });
     await exportHtml(doc('# Title\n'));
 
-    expect(claimPath).toHaveBeenCalledWith('/out/doc.html');
+    expect(claimPath).toHaveBeenCalledWith('/out/doc.html', { reveal: false });
     expect(releasePath).toHaveBeenCalledWith('/out/doc.html');
     expect(opening.size).toBe(0);
   });

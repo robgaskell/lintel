@@ -181,13 +181,18 @@ impl PathRegistry {
 }
 
 /// Claims `path` for the calling window, or shows it in the window that owns it and
-/// returns that window's label.
+/// returns that window's label. With `reveal` false the owner is only named, so a refused
+/// export does not switch its tab (Ruling 322).
 #[tauri::command]
 pub fn claim_path<R: Runtime>(
     window: Window<R>,
     registry: State<'_, PathRegistry>,
     path: String,
+    reveal: Option<bool>,
 ) -> Option<String> {
+    if reveal == Some(false) {
+        return registry.claim(window.label(), &path);
+    }
     claim_or_reveal(&registry, window.label(), path, |owner, event| {
         if let Err(err) = window.emit_to(owner, REVEAL_DOC, event) {
             eprintln!("Could not reveal the document in {owner}: {err}");
@@ -663,14 +668,45 @@ mod tests {
             let in_main = heard(&main, REVEAL_DOC);
             let in_w1 = heard(&w1, REVEAL_DOC);
 
-            assert_eq!(claim_path(w1.clone(), app.state(), A.to_owned()), None);
             assert_eq!(
-                claim_path(main.clone(), app.state(), A.to_owned()),
+                claim_path(w1.clone(), app.state(), A.to_owned(), None),
+                None
+            );
+            assert_eq!(
+                claim_path(main.clone(), app.state(), A.to_owned(), None),
                 Some("w-1".to_owned())
             );
 
             assert_eq!(*in_w1.lock().unwrap(), [r#"{"path":"/notes/a.md"}"#]);
             assert!(in_main.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn claim_path_without_reveal_names_the_owner_but_shows_nothing() {
+            let app = app();
+            let main = window(&app, "main");
+            let w1 = window(&app, "w-1");
+            let in_w1 = heard(&w1, REVEAL_DOC);
+
+            assert_eq!(
+                claim_path(w1.clone(), app.state(), A.to_owned(), None),
+                None
+            );
+            assert_eq!(
+                claim_path(main.clone(), app.state(), A.to_owned(), Some(false)),
+                Some("w-1".to_owned())
+            );
+            assert_eq!(
+                claim_path(
+                    main.clone(),
+                    app.state(),
+                    "/notes/b.md".to_owned(),
+                    Some(false)
+                ),
+                None
+            );
+
+            assert!(in_w1.lock().unwrap().is_empty());
         }
 
         #[test]
@@ -681,11 +717,14 @@ mod tests {
             let claims_in_main = heard(&main, MENU_CLAIM);
             on_doc_window_event(&main, &WindowEvent::Focused(true));
             on_doc_window_event(&w1, &WindowEvent::Focused(true));
-            claim_path(w1.clone(), app.state(), A.to_owned());
+            claim_path(w1.clone(), app.state(), A.to_owned(), None);
 
             on_doc_window_event(&w1, &WindowEvent::Destroyed);
 
-            assert_eq!(claim_path(main.clone(), app.state(), A.to_owned()), None);
+            assert_eq!(
+                claim_path(main.clone(), app.state(), A.to_owned(), None),
+                None
+            );
             assert_eq!(claims_in_main.lock().unwrap().len(), 1);
         }
 

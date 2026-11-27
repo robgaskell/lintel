@@ -30,7 +30,8 @@ export function withoutMarkdownExtension(name: string): string {
 async function whileClaimed<T>(path: string, write: () => Promise<T>): Promise<T | null> {
   opening.add(path);
   try {
-    return (await claimPath(path)) === null ? await write() : null;
+    // A refused export must not switch the other window's tab (Ruling 322).
+    return (await claimPath(path, { reveal: false })) === null ? await write() : null;
   } finally {
     opening.delete(path);
     // Drops only this window's claim; another window's stays.

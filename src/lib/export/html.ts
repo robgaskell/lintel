@@ -13,10 +13,12 @@ import pageCss from './html.css?inline';
 import { renderFrozen } from './print';
 import { exportName, withoutMarkdownExtension, writeUnlessOpen } from './target';
 
-// The file loads nothing from anywhere; its images are data URIs (Ruling 307).
+// The file loads nothing. stripRemote is the first guard and this CSP the second (Ruling 320).
 const CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
-// Attributes the sanitiser keeps that would load from the network.
+// Attributes that load something whatever their value looks like.
 const REMOTE_ATTRS = ['srcset', 'poster', 'background', 'ping'];
+// The alt box's own reason can name a local path, and the file is shared (Ruling 319).
+const ALT_BOX_TITLE = 'Image not available';
 
 type ExportDoc = Pick<DocState, 'id' | 'path' | 'title' | 'text'>;
 
@@ -49,7 +51,9 @@ async function build(doc: ExportDoc, theme: DiagramTheme): Promise<{ html: strin
   template.innerHTML = result.html;
   const unembedded = doc.path === null && [...template.content.querySelectorAll('img')].some(isRelativeImage);
   linkRemoteImages(template.content);
+  dropCopiedHeadingIds(template.content, result.headings);
   pointAnchorsAtHeadings(template.content, result.headings);
+  unlinkNetworkPaths(template.content);
   // Before the page sees it, so nothing even tries to load.
   stripRemote(template.content);
   // Mermaid draws only in the page.
@@ -58,6 +62,7 @@ async function build(doc: ExportDoc, theme: DiagramTheme): Promise<{ html: strin
   document.body.append(host);
   try {
     await renderFrozen(doc, host, { result: { ...result, html: template.innerHTML }, theme });
+    for (const box of host.querySelectorAll('.image-alt')) box.setAttribute('title', ALT_BOX_TITLE);
     return { html: page(withoutMarkdownExtension(doc.title), theme, host.innerHTML), unembedded };
   } finally {
     host.remove();
@@ -116,17 +121,63 @@ function pointAnchorsAtHeadings(root: DocumentFragment, headings: Heading[]) {
   }
 }
 
-// An image's src is left to the preview, which keeps only data URIs. Links keep their
-// href; any other element only one that points within the page.
-function stripRemote(root: ParentNode) {
-  for (const el of root.querySelectorAll('*')) {
-    for (const name of REMOTE_ATTRS) el.removeAttribute(name);
-    if (el.localName !== 'img') el.removeAttribute('src');
-    if (el.localName === 'a') continue;
-    for (const name of ['href', 'xlink:href']) {
-      if (!el.getAttribute(name)?.startsWith('#')) el.removeAttribute(name);
+// Raw HTML may copy a heading's id; only the heading keeps it, so links land there (Ruling 322).
+function dropCopiedHeadingIds(root: DocumentFragment, headings: Heading[]) {
+  const owners = new Map<string, Element[]>();
+  for (const el of root.querySelectorAll('[id]')) owners.set(el.id, [...(owners.get(el.id) ?? []), el]);
+  for (const heading of headings) {
+    const candidates = owners.get(heading.id) ?? [];
+    const tagged = candidates.filter((el) => el.localName === `h${heading.level}`);
+    // A nested heading has no line; then its text decides.
+    const real =
+      tagged.find((el) => el.getAttribute('data-source-line') === String(heading.line)) ??
+      tagged.find((el) => el.textContent?.trim() === heading.text);
+    for (const el of candidates) if (el !== real) el.removeAttribute('id');
+  }
+}
+
+// A click on a network path sends the user's Windows password hash to that host, so such
+// links, and any file: URL, keep only their text (Ruling 321). Relative links stay.
+function unlinkNetworkPaths(root: DocumentFragment) {
+  for (const link of root.querySelectorAll('a')) {
+    for (const attr of [...link.attributes]) {
+      // Browsers ignore spaces and control characters in a URL.
+      const target = attr.value.replace(/[\x00-\x20]/g, '');
+      if (attr.localName === 'href' && /^([\\/]{2}|file:)/i.test(target)) link.removeAttributeNode(attr);
     }
   }
+}
+
+// Drops raw styles and every attribute that could load something: a url() or a scheme,
+// `//` or `\\` target other than data: and #fragment. Links are unlinkNetworkPaths' job, and
+// an image's src is the preview's, which keeps only data URIs (Ruling 320).
+function stripRemote(root: DocumentFragment) {
+  for (const style of root.querySelectorAll('style')) style.remove();
+  for (const el of root.querySelectorAll('*')) {
+    el.removeAttribute('style');
+    for (const name of REMOTE_ATTRS) el.removeAttribute(name);
+    if (el.localName !== 'img') el.removeAttribute('src');
+    for (const attr of [...el.attributes]) {
+      if (el.localName === 'a' && attr.localName === 'href') continue;
+      if (el.localName === 'img' && attr.name === 'src') continue;
+      // Only an in-page target may stay in an href, as in svg <use>.
+      const off = attr.localName === 'href' ? !attr.value.startsWith('#') : pointsOffPage(attr.value);
+      if (off) el.removeAttributeNode(attr);
+    }
+  }
+}
+
+function pointsOffPage(value: string): boolean {
+  const target = value.trim();
+  if (!target.includes('(')) return /^([a-z][a-z0-9+.-]*:\S|[\\/]{2})/i.test(target) && !isInPage(target);
+  // A CSS value: only url()s within the page may stay. Escapes could spell another url(),
+  // and image-set() and the like take a plain address.
+  const rest = target.replace(/url\(\s*(['"]?)\s*(#|data:)[^'")]*\1\s*\)/gi, '');
+  return /url\(|\\|\/\//i.test(rest);
+}
+
+function isInPage(target: string): boolean {
+  return target.startsWith('#') || /^data:/i.test(target);
 }
 
 // Resolvable once the doc has a folder, which an untitled doc does not.

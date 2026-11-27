@@ -297,7 +297,7 @@ describe('exportDocx', () => {
     });
     await expect(exportDocx(doc('# Title\n'))).rejects.toThrow('This file is read-only.');
 
-    expect(claimPath).toHaveBeenCalledWith('/out/doc.docx');
+    expect(claimPath).toHaveBeenCalledWith('/out/doc.docx', { reveal: false });
     expect(releasePath).toHaveBeenCalledWith('/out/doc.docx');
     expect(opening.size).toBe(0);
   });
