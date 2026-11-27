@@ -110,3 +110,16 @@ On Windows, the WebView2 browser engine has its own Ctrl+P shortcut, and Lintel 
 turn off WebView2's own print shortcut yet. Ctrl+P prints a blank page; use File > Print.
 Straight after File > Print, Ctrl+P can print that same document again, until you edit it,
 switch tabs, or it reloads from disk.
+
+## Word export
+
+### Journey diagrams may lose their labels
+
+Export as Word draws each Mermaid diagram as a picture. Most diagram types draw their labels
+as plain text for this, but journey diagrams still use web-page labels, and their label text
+may be missing from the picture in Word.
+
+### Web images show as their alt text
+
+Export as Word never downloads anything. An image from the web, written in Markdown or as
+an HTML `<img>`, appears in the Word file as its alt text, not as a picture.

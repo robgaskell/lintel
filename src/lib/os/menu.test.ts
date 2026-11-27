@@ -228,13 +228,11 @@ describe('menuEntries', () => {
     }
   });
 
-  it('disables the items whose features come later', () => {
+  it('enables Export as Word along with the other items', () => {
     const entries = menuEntries(handlers(), [], 'macos') as Entry[];
-    const later = ['export-docx'];
-    for (const id of later) expect(byId(entries, id).enabled).toBe(false);
     const ready = [
       ...['settings', 'new', 'open', 'save', 'save-as', 'close-tab', 'undo', 'redo', 'find', 'toggle-outline'],
-      ...['split-right', 'split-down', 'print', 'export-pdf', 'export-html'],
+      ...['split-right', 'split-down', 'print', 'export-pdf', 'export-html', 'export-docx'],
     ];
     for (const id of [...ready, 'mode-edit', 'mode-split', 'mode-read']) {
       expect(byId(entries, id).enabled).not.toBe(false);

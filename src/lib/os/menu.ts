@@ -263,7 +263,7 @@ async function liveMenuItem(entries: MenuEntry[], base: string): Promise<MenuIte
 }
 
 /**
- * The menu bar's contents. Items for features that land in later steps are disabled.
+ * The menu bar's contents.
  * There is no predefined Close Window: its Cmd+W would bypass Close Tab (Ruling 37).
  */
 export function menuEntries(
@@ -327,7 +327,7 @@ export function menuEntries(
       },
       { id: 'export-pdf', text: 'Export as PDF…', action: () => h.exportPdf() },
       { id: 'export-html', text: 'Export as HTML…', action: () => h.exportHtml() },
-      { id: 'export-docx', text: 'Export as Word…', enabled: false, action: () => h.exportDocx() },
+      { id: 'export-docx', text: 'Export as Word…', action: () => h.exportDocx() },
       ...(mac ? [] : [separator, settings, separator, quit]),
     ],
   };

@@ -1,6 +1,7 @@
 import { message, open } from '@tauri-apps/plugin-dialog';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
+import { exportDocx } from '../export/docx';
 import { exportHtml } from '../export/html';
 import { printDoc } from '../export/print';
 import type { Workspace } from '../layout/workspace';
@@ -67,6 +68,11 @@ export function makeMenuHandlers({
     if (doc) await exportHtml(doc);
   }
 
+  async function exportActiveAsDocx() {
+    const doc = activeDoc();
+    if (doc) await exportDocx(doc);
+  }
+
   // The menu bar is shared with the Settings window (Ruling 142). Document commands do
   // nothing there, since they would act on a hidden tab.
   function forDoc(action: () => void | Promise<void>): () => void {
@@ -116,7 +122,7 @@ export function makeMenuHandlers({
     print: forDoc(() => printActive(false)),
     exportPdf: forDoc(() => printActive(true)),
     exportHtml: forDoc(exportActiveAsHtml),
-    exportDocx: forDoc(notYet),
+    exportDocx: forDoc(exportActiveAsDocx),
     openSettings: (section) => guarded(() => openSettingsWindow(section))(),
     nextTab: forDoc(() => workspace.nextTab()),
     previousTab: forDoc(() => workspace.previousTab()),
@@ -159,11 +165,6 @@ export function listenTabSwitchKeys(
   };
   window.addEventListener('keydown', onKeydown, true);
   return () => window.removeEventListener('keydown', onKeydown, true);
-}
-
-// The step that enables an item replaces this; until then a stray click says so.
-function notYet(): never {
-  throw new Error('Not implemented yet');
 }
 
 // openPaths reports its own errors; reading the list again drops the entry if the file is gone.

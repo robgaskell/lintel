@@ -31,3 +31,8 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 ## HTML export (M7.2)
 
 - [ ] Windows and Linux: File > Export as HTML… offers `<name>.html`. Change the name to one without `.html` and save. Note whether the saved file ends in `.html`; if it does not, add that to docs/known-issues.md.
+
+## Word export (M7.3)
+
+- [ ] Windows and Linux: File > Export as Word… offers `<name>.docx`. Change the name to one without `.docx` and save. Note whether the saved file ends in `.docx`; if it does not, add that to docs/known-issues.md.
+- [ ] Windows and Linux: open the exported file in Word (on Linux, LibreOffice). It opens without a repair prompt, and a flowchart shows as a picture with its labels.
