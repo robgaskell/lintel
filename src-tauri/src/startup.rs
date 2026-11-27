@@ -80,6 +80,22 @@ pub fn disable_window_tabbing() {
     }
 }
 
+/// AppKit's own window restoration stays off: the session brings Lintel's windows back,
+/// and nothing else, such as the Colors panel, reopens at launch (Ruling 218).
+pub const NO_APPKIT_RESTORATION: [(&str, bool); 2] = [
+    ("NSQuitAlwaysKeepsWindows", false),
+    ("ApplePersistenceIgnoreState", true),
+];
+
+#[cfg(target_os = "macos")]
+pub fn disable_appkit_restoration() {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    let defaults = NSUserDefaults::standardUserDefaults();
+    for (key, value) in NO_APPKIT_RESTORATION {
+        defaults.setBool_forKey(value, &NSString::from_str(key));
+    }
+}
+
 pub fn prepare_main_window<R: Runtime>(window: &WebviewWindow<R>) {
     let json = window
         .path()
@@ -252,6 +268,12 @@ mod tests {
             assert_eq!(format!("#{r:02X}{g:02X}{b:02X}"), hex);
             assert_eq!(a, 0xFF);
         }
+    }
+
+    #[test]
+    fn appkit_neither_keeps_nor_restores_windows() {
+        assert!(NO_APPKIT_RESTORATION.contains(&("NSQuitAlwaysKeepsWindows", false)));
+        assert!(NO_APPKIT_RESTORATION.contains(&("ApplePersistenceIgnoreState", true)));
     }
 
     #[test]

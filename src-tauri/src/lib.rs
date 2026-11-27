@@ -15,7 +15,10 @@ const SETTINGS: &str = "settings";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Before the app finishes launching, so AppKit restores nothing this time either.
+    #[cfg(target_os = "macos")]
+    startup::disable_appkit_restoration();
+    let mut builder = tauri::Builder::default()
         // The default menu's Quit skips the unsaved-changes prompt; the frontend builds the menu.
         .enable_macos_default_menu(false)
         .plugin(navigation_guard())
@@ -30,9 +33,11 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(session::prune_geometry())
-        .plugin(session::window_state())
+        .plugin(tauri_plugin_store::Builder::default().build());
+    for plugin in session::geometry_plugins() {
+        builder = builder.plugin(plugin);
+    }
+    builder
         .manage(windows::PathRegistry::default())
         .manage(windows::FocusOrder::default())
         .on_window_event(windows::on_doc_window_event)
