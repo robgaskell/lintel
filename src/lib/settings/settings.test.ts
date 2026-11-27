@@ -43,6 +43,27 @@ beforeEach(async () => {
 });
 
 describe('loadSettings', () => {
+  it('applies the stored settings when its repair saves nothing, even at revision 0 (Ruling 300)', async () => {
+    resetFakes();
+    fakes.settingsRevision.value = 0;
+    await store().set('version', 1);
+    await store().set('fontSize', 20);
+    await store().set('lint', { enabled: 'yes', rules: { default: true } });
+    const real = fakes.coreModule.invoke;
+    // Another window changes the key just before the repair, so the repair's guard fails.
+    vi.spyOn(fakes.coreModule, 'invoke').mockImplementationOnce(async (command: string, args?: unknown) => {
+      store().data.set('lint', { enabled: 'maybe', rules: { default: true } });
+      return real(command as never, args as never);
+    });
+
+    const loaded = await loadSettings();
+
+    expect(fakes.settingsRevision.value).toBe(0);
+    expect(loaded.fontSize).toBe(20);
+    expect(settings.fontSize).toBe(20);
+    expect(settings.lint).toEqual({ enabled: true, rules: { default: true } });
+  });
+
   it('returns the defaults when the store is empty', async () => {
     const loaded = await loadSettings();
 

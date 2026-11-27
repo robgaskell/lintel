@@ -140,11 +140,12 @@ function write(patch: SettingsPatch, replace?: Repairs): Promise<Written> {
   return invoke<Written>('update_settings', { patch, defaults, replace });
 }
 
-// Skips a snapshot older than a change already heard, which it would undo.
-function applySnapshot({ revision, entries }: Written): void {
-  if (revision <= appliedRevision) return;
+// Skips a snapshot older than a change already heard, which it would undo. True if applied.
+function applySnapshot({ revision, entries }: Written): boolean {
+  if (revision <= appliedRevision) return false;
   appliedRevision = revision;
   Object.assign(settings, readSettings(new Map(Object.entries(entries))));
+  return true;
 }
 
 /**
@@ -162,13 +163,10 @@ function repairsFor(stored: Map<string, unknown>): Repairs | null {
   return Object.keys(repairs).length ? repairs : null;
 }
 
-// True once the repair is saved and its snapshot, or anything newer, is in `settings`.
+// True once the repair is saved and its snapshot is in `settings`.
 function repairQuietly(repairs: Repairs): Promise<boolean> {
   return write({}, repairs).then(
-    (written) => {
-      applySnapshot(written);
-      return true;
-    },
+    (written) => applySnapshot(written),
     (err) => {
       console.error('Could not repair settings:', err);
       return false;
@@ -237,6 +235,9 @@ async function readStore(): Promise<Settings> {
     const repairs = repairsFor(stored);
     // The read above may predate another window's save, which the repair's snapshot holds.
     if (repairs && (await repairQuietly(repairs))) return $state.snapshot(settings) as Settings;
+    // A repair that saved nothing (another window changed the key first) brings no
+    // snapshot, so the store is read again (Ruling 300).
+    if (repairs) next = readSettings(new Map(await store.entries<unknown>()));
   }
   Object.assign(settings, next);
   return structuredClone(next);
