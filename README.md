@@ -1,0 +1,61 @@
+# Lintel
+
+Lintel is a desktop app for reading and editing Markdown files, for macOS, Windows and
+Linux. Each file opens in a tab, which you can show as the raw Markdown, the rendered page,
+or both side by side.
+
+## Install
+
+Download the installer for your system from the
+[Releases page](https://github.com/robgaskell/lintel/releases).
+
+Lintel's installers are not signed by Apple or Microsoft, so the first time you open
+Lintel your system warns you. The steps below get past that warning once.
+
+### macOS (Apple silicon and Intel)
+
+1. Open the `.dmg` file and drag Lintel to your Applications folder.
+2. Open Lintel. macOS says it cannot check Lintel. Close that message.
+3. Open **System Settings > Privacy & Security**. Near the bottom, next to the message
+   about Lintel, click **Open Anyway**, then confirm.
+
+### Windows 10 and 11 (x64)
+
+1. Run the `.exe` installer.
+2. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**.
+
+The installer adds Lintel to **Open with** for `.md` and `.markdown` files. It does not
+change the app those files open with by default.
+
+### Linux (x64 and arm64)
+
+Download the `.deb` (for Ubuntu, Debian and similar) or the `.rpm` (for Fedora and
+similar) that matches your computer: `amd64` or `x86_64` for Intel and AMD, `arm64` or
+`aarch64` for ARM. Then install it from the folder you downloaded it to:
+
+```sh
+sudo apt install ./Lintel_*_amd64.deb
+# or
+sudo dnf install ./Lintel-*.x86_64.rpm
+```
+
+The packages are built on Ubuntu 22.04.
+
+## The `lintel` command
+
+`lintel notes.md` opens `notes.md` in Lintel from a terminal. If Lintel is already
+running, the file opens in a new tab.
+
+On macOS and Windows, to add the command, open Lintel's Settings, go to **Files**, and choose **Install
+command-line tool**. If the folder it uses is not on your PATH, Lintel says so.
+
+On Linux the package installs the `lintel` command for you.
+
+## Known issues
+
+See [docs/known-issues.md](docs/known-issues.md).
+
+## Licence
+
+Lintel is released under the MIT licence. The licences of the software it includes are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

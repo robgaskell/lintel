@@ -1,7 +1,16 @@
 # Smoke test: Windows and Linux
 
-Run once on Windows and on Ubuntu 24.04 (arm64) with an installed build. macOS is checked
-in each step as it is built. Mark each line pass or fail, and note what happened on a fail.
+Run once on Windows and on Ubuntu 24.04 (arm64) with an installed build from the draft
+release. macOS is checked in each step as it is built. Mark each line pass or fail, and note
+what happened on a fail.
+
+## Installing (M8.2)
+
+- [ ] Windows: run the `.exe` installer. If SmartScreen shows "Windows protected your PC", **More info > Run anyway** lets it run, as the README says. Lintel installs and opens.
+- [ ] Ubuntu 24.04 arm64: `sudo apt install ./Lintel_*_arm64.deb` installs with no missing packages, and Lintel opens from the app list.
+- [ ] Ubuntu 24.04 arm64, after installing the `.deb`: `grep MimeType /usr/share/applications/Lintel.desktop` lists `text/markdown`, and `command -v lintel` prints `/usr/bin/lintel`.
+- [ ] Linux, `.rpm`: on an RPM system (for example a Fedora VM), `sudo dnf install ./Lintel-*.rpm` installs the file for that machine (`aarch64` or `x86_64`), and Lintel opens.
+- [ ] Linux x64: on an x64 machine or VM, install the `amd64` `.deb` (or the `x86_64` `.rpm`). Lintel opens and shows a `.md` file.
 
 ## Opening files (M5.1)
 
@@ -36,3 +45,9 @@ in each step as it is built. Mark each line pass or fail, and note what happened
 
 - [ ] Windows and Linux: File > Export as Word… offers `<name>.docx`. Change the name to one without `.docx` and save. Note whether the saved file ends in `.docx`; if it does not, add that to docs/known-issues.md.
 - [ ] Windows and Linux: open the exported file in Word (on Linux, LibreOffice). It opens without a repair prompt, and a flowchart shows as a picture with its labels.
+
+## Keyboard and tabs on Windows (Rulings 62 and 182)
+
+- [ ] Windows, with the cursor in the editor: type a word, wait two seconds, type a second word, then press Ctrl+Z once. Only the second word goes, not both. Ctrl+Shift+Z once brings back only that word.
+- [ ] Windows, with the cursor in the editor: Ctrl+S saves, Ctrl+W closes the tab, and Ctrl+Q quits (asking first about unsaved edits).
+- [ ] Windows: dropping a `.md` file from Explorer on the window opens it in a tab. Dragging a tab into another group does not work, as docs/known-issues.md says; Split Right and Split Down in the tab's menu and the View menu move the tab instead.
