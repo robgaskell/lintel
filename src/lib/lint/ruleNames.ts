@@ -18,13 +18,14 @@ export function ruleKey(rule: LintRule): string {
 /**
  * Renames every key that names a rule to that rule's first alias, so each rule has one key.
  * If a rule is named twice, the first alias wins, else the last name. Other keys, such as
- * `default` or tags, stay. Values that are not a boolean or an object are dropped.
+ * `default` or tags, stay. Values other than a boolean, an object, "error" or "warning"
+ * are dropped; markdownlint takes those two severities as "on" (Ruling 281).
  */
 export function normaliseRules(rules: Record<string, unknown>): Record<string, boolean | object> {
   const out: Record<string, boolean | object> = {};
   const exact = new Set<string>();
   for (const [name, value] of Object.entries(rules)) {
-    if (typeof value !== 'boolean' && (typeof value !== 'object' || value === null || Array.isArray(value))) continue;
+    if (!isRuleValue(value)) continue;
     const rule = findRule(name);
     if (!rule) {
       out[name] = value;
@@ -36,4 +37,10 @@ export function normaliseRules(rules: Record<string, unknown>): Record<string, b
     out[key] = value;
   }
   return out;
+}
+
+// The severities are kept as written, though settings type rules as boolean or object.
+function isRuleValue(value: unknown): value is boolean | object {
+  if (value === 'error' || value === 'warning') return true;
+  return typeof value === 'boolean' || (typeof value === 'object' && value !== null && !Array.isArray(value));
 }

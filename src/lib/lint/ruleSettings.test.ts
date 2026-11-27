@@ -69,5 +69,7 @@ describe('ruleIsOn', () => {
     expect(ruleIsOn({ 'ul-style': false }, md004)).toBe(false);
     expect(ruleIsOn({ 'ul-style': { style: 'dash' } }, md004)).toBe(true);
     expect(ruleIsOn({ 'ul-style': { enabled: false } }, md004)).toBe(false);
+    // markdownlint takes a severity as "on" (Ruling 281).
+    expect(ruleIsOn({ default: false, 'ul-style': 'warning' } as unknown as Record<string, boolean | object>, md004)).toBe(true);
   });
 });

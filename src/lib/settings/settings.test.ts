@@ -354,7 +354,8 @@ describe('nested settings (Ruling 159)', () => {
 
     await updateSettings({ lint: { enabled: false } });
 
-    expect(await store().get('lint')).toEqual({ enabled: false, rules: { default: true, MD013: false } });
+    // The ID key is also written back under its alias (Rulings 270, 280).
+    expect(await store().get('lint')).toEqual({ enabled: false, rules: { default: true, 'line-length': false } });
   });
 });
 
@@ -404,11 +405,113 @@ describe('lint rules (Ruling 270)', () => {
     expect((await loadSettings()).lint.rules).toEqual({ 'ul-style': false });
   });
 
+  it('keeps a rule set to "error" or "warning" as written (Ruling 281)', async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: true, rules: { default: false, MD004: 'warning', MD013: 'error', MD009: 'loud' } });
+
+    expect((await loadSettings()).lint.rules).toEqual({ default: false, 'ul-style': 'warning', 'line-length': 'error' });
+  });
+
   it('keeps keys that name no rule, such as tags, and drops values of the wrong type', async () => {
     store().data.set('version', 1);
     store().data.set('lint', { enabled: true, rules: { default: true, headings: false, MD013: 7 } });
 
     expect((await loadSettings()).lint.rules).toEqual({ default: true, headings: false });
+  });
+});
+
+describe('self-repair (Ruling 280)', () => {
+  it('repairs a lint value it cannot read at load, so a rule toggle then takes effect', async () => {
+    store().data.set('version', 1);
+    store().data.set('lint', { enabled: 'yes', rules: { default: true } });
+    await loadSettings();
+
+    await updateSettings({ lint: { rules: { 'ul-style': false } } });
+
+    expect(settings.lint).toEqual({ enabled: true, rules: { default: true, 'ul-style': false } });
+    expect(await store().get('lint')).toEqual({ enabled: true, rules: { default: true, 'ul-style': false } });
+  });
+
+  it('repairs a palette with a short colour at load, so a dark accent edit then takes effect', async () => {
+    store().data.set('version', 1);
+    store().data.set('palettes', {
+      light: { ...DEFAULT_SETTINGS.palettes.light, text: '#FFF' },
+      dark: DEFAULT_SETTINGS.palettes.dark,
+    });
+    await loadSettings();
+
+    await updateSettings({ palettes: { dark: { accent: '#5EEAD4' } } });
+
+    expect(settings.palettes.dark.accent).toBe('#5EEAD4');
+    expect(settings.palettes.light.text).toBe(DEFAULT_SETTINGS.palettes.light.text);
+  });
+
+  it('repairs a value spoiled after load, then applies the change again', async () => {
+    store().data.set('lint', { enabled: 'yes', rules: { default: true } });
+
+    await updateSettings({ lint: { rules: { 'ul-style': false } } });
+
+    expect(settings.lint.rules).toEqual({ default: true, 'ul-style': false });
+    expect(await store().get('lint')).toEqual({ enabled: true, rules: { default: true, 'ul-style': false } });
+  });
+
+  it('writes back a value its reader altered, and writes nothing when all is readable', async () => {
+    store().data.set('version', 1);
+    store().data.set('fontSize', 3.4);
+    store().data.set('lint', { enabled: true, rules: { MD004: false } });
+    await loadSettings();
+
+    expect(await store().get('fontSize')).toBe(12);
+    expect(await store().get('lint')).toEqual({ enabled: true, rules: { 'ul-style': false } });
+    const saves = store().saves;
+    await loadSettings();
+    expect(store().saves).toBe(saves);
+  });
+
+  it('repairs a bad value heard from another window', async () => {
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    store().data.set('fontSize', 'huge');
+
+    await eventModule.emit('lintel://settings-changed', { revision: 5, changes: { fontSize: 'huge' } });
+
+    await vi.waitFor(async () => expect(await store().get('fontSize')).toBe(16));
+  });
+
+  it('leaves a key alone that changed again before the repair', async () => {
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    store().data.set('fontSize', 20);
+
+    await eventModule.emit('lintel://settings-changed', { revision: 5, changes: { fontSize: 'huge' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(await store().get('fontSize')).toBe(20);
+  });
+});
+
+describe('ordering (Ruling 281)', () => {
+  it("does not let its own save's snapshot undo a newer change from another window", async () => {
+    vi.resetModules();
+    vi.doMock('@tauri-apps/plugin-store', () => fakes.storeModule);
+    vi.doMock('@tauri-apps/api/event', () => fakes.eventModule);
+    vi.doMock('@tauri-apps/api/core', () => fakes.coreModule);
+    const other = await import('./settings.svelte');
+    await other.loadSettings();
+    onSettingsChanged(() => {});
+    await Promise.resolve();
+    const real = fakes.coreModule.invoke;
+    const invoke = vi.spyOn(fakes.coreModule, 'invoke').mockImplementationOnce(async (command, args) => {
+      const snapshot = await real(command, args);
+      await other.updateSettings({ fontSize: 20 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return snapshot;
+    });
+
+    await updateSettings({ theme: 'dark' });
+
+    expect(settings).toMatchObject({ theme: 'dark', fontSize: 20 });
+    invoke.mockRestore();
   });
 });
 
@@ -418,9 +521,12 @@ describe('onSettingsChanged', () => {
     onSettingsChanged(seen);
     await Promise.resolve();
 
+    // As another window would have saved them.
+    store().data.set('fontSize', 'huge');
+    store().data.set('lint', { enabled: true, rules: { MD004: false } });
     await eventModule.emit('lintel://settings-changed', {
-      fontSize: 'huge',
-      lint: { enabled: true, rules: { MD004: false } },
+      revision: 1,
+      changes: { fontSize: 'huge', lint: { enabled: true, rules: { MD004: false } } },
     });
 
     await vi.waitFor(() => expect(seen).toHaveBeenCalled());

@@ -109,7 +109,9 @@ export const eventModule = {
 
 /**
  * The Rust `update_settings` command on the fake store: merges each patched key into the
- * stored value (missing parts from `defaults`, `null` deletes), saves, then emits the changes.
+ * stored value (missing parts from `defaults`, `null` deletes), applies each repair whose
+ * key still holds its `from`, saves, then emits the changes with the write's number.
+ * settings-merge-cases.json holds the cases both this and Rust must pass.
  */
 export const coreModule = {
   invoke: async (command: string, args: Record<string, unknown> = {}) => {
@@ -117,20 +119,41 @@ export const coreModule = {
     const store = fakeStore('settings.json');
     const patch = viaJson(args.patch) as Record<string, unknown>;
     const defaults = viaJson(args.defaults) as Record<string, unknown>;
+    const replace = (viaJson(args.replace) ?? {}) as Record<string, { from?: unknown; to: unknown }>;
     const changes: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(patch)) {
-      const merged = mergePatch(withDefaults(store.data.get(key), defaults[key]), value);
-      if (merged === undefined) await store.delete(key);
-      else await store.set(key, merged);
+    const set = async (key: string, value: unknown) => {
+      if (value === undefined || value === null) await store.delete(key);
+      else await store.set(key, value);
       changes[key] = store.data.get(key) ?? null;
+    };
+    for (const [key, value] of Object.entries(patch)) {
+      await set(key, mergePatch(withDefaults(store.data.get(key), defaults[key]), value));
     }
-    await store.set('version', 1);
-    changes.version = 1;
-    await store.save();
-    await eventModule.emit('lintel://settings-changed', changes);
-    return Object.fromEntries(store.data);
+    for (const [key, { from, to }] of Object.entries(replace)) {
+      if (sameJson(store.data.get(key) ?? null, from ?? null)) await set(key, to);
+    }
+    if (Object.keys(changes).length > 0) {
+      await store.set('version', 1);
+      changes.version = 1;
+      await store.save();
+      settingsRevision.value++;
+      await eventModule.emit('lintel://settings-changed', { revision: settingsRevision.value, changes });
+    }
+    return { revision: settingsRevision.value, entries: Object.fromEntries(store.data) };
   },
 };
+
+/** The fake command's write count. Like Rust's, it only grows, so resetFakes leaves it. */
+export const settingsRevision = { value: 0 };
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (isObject(a) && isObject(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((key) => key in b && sameJson(a[key], b[key]));
+  }
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => sameJson(v, b[i]));
+  return a === b;
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -155,5 +178,5 @@ function withDefaults(stored: unknown, fallback: unknown): unknown {
     return filled;
   }
   if (stored !== undefined && isObject(fallback)) return fallback;
-  return stored ?? fallback;
+  return stored === undefined ? fallback : stored;
 }

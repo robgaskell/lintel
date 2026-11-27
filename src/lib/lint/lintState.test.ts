@@ -83,6 +83,16 @@ describe('settingsLintConfig', () => {
 });
 
 describe('followLintSettings', () => {
+  it('lints every editor at once when it starts, as the settings may have just loaded', () => {
+    const a = editor();
+    const b = editor();
+    cleanups.push(registerView('a', a), registerView('b', b));
+
+    cleanups.push(followLintSettings());
+
+    expect(vi.mocked(relint).mock.calls.map(([view]) => view)).toEqual([a, b]);
+  });
+
   it('lints every editor again after a lint change, and not after any other', async () => {
     const a = editor();
     const b = editor();
@@ -92,11 +102,14 @@ describe('followLintSettings', () => {
     vi.mocked(relint).mockClear();
     await Promise.resolve();
 
-    await eventModule.emit('lintel://settings-changed', { fontSize: 20 });
+    await eventModule.emit('lintel://settings-changed', { revision: 1e6, changes: { fontSize: 20 } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(relint).not.toHaveBeenCalled();
 
-    await eventModule.emit('lintel://settings-changed', { lint: { enabled: false, rules: { default: true } } });
+    await eventModule.emit('lintel://settings-changed', {
+      revision: 1e6 + 1,
+      changes: { lint: { enabled: false, rules: { default: true } } },
+    });
     await vi.waitFor(() => expect(relint).toHaveBeenCalledTimes(2));
     expect(vi.mocked(relint).mock.calls.map(([view]) => view)).toEqual([a, b]);
   });

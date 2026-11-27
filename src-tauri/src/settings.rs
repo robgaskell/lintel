@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_store::StoreBuilder;
@@ -11,21 +12,59 @@ use tauri_plugin_store::StoreBuilder;
 const FILE: &str = "settings.json";
 const CHANGED: &str = "lintel://settings-changed";
 
-/// Held for each read-merge-write of settings.json.
+/// Held for each read-merge-write of settings.json. Counts the writes, so a window can
+/// tell an older snapshot from a newer one (Ruling 281).
 #[derive(Default)]
-pub struct SettingsLock(Mutex<()>);
+pub struct SettingsLock(Mutex<u64>);
 
-/// Merges `patch` into settings.json and saves it, then tells every window which keys
-/// changed. `defaults` stands in for a missing or malformed stored object. Returns every
-/// stored setting.
+/// A whole-key replacement, made only if the key still holds `from` (missing or null: none).
+/// Windows use it to repair a value they cannot read (Ruling 280).
+#[derive(Deserialize)]
+pub struct Repair {
+    from: Option<Value>,
+    to: Value,
+}
+
+/// Every stored setting after a write, and that write's number.
+#[derive(Serialize)]
+pub struct Written {
+    revision: u64,
+    entries: Map<String, Value>,
+}
+
+/// The `settings-changed` event: the keys a write changed, and its number.
+#[derive(Serialize, Clone)]
+struct Changed<'a> {
+    revision: u64,
+    changes: &'a Map<String, Value>,
+}
+
+/// Merges `patch` into settings.json, applies `replace`, saves, then tells every window
+/// which keys changed. `defaults` stands in for a missing or malformed stored object.
+/// Async, so a burst of saves never waits on the main thread (Ruling 281).
 #[tauri::command]
-pub fn update_settings<R: Runtime>(
+pub async fn update_settings<R: Runtime>(
     app: AppHandle<R>,
     lock: State<'_, SettingsLock>,
     patch: Map<String, Value>,
     defaults: Map<String, Value>,
-) -> Result<Map<String, Value>, String> {
-    apply(&app, &lock, FILE, patch, &defaults)
+    replace: Option<Map<String, Value>>,
+) -> Result<Written, String> {
+    let replace = parse_repairs(replace.unwrap_or_default())?;
+    apply(&app, &lock, FILE, patch, &defaults, replace, |changed| {
+        app.emit(CHANGED, changed).map_err(|err| err.to_string())
+    })
+}
+
+fn parse_repairs(replace: Map<String, Value>) -> Result<Vec<(String, Repair)>, String> {
+    replace
+        .into_iter()
+        .map(|(key, value)| {
+            serde_json::from_value(value)
+                .map(|repair| (key.clone(), repair))
+                .map_err(|err| format!("Bad repair for {key}: {err}"))
+        })
+        .collect()
 }
 
 fn apply<R: Runtime>(
@@ -34,32 +73,52 @@ fn apply<R: Runtime>(
     file: impl AsRef<Path>,
     patch: Map<String, Value>,
     defaults: &Map<String, Value>,
-) -> Result<Map<String, Value>, String> {
-    let _held = lock.0.lock().unwrap_or_else(PoisonError::into_inner);
+    replace: Vec<(String, Repair)>,
+    notify: impl FnOnce(Changed) -> Result<(), String>,
+) -> Result<Written, String> {
+    let mut revision = lock.0.lock().unwrap_or_else(PoisonError::into_inner);
     // The same instance the windows load, which they open with auto-save off too.
     let store = StoreBuilder::new(app, file.as_ref())
         .disable_auto_save()
         .build()
         .map_err(|err| err.to_string())?;
     let mut changes = Map::new();
-    for (key, value) in patch {
-        let base = with_defaults(store.get(&key), defaults.get(&key));
-        match merge(base, value) {
-            Some(merged) => store.set(key.clone(), merged.clone()),
+    let mut set = |key: String, value: Option<Value>| {
+        match value {
+            Some(value) => store.set(key.clone(), value),
             None => {
                 store.delete(&key);
             }
         }
         changes.insert(key.clone(), store.get(&key).unwrap_or(Value::Null));
+    };
+    for (key, value) in patch {
+        let base = with_defaults(store.get(&key), defaults.get(&key));
+        set(key, merge(base, value));
     }
-    store.set("version", 1);
-    changes.insert("version".into(), Value::from(1));
-    store
-        .save()
-        .map_err(|err| format!("Could not save settings: {err}"))?;
-    // Inside the lock, so windows hear the changes in the order they were saved.
-    app.emit(CHANGED, &changes).map_err(|err| err.to_string())?;
-    Ok(store.entries().into_iter().collect())
+    for (key, repair) in replace {
+        let held = store.get(&key).filter(|value| !value.is_null());
+        if held == repair.from.filter(|value| !value.is_null()) {
+            set(key, Some(repair.to).filter(|value| !value.is_null()));
+        }
+    }
+    if !changes.is_empty() {
+        store.set("version", 1);
+        changes.insert("version".into(), Value::from(1));
+        store
+            .save()
+            .map_err(|err| format!("Could not save settings: {err}"))?;
+        *revision += 1;
+        // Inside the lock, so windows hear the changes in the order they were saved.
+        notify(Changed {
+            revision: *revision,
+            changes: &changes,
+        })?;
+    }
+    Ok(Written {
+        revision: *revision,
+        entries: store.entries().into_iter().collect(),
+    })
 }
 
 /// Objects merge key by key, `null` deletes a key, and any other value replaces.
@@ -141,66 +200,131 @@ mod tests {
         patch: Value,
     ) -> Result<Map<String, Value>, String> {
         let defaults = object(json!({ "lint": { "enabled": true, "rules": { "default": true } } }));
-        apply(app, &app.state::<SettingsLock>(), file, object(patch), &defaults)
-    }
-
-    #[test]
-    fn merges_nested_keys_and_deletes_null_ones() {
-        let app = app();
-        let file = temp_file();
-        update(app.handle(), &file, json!({ "lint": { "rules": { "MD004": false } } })).unwrap();
-
-        let all = update(
-            app.handle(),
-            &file,
-            json!({ "lint": { "rules": { "ul-style": false, "MD004": null } }, "fontSize": 18 }),
+        apply(
+            app,
+            &app.state::<SettingsLock>(),
+            file,
+            object(patch),
+            &defaults,
+            Vec::new(),
+            |changed| app.emit(CHANGED, changed).map_err(|err| err.to_string()),
         )
-        .unwrap();
-
-        assert_eq!(
-            all["lint"],
-            json!({ "enabled": true, "rules": { "default": true, "ul-style": false } })
-        );
-        assert_eq!(all["fontSize"], json!(18));
-        assert_eq!(all["version"], json!(1));
-        let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert_eq!(saved["lint"], all["lint"]);
+        .map(|written| written.entries)
     }
 
+    // The JS fake runs the same cases, so the two cannot drift apart (Ruling 280).
     #[test]
-    fn a_malformed_stored_object_is_replaced_by_its_default() {
+    fn every_shared_merge_case() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../../src/test/settings-merge-cases.json")).unwrap();
         let app = app();
-        let file = temp_file();
-        update(app.handle(), &file, json!({ "lint": "garbage" })).unwrap();
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let file = temp_file();
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, case["stored"].to_string()).unwrap();
+            let replace =
+                parse_repairs(object(case.get("replace").cloned().unwrap_or(json!({})))).unwrap();
 
-        let all = update(app.handle(), &file, json!({ "lint": { "enabled": false } })).unwrap();
+            let mut heard = json!({});
+            let written = apply(
+                app.handle(),
+                &app.state::<SettingsLock>(),
+                &file,
+                object(case["patch"].clone()),
+                &object(case["defaults"].clone()),
+                replace,
+                |changed| {
+                    heard = Value::Object(changed.changes.clone());
+                    Ok(())
+                },
+            )
+            .unwrap();
 
-        assert_eq!(
-            all["lint"],
-            json!({ "enabled": false, "rules": { "default": true } })
-        );
+            assert_eq!(
+                Value::Object(written.entries),
+                case["after"],
+                "{name}: stored"
+            );
+            assert_eq!(heard, case["changes"], "{name}: changes");
+        }
     }
 
     #[test]
-    fn tells_every_window_only_the_changed_keys() {
+    fn tells_every_window_the_changed_keys_and_the_write_number() {
         let app = app();
         let file = temp_file();
         let heard = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&heard);
-        app.listen_any(CHANGED, move |e| log.lock().unwrap().push(e.payload().to_owned()));
+        app.listen_any(CHANGED, move |e| {
+            log.lock().unwrap().push(e.payload().to_owned())
+        });
         update(app.handle(), &file, json!({ "theme": "dark" })).unwrap();
 
-        update(app.handle(), &file, json!({ "lint": { "rules": { "MD013": false } } })).unwrap();
+        update(
+            app.handle(),
+            &file,
+            json!({ "lint": { "rules": { "MD013": false } } }),
+        )
+        .unwrap();
 
         let heard = heard.lock().unwrap();
         let last: Value = serde_json::from_str(heard.last().unwrap()).unwrap();
         assert_eq!(
             last,
             json!({
-                "lint": { "enabled": true, "rules": { "default": true, "MD013": false } },
-                "version": 1
+                "revision": 2,
+                "changes": {
+                    "lint": { "enabled": true, "rules": { "default": true, "MD013": false } },
+                    "version": 1
+                }
             })
         );
+    }
+
+    #[test]
+    fn returns_the_write_number_which_a_write_that_changes_nothing_keeps() {
+        let app = app();
+        let file = temp_file();
+        let lock = app.state::<SettingsLock>();
+        let notified = std::cell::Cell::new(0);
+        let write = |patch: Value, replace: Vec<(String, Repair)>| {
+            apply(
+                app.handle(),
+                &lock,
+                &file,
+                object(patch),
+                &Map::new(),
+                replace,
+                |_| {
+                    notified.set(notified.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap()
+        };
+
+        assert_eq!(write(json!({ "fontSize": 18 }), Vec::new()).revision, 1);
+        let stale = vec![(
+            "fontSize".to_owned(),
+            Repair {
+                from: Some(json!(3)),
+                to: json!(16),
+            },
+        )];
+        assert_eq!(write(json!({}), stale).revision, 1);
+        assert_eq!(
+            notified.get(),
+            1,
+            "told windows of a write that changed nothing"
+        );
+        assert_eq!(write(json!({ "fontSize": 20 }), Vec::new()).revision, 2);
+    }
+
+    // Tauri runs a sync command on the main thread, which a burst of saves would stall.
+    #[test]
+    fn update_settings_is_async() {
+        assert!(include_str!("settings.rs").contains(concat!("pub async fn ", "update_settings")));
     }
 
     #[test]
@@ -215,7 +339,10 @@ mod tests {
         });
 
         std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(!writer.is_finished(), "wrote while another write held the lock");
+        assert!(
+            !writer.is_finished(),
+            "wrote while another write held the lock"
+        );
         drop(held);
         writer.join().unwrap();
     }
@@ -235,7 +362,8 @@ mod tests {
                 std::thread::spawn(move || {
                     start.wait();
                     for i in 0..EACH {
-                        let patch = json!({ "lint": { "rules": { format!("{window}-{i}"): false } } });
+                        let patch =
+                            json!({ "lint": { "rules": { format!("{window}-{i}"): false } } });
                         update(&handle, &file, patch).unwrap();
                     }
                 })

@@ -1,0 +1,82 @@
+[
+  {
+    "name": "a nested patch keeps the other keys of the stored object",
+    "stored": { "version": 1, "palettes": { "light": { "text": "#111111", "link": "#222222" } } },
+    "patch": { "palettes": { "light": { "text": "#333333" } } },
+    "defaults": {},
+    "after": { "version": 1, "palettes": { "light": { "text": "#333333", "link": "#222222" } } },
+    "changes": { "version": 1, "palettes": { "light": { "text": "#333333", "link": "#222222" } } }
+  },
+  {
+    "name": "null deletes a nested key",
+    "stored": { "version": 1, "lint": { "enabled": true, "rules": { "MD004": false, "default": true } } },
+    "patch": { "lint": { "rules": { "ul-style": false, "MD004": null } } },
+    "defaults": { "lint": { "enabled": true, "rules": { "default": true } } },
+    "after": { "version": 1, "lint": { "enabled": true, "rules": { "default": true, "ul-style": false } } },
+    "changes": { "version": 1, "lint": { "enabled": true, "rules": { "default": true, "ul-style": false } } }
+  },
+  {
+    "name": "a missing object starts from its default",
+    "stored": {},
+    "patch": { "lint": { "rules": { "ul-style": false } } },
+    "defaults": { "lint": { "enabled": true, "rules": { "default": true } } },
+    "after": { "version": 1, "lint": { "enabled": true, "rules": { "default": true, "ul-style": false } } },
+    "changes": { "version": 1, "lint": { "enabled": true, "rules": { "default": true, "ul-style": false } } }
+  },
+  {
+    "name": "a stored scalar where an object belongs is replaced by the default",
+    "stored": { "version": 1, "lint": "garbage" },
+    "patch": { "lint": { "enabled": false } },
+    "defaults": { "lint": { "enabled": true, "rules": { "default": true } } },
+    "after": { "version": 1, "lint": { "enabled": false, "rules": { "default": true } } },
+    "changes": { "version": 1, "lint": { "enabled": false, "rules": { "default": true } } }
+  },
+  {
+    "name": "a stored null inside an object is kept, not filled from the default",
+    "stored": { "version": 1, "lint": { "enabled": null, "rules": { "default": true } } },
+    "patch": { "lint": { "rules": { "ul-style": false } } },
+    "defaults": { "lint": { "enabled": true, "rules": { "default": true } } },
+    "after": { "version": 1, "lint": { "enabled": null, "rules": { "default": true, "ul-style": false } } },
+    "changes": { "version": 1, "lint": { "enabled": null, "rules": { "default": true, "ul-style": false } } }
+  },
+  {
+    "name": "a scalar or array patch replaces the stored value",
+    "stored": { "version": 1, "fontSize": 14, "list": [1, 2] },
+    "patch": { "fontSize": 18, "list": [3] },
+    "defaults": { "fontSize": 16 },
+    "after": { "version": 1, "fontSize": 18, "list": [3] },
+    "changes": { "version": 1, "fontSize": 18, "list": [3] }
+  },
+  {
+    "name": "a repair replaces the whole key when it still holds the value read",
+    "stored": { "version": 1, "lint": { "enabled": "yes", "rules": { "MD004": false } } },
+    "patch": {},
+    "defaults": {},
+    "replace": {
+      "lint": {
+        "from": { "enabled": "yes", "rules": { "MD004": false } },
+        "to": { "enabled": true, "rules": { "ul-style": false } }
+      }
+    },
+    "after": { "version": 1, "lint": { "enabled": true, "rules": { "ul-style": false } } },
+    "changes": { "version": 1, "lint": { "enabled": true, "rules": { "ul-style": false } } }
+  },
+  {
+    "name": "a repair to null deletes the key",
+    "stored": { "version": 1, "fontSize": "huge" },
+    "patch": {},
+    "defaults": {},
+    "replace": { "fontSize": { "from": "huge", "to": null } },
+    "after": { "version": 1 },
+    "changes": { "version": 1, "fontSize": null }
+  },
+  {
+    "name": "a repair is skipped once the key has changed since it was read",
+    "stored": { "version": 1, "fontSize": 20 },
+    "patch": {},
+    "defaults": {},
+    "replace": { "fontSize": { "from": "huge", "to": 16 } },
+    "after": { "version": 1, "fontSize": 20 },
+    "changes": {}
+  }
+]

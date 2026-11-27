@@ -79,6 +79,18 @@ type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]>
 // Set when this window could not read settings.json; saving then would mislabel the file.
 let loadFailed = false;
 
+// The number of the newest write this window has taken in (Ruling 281).
+let appliedRevision = 0;
+
+/** What `update_settings` returns: every stored setting after that write, and its number. */
+interface Written {
+  revision: number;
+  entries: Record<string, unknown>;
+}
+
+/** A whole-key replacement Rust makes only if the key still holds `from`. */
+type Repairs = Record<string, { from: unknown; to: unknown }>;
+
 /**
  * Reads settings.json into `settings`; a field that is missing or invalid gets its default.
  * A file with an unknown `version` is copied to settings.json.bak and emptied (Ruling 52).
@@ -87,6 +99,8 @@ let loadFailed = false;
 export function loadSettings(): Promise<Settings> {
   return oneAtATime(async () => {
     try {
+      // A load reads every write so far.
+      appliedRevision = 0;
       const loaded = await readStore();
       loadFailed = false;
       return loaded;
@@ -110,12 +124,62 @@ export function updateSettings(patch: SettingsPatch): Promise<void> {
         'Settings could not be loaded, so this change was not saved. Restart Lintel to try again.',
       );
     }
-    const defaults = Object.fromEntries(
-      Object.keys(patch).map((key) => [key, (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]]),
-    );
-    const stored = await invoke<Record<string, unknown>>('update_settings', { patch, defaults });
-    Object.assign(settings, readSettings(new Map(Object.entries(stored))));
+    let written = await write(patch);
+    const repairs = repairsFor(new Map(Object.entries(written.entries)));
+    if (repairs) {
+      // The patch merged into a value this window cannot read: replace it, then patch again.
+      await write({}, repairs);
+      written = await write(patch);
+    }
+    applySnapshot(written);
   });
+}
+
+function write(patch: SettingsPatch, replace?: Repairs): Promise<Written> {
+  const defaults = Object.fromEntries(Object.keys(patch).map((key) => [key, defaultOf(key)]));
+  return invoke<Written>('update_settings', { patch, defaults, replace });
+}
+
+// Skips a snapshot older than a change already heard, which it would undo.
+function applySnapshot({ revision, entries }: Written): void {
+  if (revision <= appliedRevision) return;
+  appliedRevision = revision;
+  Object.assign(settings, readSettings(new Map(Object.entries(entries))));
+}
+
+/**
+ * Each stored key whose reader rejects or alters it, with the value this window uses
+ * instead. Writing that back keeps a hand-edited value from blocking later edits (Ruling 280).
+ */
+function repairsFor(stored: Map<string, unknown>): Repairs | null {
+  const repairs: Repairs = {};
+  for (const [key, read] of Object.entries(READERS)) {
+    const value = stored.get(key);
+    if (value === undefined || value === null) continue;
+    const kept = read(value) ?? defaultOf(key);
+    if (!sameJson(kept, value)) repairs[key] = { from: value, to: kept };
+  }
+  return Object.keys(repairs).length ? repairs : null;
+}
+
+function repairQuietly(repairs: Repairs): Promise<void> {
+  return write({}, repairs).then(applySnapshot, (err) => console.error('Could not repair settings:', err));
+}
+
+function defaultOf(key: string): unknown {
+  return structuredClone((DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]);
+}
+
+// Equal as JSON, whatever the key order.
+function sameJson(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameJson(v, b[i]));
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((key) => key in b && sameJson(a[key], b[key]));
+  }
+  return a === b;
 }
 
 /**
@@ -127,13 +191,18 @@ export function onSettingsChanged(
   onError: (err: unknown) => void = (err) => console.error('Could not watch settings:', err),
 ): () => void {
   let active = true;
-  const unlisten = listen<Record<string, unknown>>(CHANGED, ({ payload }) => {
+  const unlisten = listen<{ revision: number; changes: Record<string, unknown> }>(CHANGED, ({ payload }) => {
     if (!active) return;
-    for (const [key, value] of Object.entries(payload)) {
-      const read = (READERS as Record<string, Reader<unknown>>)[key];
-      if (!read) continue;
-      const fallback = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
-      (settings as unknown as Record<string, unknown>)[key] = read(value) ?? structuredClone(fallback);
+    // Another listener here, or this window's own snapshot, may have taken it in already.
+    if (payload.revision > appliedRevision) {
+      appliedRevision = payload.revision;
+      const changes = new Map(Object.entries(payload.changes));
+      for (const [key, value] of changes) {
+        const read = (READERS as Record<string, Reader<unknown>>)[key];
+        if (read) (settings as unknown as Record<string, unknown>)[key] = read(value) ?? defaultOf(key);
+      }
+      const repairs = repairsFor(changes);
+      if (repairs && !loadFailed) void oneAtATime(() => repairQuietly(repairs));
     }
     cb($state.snapshot(settings) as Settings);
   });
@@ -155,6 +224,8 @@ async function readStore(): Promise<Settings> {
     await store.save();
   } else {
     next = readSettings(stored);
+    const repairs = repairsFor(stored);
+    if (repairs) await repairQuietly(repairs);
   }
   Object.assign(settings, next);
   return structuredClone(next);
