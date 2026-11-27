@@ -1,0 +1,103 @@
+name: Release
+
+# A v* tag builds every installer and puts them on a draft release. A manual run
+# builds and signs the same way but uploads nothing.
+on:
+  push:
+    tags: ['v*']
+    # GitHub does not apply path filters to tag pushes; kept for the repo rule.
+    paths-ignore: ['docs/**', '**.md']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: notices and version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      # cargo tree and cargo metadata only; nothing is compiled.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: node scripts/notices.mjs --check
+
+      # latest.json takes its version from the app, so the tag must match it.
+      - name: Tag matches the app version
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "Tag $GITHUB_REF_NAME does not match app version $version"; exit 1; }
+
+  build:
+    name: ${{ matrix.os }}
+    needs: check
+    # Creates the draft release on a tag.
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: windows-latest
+          - os: ubuntu-22.04
+          - os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Install WebKitGTK build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev build-essential
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.rust-targets }}
+
+      - run: pnpm install --frozen-lockfile
+
+      # tauri.conf.json picks the packages for each OS. With no tag name, nothing is uploaded.
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          releaseName: Lintel ${{ github.ref_name }}
+          releaseBody: See the README for install steps on each system.
+          releaseDraft: true
+          uploadUpdaterJson: true
+          args: ${{ matrix.args }}
