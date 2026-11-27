@@ -476,6 +476,17 @@ mod tests {
     }
 
     #[test]
+    fn no_window_may_write_files_through_plugin_fs() {
+        // Exports go through write_binary_file, which writes atomically (Ruling 327).
+        for capability in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/settings.json"),
+        ] {
+            assert!(!capability.contains("\"fs:"), "{capability}");
+        }
+    }
+
+    #[test]
     fn markdown_files_are_associated_with_lintel() {
         let conf: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();

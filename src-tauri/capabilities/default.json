@@ -35,7 +35,6 @@
     "allow-update-settings",
     "clipboard-manager:allow-write-text",
     "dialog:default",
-    { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
     "opener:default",
     "process:allow-exit",
     "process:allow-restart",
