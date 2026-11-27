@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { claimPath, normalizePath, readTextFile, releasePath, writeTextFile } from '../ipc';
+import {
+  claimPath,
+  normalizePath,
+  readTextFile,
+  releasePath,
+  unwatchPath,
+  watchPath,
+  writeTextFile,
+} from '../ipc';
 import { message, save } from '@tauri-apps/plugin-dialog';
 import { recordRecent } from '../os/recent';
 import {
@@ -30,6 +38,8 @@ vi.mock('../ipc', () => ({
   transferPath: vi.fn(async () => 1),
   completeHandoff: vi.fn(async () => true),
   cancelHandoff: vi.fn(async () => true),
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -55,6 +65,8 @@ beforeEach(() => {
   vi.mocked(claimPath).mockResolvedValue(null);
   vi.mocked(releasePath).mockReset();
   vi.mocked(releasePath).mockResolvedValue();
+  vi.mocked(watchPath).mockClear();
+  vi.mocked(unwatchPath).mockClear();
 });
 
 describe('createDoc', () => {
@@ -760,5 +772,88 @@ describe('restoreDoc (Ruling 204)', () => {
     expect(releasePath).toHaveBeenCalledWith('/a.md');
     expect(messageDialog).not.toHaveBeenCalled();
     expect(docs.size).toBe(0);
+  });
+});
+
+describe('watching files on disk (Ruling 257)', () => {
+  const watch = vi.mocked(watchPath);
+  const unwatch = vi.mocked(unwatchPath);
+
+  it('watches an opened file with the hash it was read with, and never an untitled doc', () => {
+    createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h-a', mode: 'edit' });
+    createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+
+    expect(watch.mock.calls).toEqual([['/notes/a.md', 'h-a']]);
+  });
+
+  it('watches a restored file with the hash just read', async () => {
+    vi.mocked(readTextFile).mockResolvedValueOnce({ text: 'a', hash: 'h-read' });
+
+    await restoreDoc({ id: 'd1', path: '/notes/a.md', mode: 'edit', pinned: false });
+
+    expect(watch).toHaveBeenCalledWith('/notes/a.md', 'h-read');
+  });
+
+  it('watches a handed-over doc with the hash it carries, keeping its conflict', () => {
+    const state = createDoc({ path: '/notes/a.md', raw: 'a', hash: 'h-a', mode: 'edit' });
+    docs.clear();
+    watch.mockClear();
+
+    const doc = adoptDoc({ ...state, external: 'conflict', diskText: 'disk', diskHash: 'h-disk' });
+
+    expect(watch.mock.calls).toEqual([['/notes/a.md', 'h-disk']]);
+    expect(doc.external).toBe('conflict');
+    expect(doc.diskText).toBe('disk');
+  });
+
+  it('unwatches a closed file, and a file handed over, unless another tab has it', () => {
+    const a = createDoc({ path: '/notes/a.md', raw: '', hash: 'h', mode: 'edit' });
+    const b = createDoc({ path: '/notes/b.md', raw: '', hash: 'h', mode: 'edit' });
+    const b2 = createDoc({ path: '/notes/b.md', raw: '', hash: 'h', mode: 'edit' });
+
+    removeDoc(a.id);
+    removeDoc(b.id, { keepClaim: true });
+    expect(unwatch.mock.calls).toEqual([['/notes/a.md']]);
+
+    removeDoc(b2.id, { keepClaim: true });
+    expect(unwatch.mock.calls).toEqual([['/notes/a.md'], ['/notes/b.md']]);
+  });
+
+  it('Save As watches the normalised new path with the new hash and unwatches the old', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    watch.mockClear();
+    saveDialog.mockResolvedValueOnce('/tmp/b.md');
+    write.mockResolvedValueOnce('h2');
+    normalize.mockRejectedValueOnce(new Error('missing'));
+    normalize.mockResolvedValueOnce('/private/tmp/b.md');
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(watch.mock.calls).toEqual([['/private/tmp/b.md', 'h2']]);
+    expect(unwatch.mock.calls).toEqual([['/notes/a.md']]);
+  });
+
+  it('Save As onto its own path changes no watch', async () => {
+    const doc = createDoc({ path: '/notes/a.md', raw: 'x', hash: 'h', mode: 'edit' });
+    watch.mockClear();
+    saveDialog.mockResolvedValueOnce('/notes/a.md');
+    write.mockResolvedValueOnce('h2');
+
+    expect(await saveDocAs(doc.id)).toBe(true);
+
+    expect(watch).not.toHaveBeenCalled();
+    expect(unwatch).not.toHaveBeenCalled();
+  });
+
+  it('the first save of an untitled doc watches its new file', async () => {
+    const doc = createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
+    doc.text = 'new';
+    saveDialog.mockResolvedValueOnce('/notes/new.md');
+    write.mockResolvedValueOnce('h1');
+
+    expect(await saveDoc(doc.id)).toBe(true);
+
+    expect(watch.mock.calls).toEqual([['/notes/new.md', 'h1']]);
+    expect(unwatch).not.toHaveBeenCalled();
   });
 });

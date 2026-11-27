@@ -51,6 +51,33 @@ export function releasePath(path: string): Promise<void> {
   return invoke<void>('release_path', { path });
 }
 
+/** Sent by Rust to the window that watches a file whose bytes changed on disk. */
+export const FILE_CHANGED = 'lintel://file-changed';
+/** Sent by Rust to the window that watches a file that is gone from disk. */
+export const FILE_REMOVED = 'lintel://file-removed';
+
+export interface FileChangedEvent {
+  path: string;
+  hash: string;
+}
+
+export interface FileRemovedEvent {
+  path: string;
+}
+
+/**
+ * Watches `path` for this window, taking it over from any other. `knownHash` is the hash of
+ * the text this window has; a file that already differs is reported at once.
+ */
+export function watchPath(path: string, knownHash: string): Promise<void> {
+  return invoke<void>('watch_path', { path, knownHash });
+}
+
+/** Stops this window's watch on `path`; a watch another window has taken over stays. */
+export function unwatchPath(path: string): Promise<void> {
+  return invoke<void>('unwatch_path', { path });
+}
+
 /**
  * Sets the native appearance of every window on macOS: "light", "dark", or null to follow
  * the system. A no-op elsewhere (Ruling 195).

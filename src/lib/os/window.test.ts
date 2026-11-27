@@ -7,6 +7,8 @@ import { docWindowLabels } from './windows';
 import { readyForOpenFilesAgain } from './open';
 
 vi.mock('../ipc', () => ({
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),

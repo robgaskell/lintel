@@ -52,6 +52,8 @@ vi.mock('@tauri-apps/api/menu', () => ({
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ revealItemInDir: vi.fn(async () => {}) }));
 vi.mock('../ipc', () => ({
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
   normalizePath: vi.fn(async (path: string) => path),
   readTextFile: vi.fn(),
   writeTextFile: vi.fn(),

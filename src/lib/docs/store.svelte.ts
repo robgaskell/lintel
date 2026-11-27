@@ -1,6 +1,14 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { message, save } from '@tauri-apps/plugin-dialog';
-import { claimPath, normalizePath, readTextFile, releasePath, writeTextFile } from '../ipc';
+import {
+  claimPath,
+  normalizePath,
+  readTextFile,
+  releasePath,
+  unwatchPath,
+  watchPath,
+  writeTextFile,
+} from '../ipc';
 import { recordRecent } from '../os/recent';
 import { detectLineEnding, toBuffer, toDisk, type LineEnding } from './text';
 
@@ -96,15 +104,23 @@ function insertDoc(
     diskText: null,
     lintConfigPath: null,
   });
-  docs.set(doc.id, doc);
-  return doc;
+  return place(doc);
 }
 
 /** Inserts a doc handed over from another window as it is, unsaved edits included (Ruling 186). */
 export function adoptDoc(state: DocState): DocState {
   const doc = $state<DocState>({ ...state });
   arrivals.set(doc.id, arrivalOf(doc.id) + 1);
+  return place(doc);
+}
+
+/**
+ * Every way a doc arrives in this window ends here: open, restore, hand-over, and a doc that
+ * comes back from a failed one. Its file is watched from the hash it carries (Ruling 257).
+ */
+function place(doc: DocState): DocState {
   docs.set(doc.id, doc);
+  if (doc.path !== null) void watch(doc.path, doc.diskHash);
   return doc;
 }
 
@@ -130,7 +146,10 @@ function arrivalOf(id: string): number {
 export function removeDoc(id: string, { keepClaim = false } = {}): void {
   const path = docs.get(id)?.path ?? null;
   docs.delete(id);
-  if (path !== null && !keepClaim) void release(path);
+  if (path === null) return;
+  // A hand-over unwatches too; Rust keeps the watch once the new window has taken it.
+  void unwatch(path);
+  if (!keepClaim) void release(path);
 }
 
 /**
@@ -290,7 +309,11 @@ async function runSaveAs(doc: DocState): Promise<boolean> {
     void claimPath(doc.path).catch((err) => console.error('Could not claim the saved file:', err));
     void release(chosen);
   }
-  if (oldPath !== null && oldPath !== doc.path) void release(oldPath);
+  if (doc.path !== oldPath) void watch(doc.path, doc.diskHash);
+  if (oldPath !== null && oldPath !== doc.path) {
+    void unwatch(oldPath);
+    void release(oldPath);
+  }
   // Every Save As route passes here (Ruling 49). Not awaited: a slow store must not delay a save.
   void recordRecent(doc.path);
   return true;
@@ -354,6 +377,24 @@ async function release(path: string): Promise<void> {
     await releasePath(path);
   } catch (err) {
     console.error(`Could not release ${path}:`, err);
+  }
+}
+
+// Unwatched, the file only stops reloading; nothing is lost.
+async function watch(path: string, hash: string): Promise<void> {
+  try {
+    await watchPath(path, hash);
+  } catch (err) {
+    console.error(`Could not watch ${path}:`, err);
+  }
+}
+
+async function unwatch(path: string): Promise<void> {
+  if (findByPath(path)) return;
+  try {
+    await unwatchPath(path);
+  } catch (err) {
+    console.error(`Could not stop watching ${path}:`, err);
   }
 }
 

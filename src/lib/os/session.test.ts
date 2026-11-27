@@ -25,6 +25,8 @@ import { createAppWindow, docWindowLabels, setRestoring } from './windows';
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 vi.mock('../ipc', () => ({
+  watchPath: vi.fn(async () => {}),
+  unwatchPath: vi.fn(async () => {}),
   normalizePath: vi.fn(async (path: string) => path),
   pathsExist: vi.fn(),
   readTextFile: vi.fn(),
