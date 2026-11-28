@@ -410,7 +410,7 @@ impl Watcher {
     }
 
     fn os_request(&self, request: OsRequest) {
-        // The thread ends only when the Watcher drops this sender.
+        // Fails only once the thread has ended: when the Watcher drops, or after a panic.
         let _ = self.os_requests.send(request);
     }
 
