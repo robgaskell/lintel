@@ -8,42 +8,48 @@
     outlineVisible,
   }: { handlers: MenuHandlers; canSplit: boolean; outlineVisible: boolean } = $props();
 
-  // A shortcut only where the menu item has one (Ruling 1).
-  const mod = isMac() ? 'Cmd' : 'Ctrl';
+  // A shortcut only where the menu item has one (Ruling 1), in the mode switch's form (Ruling 11).
+  // Elsewhere the modifiers follow the order the Windows menu shows them in.
+  const mac = isMac();
+  const cmd = mac ? '⌘' : 'Ctrl+';
+  const redoKeys = mac ? '⇧⌘Z' : 'Ctrl+Shift+Z';
   const tip = (name: string, keys?: string) => (keys ? `${name} (${keys})` : name);
 
-  // As in the formatting bar: focus stays in the editor or find field, so Undo acts there.
+  // Any press in the row, greyed buttons, dividers and gaps included, leaves focus in the
+  // editor or find field, so typing carries on and Undo acts there.
   function keepFocus(event: MouseEvent) {
     event.preventDefault();
   }
 </script>
 
-<div class="window-toolbar" role="toolbar" aria-label="Window toolbar">
-  <button type="button" aria-label="New" title={tip('New', `${mod}+N`)} onmousedown={keepFocus} onclick={() => handlers.newDoc()}>
+<!-- The row only cancels presses; its buttons take focus from the keyboard. -->
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<div class="window-toolbar" role="toolbar" aria-label="Window" onmousedown={keepFocus}>
+  <button type="button" aria-label="New" title={tip('New', `${cmd}N`)} onclick={() => handlers.newDoc()}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5M12 11v6M9 14h6"></path></svg>
   </button>
-  <button type="button" aria-label="Open" title={tip('Open', `${mod}+O`)} onmousedown={keepFocus} onclick={() => handlers.open()}>
+  <button type="button" aria-label="Open" title={tip('Open', `${cmd}O`)} onclick={() => handlers.open()}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path></svg>
   </button>
-  <button type="button" aria-label="Save" title={tip('Save', `${mod}+S`)} onmousedown={keepFocus} onclick={() => handlers.save()}>
+  <button type="button" aria-label="Save" title={tip('Save', `${cmd}S`)} onclick={() => handlers.save()}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M7 3v5h8M7 21v-7h10v7"></path></svg>
   </button>
   <span class="divider" aria-hidden="true"></span>
-  <button type="button" aria-label="Undo" title={tip('Undo', `${mod}+Z`)} onmousedown={keepFocus} onclick={() => void runHistory('undo')}>
+  <button type="button" aria-label="Undo" title={tip('Undo', `${cmd}Z`)} onclick={() => void runHistory('undo')}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"></path><path d="M4 9h11a5 5 0 0 1 0 10h-3"></path></svg>
   </button>
-  <button type="button" aria-label="Redo" title={tip('Redo', `Shift+${mod}+Z`)} onmousedown={keepFocus} onclick={() => void runHistory('redo')}>
+  <button type="button" aria-label="Redo" title={tip('Redo', redoKeys)} onclick={() => void runHistory('redo')}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"></path><path d="M20 9H9a5 5 0 0 0 0 10h3"></path></svg>
   </button>
   <span class="divider" aria-hidden="true"></span>
-  <button type="button" aria-label="Split Right" title={tip('Split Right', `${mod}+\\`)} disabled={!canSplit} onmousedown={keepFocus} onclick={() => handlers.split('right')}>
+  <button type="button" aria-label="Split Right" title={tip('Split Right', `${cmd}\\`)} aria-disabled={!canSplit} onclick={() => canSplit && handlers.split('right')}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"></rect><path d="M12 4v16"></path></svg>
   </button>
-  <button type="button" aria-label="Split Down" title={tip('Split Down')} disabled={!canSplit} onmousedown={keepFocus} onclick={() => handlers.split('below')}>
+  <button type="button" aria-label="Split Down" title={tip('Split Down')} aria-disabled={!canSplit} onclick={() => canSplit && handlers.split('below')}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"></rect><path d="M3 12h18"></path></svg>
   </button>
   <span class="divider" aria-hidden="true"></span>
-  <button type="button" aria-label="Outline" title={tip('Outline')} aria-pressed={outlineVisible} onmousedown={keepFocus} onclick={() => handlers.toggleOutline()}>
+  <button type="button" aria-label="Outline" title={tip('Outline')} aria-pressed={outlineVisible} onclick={() => handlers.toggleOutline()}>
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M8 12h12M12 18h8"></path></svg>
   </button>
 </div>
@@ -75,7 +81,7 @@
     font: inherit;
   }
 
-  button:hover:not(:disabled) {
+  button:hover:not([aria-disabled='true']) {
     background: var(--toolbar-hover);
   }
 
@@ -84,8 +90,9 @@
     outline-offset: -2px;
   }
 
-  /* Ruling 6: the formatting bar has no disabled or pressed state to copy. */
-  button:disabled {
+  /* Ruling 6: the formatting bar has no disabled or pressed state to copy. aria-disabled, not
+     disabled: Chrome sends a disabled button no mousedown, so it would take focus away. */
+  button[aria-disabled='true'] {
     opacity: 0.4;
   }
 

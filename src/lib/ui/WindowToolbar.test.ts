@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
+import { EditorView } from '@codemirror/view';
 import { runHistory, type MenuHandlers } from '../os/menu';
 import { isMac } from '../os/platform';
 import WindowToolbar from './WindowToolbar.svelte';
@@ -36,26 +37,26 @@ describe('WindowToolbar (v0.2 item 5)', () => {
   it('shows New, Open, Save, Undo, Redo, Split Right, Split Down and Outline in that order', () => {
     const { buttons, getByRole } = toolbar();
 
-    expect(getByRole('toolbar', { name: 'Window toolbar' })).toBeTruthy();
+    expect(getByRole('toolbar', { name: 'Window' })).toBeTruthy();
     expect(buttons().map((b) => b.getAttribute('aria-label'))).toEqual(NAMES);
   });
 
-  it('shows each name with its menu shortcut in Cmd form on macOS, and none where the menu has none', () => {
+  it("shows each name with its menu shortcut in the mode switch's symbol form on macOS (Ruling 11)", () => {
     const { buttons } = toolbar();
 
     expect(buttons().map((b) => b.title)).toEqual([
-      'New (Cmd+N)',
-      'Open (Cmd+O)',
-      'Save (Cmd+S)',
-      'Undo (Cmd+Z)',
-      'Redo (Shift+Cmd+Z)',
-      'Split Right (Cmd+\\)',
+      'New (⌘N)',
+      'Open (⌘O)',
+      'Save (⌘S)',
+      'Undo (⌘Z)',
+      'Redo (⇧⌘Z)',
+      'Split Right (⌘\\)',
       'Split Down',
       'Outline',
     ]);
   });
 
-  it('uses Ctrl in the tooltips on Windows and Linux', () => {
+  it('uses Ctrl in the tooltips on Windows and Linux, in the order the Windows menu shows', () => {
     vi.mocked(isMac).mockReturnValue(false);
     const { buttons } = toolbar();
 
@@ -64,7 +65,7 @@ describe('WindowToolbar (v0.2 item 5)', () => {
       'Open (Ctrl+O)',
       'Save (Ctrl+S)',
       'Undo (Ctrl+Z)',
-      'Redo (Shift+Ctrl+Z)',
+      'Redo (Ctrl+Shift+Z)',
       'Split Right (Ctrl+\\)',
       'Split Down',
       'Outline',
@@ -96,16 +97,20 @@ describe('WindowToolbar (v0.2 item 5)', () => {
 
   it('greys out only Split Right and Split Down while splitting is off', async () => {
     const { h, buttons, button, rerender } = toolbar({ canSplit: false });
+    const greyed = () =>
+      buttons()
+        .filter((b) => b.getAttribute('aria-disabled') === 'true')
+        .map((b) => b.getAttribute('aria-label'));
 
-    const disabled = buttons().filter((b) => b.disabled).map((b) => b.getAttribute('aria-label'));
-    expect(disabled).toEqual(['Split Right', 'Split Down']);
-    // click() is what a user's click does: jsdom, like a browser, skips it on a disabled button.
-    button('Split Right').click();
-    button('Split Down').click();
+    expect(greyed()).toEqual(['Split Right', 'Split Down']);
+    await fireEvent.click(button('Split Right'));
+    await fireEvent.click(button('Split Down'));
     expect(h.split).not.toHaveBeenCalled();
 
     await rerender({ canSplit: true });
-    expect(buttons().some((b) => b.disabled)).toBe(false);
+    expect(greyed()).toEqual([]);
+    await fireEvent.click(button('Split Right'));
+    expect(h.split).toHaveBeenCalledWith('right');
   });
 
   it('presses Outline while the outline is shown', async () => {
@@ -124,6 +129,58 @@ describe('WindowToolbar (v0.2 item 5)', () => {
     for (const b of buttons()) expect(await fireEvent.mouseDown(b)).toBe(false);
   });
 
+  describe('a press on a greyed button, a divider or the row itself (critic M2.1 #1)', () => {
+    let editor: EditorView;
+    let findField: HTMLInputElement;
+    beforeEach(() => {
+      editor = new EditorView({ parent: document.body, doc: 'text' });
+      findField = document.body.appendChild(document.createElement('input'));
+    });
+    afterEach(() => {
+      editor.destroy();
+      findField.remove();
+    });
+
+    // What Chrome (WebView2) does on a mouse press: a disabled control gets no mouse events, and an
+    // uncancelled press moves focus to the focusable element under it, or to the body.
+    function press(target: Element) {
+      const cancelled =
+        !target.closest('button:disabled') &&
+        !target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      if (cancelled) return;
+      const focusable = target.closest<HTMLElement>('button:not(:disabled), input, [tabindex]');
+      if (focusable) focusable.focus();
+      else (document.activeElement as HTMLElement | null)?.blur();
+    }
+
+    const targets = (container: HTMLElement, button: (name: string) => HTMLButtonElement) => ({
+      'greyed Split Right': button('Split Right'),
+      divider: container.querySelector('.divider')!,
+      'toolbar row': container.querySelector('[role="toolbar"]')!,
+    });
+
+    for (const where of ['greyed Split Right', 'divider', 'toolbar row'] as const) {
+      it(`leaves the editor focused after a press on the ${where}`, () => {
+        const { container, button } = toolbar({ canSplit: false });
+        editor.focus();
+        expect(document.activeElement).toBe(editor.contentDOM);
+
+        press(targets(container, button)[where]);
+
+        expect(document.activeElement).toBe(editor.contentDOM);
+      });
+
+      it(`leaves the find field focused after a press on the ${where}`, () => {
+        const { container, button } = toolbar({ canSplit: false });
+        findField.focus();
+
+        press(targets(container, button)[where]);
+
+        expect(document.activeElement).toBe(findField);
+      });
+    }
+  });
+
   it('draws each icon as inline 16 px SVG in currentColor at stroke-width 2 (Ruling 6)', () => {
     const { buttons, container } = toolbar();
 
@@ -139,8 +196,8 @@ describe('WindowToolbar (v0.2 item 5)', () => {
   });
 
   it('dims a disabled button to 0.4 with no hover, and gives the pressed one the hover tint in accent (Ruling 6)', () => {
-    expect(source).toMatch(/button:disabled \{[^}]*opacity: 0\.4;/);
-    expect(source).toMatch(/button:hover:not\(:disabled\) \{[^}]*background: var\(--toolbar-hover\)/);
+    expect(source).toMatch(/button\[aria-disabled='true'\] \{[^}]*opacity: 0\.4;/);
+    expect(source).toMatch(/button:hover:not\(\[aria-disabled='true'\]\) \{[^}]*background: var\(--toolbar-hover\)/);
     expect(source).not.toMatch(/button:hover \{/);
     expect(source).toMatch(/button\[aria-pressed='true'\] \{[^}]*background: var\(--hover\);[^}]*color: var\(--accent\);/);
   });

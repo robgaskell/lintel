@@ -114,6 +114,7 @@ export function takeAppMenu(): void {
 export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): () => void {
   let latest = 0;
   let limit = settings.recentLimit;
+  let toolbarShown = settings.showToolbar;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   // `force` installs the menu even while this window is not focused.
@@ -131,7 +132,10 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
 
   const stopRecent = onRecentChanged(rebuildSoon);
   const stopSettings = onSettingsChanged((next) => {
-    setToolbarChecked(next.showToolbar).catch(onError);
+    if (next.showToolbar !== toolbarShown) {
+      toolbarShown = next.showToolbar;
+      setToolbarChecked(toolbarShown).catch(onError);
+    }
     if (next.recentLimit === limit) return;
     limit = next.recentLimit;
     rebuildSoon();

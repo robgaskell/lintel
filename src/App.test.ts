@@ -510,7 +510,7 @@ describe('App View > Split (Ruling 192)', () => {
 });
 
 describe('App window toolbar (v0.2 items 5, 6)', () => {
-  const toolbar = (container: HTMLElement) => container.querySelector('[role="toolbar"][aria-label="Window toolbar"]');
+  const toolbar = (container: HTMLElement) => container.querySelector('[role="toolbar"][aria-label="Window"]');
   const button = (container: HTMLElement, name: string) =>
     toolbar(container)?.querySelector(`button[aria-label="${name}"]`) as HTMLButtonElement | null;
   function layoutChanged() {
@@ -532,7 +532,7 @@ describe('App window toolbar (v0.2 items 5, 6)', () => {
     fake.alone.add(a.id);
     const { container } = render(App);
     await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
-    const splitsEnabled = () => [button(container, 'Split Right')!, button(container, 'Split Down')!].map((b) => !b.disabled);
+    const splitsEnabled = () => [button(container, 'Split Right')!, button(container, 'Split Down')!].map((b) => b.getAttribute('aria-disabled') !== 'true');
 
     expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
     expect(splitsEnabled()).toEqual([false, false]);

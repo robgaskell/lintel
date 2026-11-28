@@ -671,6 +671,25 @@ describe('buildAppMenu', () => {
     expect(second.setChecked).toHaveBeenLastCalledWith(false);
     expect(first.setChecked).not.toHaveBeenCalled();
   });
+  it('closes the unused Show Outline and Show Toolbar items when a build is given up (Rulings 37, 198)', async () => {
+    const h = handlers();
+    await buildAppMenu(h, []);
+    thisWindow.isFocused.mockResolvedValue(false);
+
+    await buildAppMenu(h, ['/notes/a.md']);
+
+    const [shownOutline, unusedOutline] = await checkItems('toggle-outline');
+    const [shownToolbar, unusedToolbar] = await checkItems('show-toolbar');
+    expect(unusedOutline.close).toHaveBeenCalled();
+    expect(unusedToolbar.close).toHaveBeenCalled();
+    expect(shownOutline.close).not.toHaveBeenCalled();
+    expect(shownToolbar.close).not.toHaveBeenCalled();
+    // The shown menu's items still take the ticks.
+    await setOutlineChecked(false);
+    await setToolbarChecked(false);
+    expect(shownOutline.setChecked).toHaveBeenLastCalledWith(false);
+    expect(shownToolbar.setChecked).toHaveBeenLastCalledWith(false);
+  });
 });
 
 describe('syncAppMenu', () => {
@@ -785,6 +804,27 @@ describe('syncAppMenu', () => {
     await vi.waitFor(() => expect(item.setChecked).toHaveBeenLastCalledWith(false));
     await settle();
     expect(Menu.new).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it('leaves the Show Toolbar tick alone when another setting changes', async () => {
+    const stop = syncAppMenu(handlers(), vi.fn());
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+    const item = (await vi.mocked(CheckMenuItem.new).mock.results.at(-1)!.value) as unknown as {
+      id: string;
+      setChecked: ReturnType<typeof vi.fn>;
+    };
+    expect(item.id).toMatch(/^show-toolbar#/);
+
+    await updateSettings({ fontSize: 18 });
+    await settle();
+    expect(item.setChecked).not.toHaveBeenCalled();
+
+    await updateSettings({ showToolbar: false });
+    await vi.waitFor(() => expect(item.setChecked).toHaveBeenCalledWith(false));
+    await updateSettings({ theme: 'dark' });
+    await settle();
+    expect(item.setChecked).toHaveBeenCalledOnce();
     stop();
   });
 
