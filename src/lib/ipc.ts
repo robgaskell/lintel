@@ -73,6 +73,13 @@ export const FILE_CHANGED = 'lintel://file-changed';
 /** Sent by Rust to each window that watches a file that is gone from disk. */
 export const FILE_REMOVED = 'lintel://file-removed';
 
+/** Sent by Rust to each window watching a file whose folder it could not watch (Ruling 358). */
+export const WATCH_FAILED = 'lintel://watch-failed';
+
+export interface WatchFailedEvent {
+  message: string;
+}
+
 export interface FileChangedEvent {
   path: string;
   hash: string;

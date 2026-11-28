@@ -7,8 +7,10 @@ import {
   FILE_REMOVED,
   pathsExist,
   readTextFile,
+  WATCH_FAILED,
   type FileChangedEvent,
   type FileRemovedEvent,
+  type WatchFailedEvent,
 } from '../ipc';
 import { lockExempt } from '../editor/setup';
 import { activeDocId, viewFor } from '../editor/views';
@@ -156,7 +158,7 @@ export function followWorkspace(ws: Pick<Workspace, 'onActiveChange' | 'isVisibl
 
 /**
  * Rust sends each change to the windows that watch the file only. The file may be an open
- * doc, a lint config in use, or both.
+ * doc, a lint config in use, or both. A folder Rust could not watch turns live reload off.
  */
 export function listenForFileEvents(label: string): { ready: Promise<void>; stop: () => void } {
   const options = { target: { kind: 'WebviewWindow' as const, label } };
@@ -177,6 +179,7 @@ export function listenForFileEvents(label: string): { ready: Promise<void>; stop
       },
       options,
     ),
+    listen<WatchFailedEvent>(WATCH_FAILED, ({ payload }) => reportLiveReloadOff(payload.message), options),
   ]);
   return {
     // Settles either way: without the listeners, docs still open but never reload.

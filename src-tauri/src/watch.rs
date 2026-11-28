@@ -1,10 +1,11 @@
 //! Live reload: Rust watches the folder of each open file or lint config and tells every
 //! window watching it when its bytes change or it goes away (spec: Live reload).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::Duration;
@@ -18,6 +19,8 @@ use crate::files;
 
 pub const FILE_CHANGED: &str = "lintel://file-changed";
 pub const FILE_REMOVED: &str = "lintel://file-removed";
+/// Sent to the windows watching a file whose folder the OS would not watch.
+pub const WATCH_FAILED: &str = "lintel://watch-failed";
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 // Another program may still have the file open; Windows then refuses the read.
@@ -37,17 +40,23 @@ pub struct FileRemovedEvent {
     pub path: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WatchFailedEvent {
+    pub message: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Notice {
     Changed(FileChangedEvent),
     Removed(FileRemovedEvent),
+    Failed(WatchFailedEvent),
 }
 
 type Sink = Arc<dyn Fn(&str, Notice) + Send + Sync>;
 type FolderWatcher = Debouncer<RecommendedWatcher, RecommendedCache>;
 
 /// The OS watcher, or why it could not start, and the folders it watches. OS calls can
-/// block on a stalled mount, so they run under this lock only, never under the files lock.
+/// block on a stalled mount, so only the OS watcher thread and the event handler take this.
 struct Folders {
     watcher: Result<FolderWatcher, String>,
     watching: HashSet<PathBuf>,
@@ -60,7 +69,21 @@ struct Folders {
 pub struct Watcher {
     files: Arc<Mutex<Files>>,
     sink: Sink,
+    /// Owned by the OS watcher thread; tests look at it here.
+    #[cfg(test)]
     folders: Arc<Mutex<Folders>>,
+    os_requests: Sender<OsRequest>,
+}
+
+/// Work for the OS watcher thread, which callers hand over without waiting.
+enum OsRequest {
+    /// Watch or unwatch `folder` as the files need; `renew` first ends a watch the OS dropped.
+    Sync { folder: PathBuf, renew: bool },
+    /// Check these paths, as an event would.
+    Check(HashSet<PathBuf>),
+    /// Answers once every earlier request is done.
+    #[cfg(test)]
+    Flush(Sender<()>),
 }
 
 #[derive(Default)]
@@ -141,6 +164,7 @@ impl Watcher {
             let sent = match &notice {
                 Notice::Changed(event) => app.emit_to(label, FILE_CHANGED, event),
                 Notice::Removed(event) => app.emit_to(label, FILE_REMOVED, event),
+                Notice::Failed(event) => app.emit_to(label, WATCH_FAILED, event),
             };
             if let Err(err) = sent {
                 eprintln!("Could not tell {label} about a file change: {err}");
@@ -149,7 +173,7 @@ impl Watcher {
     }
 
     /// `sink` gets a watching window's label and the notice. Without a working OS watcher, Lintel
-    /// still runs; `watch` then fails with the reason.
+    /// still runs; each watch then gets a Failed notice with the reason.
     pub fn new(sink: impl Fn(&str, Notice) + Send + Sync + 'static) -> Self {
         let sink: Sink = Arc::new(sink);
         let files = Arc::new(Mutex::new(Files::default()));
@@ -185,15 +209,22 @@ impl Watcher {
             eprintln!("{err}");
         }
         lock(&folders).watcher = started;
+        let (os_requests, requests) = mpsc::channel();
+        let (os_files, os_folders, os_sink) =
+            (Arc::clone(&files), Arc::clone(&folders), Arc::clone(&sink));
+        thread::spawn(move || serve_os_requests(&requests, &os_files, &os_folders, &os_sink));
         Self {
             files,
             sink,
+            #[cfg(test)]
             folders,
+            os_requests,
         }
     }
 
     /// Adds one watch of `path` for the window `label`. `known_hash` is the hash of the text
-    /// the window has; a file that differs is reported to that window at once.
+    /// the window has; a file that differs is reported to that window at once. Its folder is
+    /// watched soon after; a failure there comes back as a Failed notice.
     pub fn watch(&self, label: &str, path: String, known_hash: &str) -> Result<(), String> {
         let key = watch_key(&path);
         let folder = folder_of(&key).to_path_buf();
@@ -226,10 +257,7 @@ impl Watcher {
         }
         *watched.subs.entry((label.to_owned(), path.clone())).or_insert(0) += 1;
         drop(files);
-        if let Err(err) = sync_folder(&self.files, &self.folders, &folder, renew) {
-            self.unwatch(label, &path);
-            return Err(err);
-        }
+        self.os_request(OsRequest::Sync { folder, renew });
         self.send(notices);
         Ok(())
     }
@@ -268,12 +296,15 @@ impl Watcher {
         let folder = folder_of(&key);
         if files.remove_folder(folder) {
             drop(files);
-            let _ = sync_folder(&self.files, &self.folders, folder, false);
+            self.os_request(OsRequest::Sync {
+                folder: folder.to_path_buf(),
+                renew: false,
+            });
         }
     }
 
     /// Drops every watch of a closed window. It runs on the main thread, so it changes the
-    /// counts only; the OS watches end on another thread.
+    /// counts only; the OS watches end on the OS watcher thread.
     pub fn drop_window(&self, label: &str) {
         let mut files = self.lock();
         let mut emptied = Vec::new();
@@ -292,15 +323,12 @@ impl Watcher {
             }
         }
         drop(files);
-        if unwatched.is_empty() {
-            return;
+        for folder in unwatched {
+            self.os_request(OsRequest::Sync {
+                folder,
+                renew: false,
+            });
         }
-        let (files, folders) = (Arc::clone(&self.files), Arc::clone(&self.folders));
-        thread::spawn(move || {
-            for folder in unwatched {
-                let _ = sync_folder(&files, &folders, &folder, false);
-            }
-        });
     }
 
     /// Runs Lintel's own write of `path` and records the hash it returns. The saving window
@@ -336,23 +364,34 @@ impl Watcher {
         }
         drop(files);
         if renew {
-            if let Err(err) = sync_folder(&self.files, &self.folders, folder, true) {
-                eprintln!("{err}");
-            }
+            self.os_request(OsRequest::Sync {
+                folder: folder.to_path_buf(),
+                renew: true,
+            });
         }
+        // A check stats every watched folder, so it runs on the OS watcher thread.
         if recheck {
-            let (more, lost) = check(&self.files, HashSet::from([key.clone()]), false);
-            drop_lost(&self.files, &Arc::downgrade(&self.folders), &lost);
-            notices.extend(more);
+            self.os_request(OsRequest::Check(HashSet::from([key.clone()])));
         }
         self.send(notices);
         written
     }
 
+    fn os_request(&self, request: OsRequest) {
+        // The thread ends only when the Watcher drops this sender.
+        let _ = self.os_requests.send(request);
+    }
+
+    /// Waits until the OS watcher thread has done every request sent so far.
+    #[cfg(test)]
+    fn flush(&self) {
+        let (done, finished) = mpsc::channel();
+        self.os_request(OsRequest::Flush(done));
+        let _ = finished.recv();
+    }
+
     fn send(&self, notices: Vec<(String, Notice)>) {
-        for (label, notice) in notices {
-            (self.sink)(&label, notice);
-        }
+        send(&self.sink, notices);
     }
 
     fn lock(&self) -> MutexGuard<'_, Files> {
@@ -381,14 +420,71 @@ pub async fn unwatch_path<R: Runtime>(
     Ok(())
 }
 
+fn send(sink: &Sink, notices: Vec<(String, Notice)>) {
+    for (label, notice) in notices {
+        sink(&label, notice);
+    }
+}
+
+/// The OS watcher thread: the one place that may wait for an OS watch call.
+fn serve_os_requests(
+    requests: &Receiver<OsRequest>,
+    files: &Mutex<Files>,
+    folders: &Arc<Mutex<Folders>>,
+    sink: &Sink,
+) {
+    for request in requests {
+        let checked = match request {
+            OsRequest::Sync { folder, renew } => match sync_folder(files, folders, &folder, renew) {
+                // Catches a change made before the watch began.
+                Ok(true) => HashSet::from([folder]),
+                Ok(false) => continue,
+                Err(message) => {
+                    eprintln!("{message}");
+                    send(sink, failed(files, &folder, &message));
+                    continue;
+                }
+            },
+            OsRequest::Check(paths) => paths,
+            #[cfg(test)]
+            OsRequest::Flush(done) => {
+                let _ = done.send(());
+                continue;
+            }
+        };
+        let (notices, lost) = check(files, checked, false);
+        drop_lost(files, &Arc::downgrade(folders), &lost);
+        send(sink, notices);
+    }
+}
+
+/// A Failed notice for each window watching a file in `folder`.
+fn failed(files: &Mutex<Files>, folder: &Path, message: &str) -> Vec<(String, Notice)> {
+    let files = lock(files);
+    let labels: BTreeSet<&str> = files
+        .by_key
+        .iter()
+        .filter(|(key, _)| folder_of(key) == folder)
+        .flat_map(|(_, watched)| watched.subs.keys().map(|(label, _)| label.as_str()))
+        .collect();
+    let event = WatchFailedEvent {
+        message: message.to_owned(),
+    };
+    labels
+        .into_iter()
+        .map(|label| (label.to_owned(), Notice::Failed(event.clone())))
+        .collect()
+}
+
 /// Brings the OS watch of `folder` in line with what `files` wants. `renew` ends a watch the
-/// OS has already dropped before watching again, as where the folder was lost.
+/// OS has already dropped before watching again, as where the folder was lost. True when a
+/// new watch began.
 fn sync_folder(
     files: &Mutex<Files>,
     folders: &Mutex<Folders>,
     folder: &Path,
     renew: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut guard = lock(folders);
     let os = &mut *guard;
     let wanted = lock(files).wants(folder);
@@ -401,14 +497,15 @@ fn sync_folder(
         os.watching.remove(folder);
         watching = false;
     }
-    if wanted && !watching {
-        let watcher = os.watcher.as_mut().map_err(|err| err.clone())?;
-        watcher
-            .watch(folder, RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Could not watch {}: {e}", folder.display()))?;
-        os.watching.insert(folder.to_path_buf());
+    if !wanted || watching {
+        return Ok(false);
     }
-    Ok(())
+    let watcher = os.watcher.as_mut().map_err(|err| err.clone())?;
+    watcher
+        .watch(folder, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("Could not watch {}: {e}", folder.display()))?;
+    os.watching.insert(folder.to_path_buf());
+    Ok(true)
 }
 
 /// Decides each watched file the batch touched by what is on disk now, never by the event
@@ -603,6 +700,12 @@ mod tests {
         (watcher, notices)
     }
 
+    /// Watches `path` and waits until its folder is watched, so a write straight after is seen.
+    fn watch_now(watcher: &Watcher, label: &str, path: String, known_hash: &str) {
+        watcher.watch(label, path, known_hash).unwrap();
+        watcher.flush();
+    }
+
     fn hash(text: &str) -> String {
         files::sha256_hex(text.as_bytes())
     }
@@ -635,6 +738,7 @@ mod tests {
     }
 
     fn os_watched_folders(watcher: &Watcher) -> usize {
+        watcher.flush();
         let folders = lock(&watcher.folders);
         let watcher = folders.watcher.as_ref().unwrap();
         watcher.watched_paths().unwrap().len()
@@ -658,7 +762,7 @@ mod tests {
             let path = folder.join(name);
             fs::write(&path, name).unwrap();
             let path = path.to_str().unwrap().to_owned();
-            watcher.watch("main", path.clone(), &hash(name)).unwrap();
+            watch_now(watcher, "main", path.clone(), &hash(name));
             path
         };
         let (a, b) = (file("a.md"), file("b.md"));
@@ -678,7 +782,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
 
         fs::write(&path, "new").unwrap();
 
@@ -692,7 +796,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "same");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("same")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("same"));
 
         fs::write(&path, "same").unwrap();
 
@@ -704,7 +808,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
 
         let saved = watcher.saving("main", &path, || files::write_text(&path, "mine"));
 
@@ -717,7 +821,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
 
         let temp = dir.file(".a.md.tmp", "renamed");
         fs::rename(&temp, &path).unwrap();
@@ -732,7 +836,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
 
         fs::remove_file(&path).unwrap();
         let removed = Notice::Removed(FileRemovedEvent { path: path.clone() });
@@ -749,7 +853,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file(".markdownlint.json", "{}");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("{}")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("{}"));
 
         fs::remove_file(&path).unwrap();
         let notice = next(&notices, "a delete");
@@ -768,8 +872,8 @@ mod tests {
         let b = dir.file("b.md", "b");
         let (watcher, _notices) = watcher();
 
-        watcher.watch("main", a.clone(), &hash("a")).unwrap();
-        watcher.watch("main", b.clone(), &hash("b")).unwrap();
+        watch_now(&watcher, "main", a.clone(), &hash("a"));
+        watch_now(&watcher, "main", b.clone(), &hash("b"));
         assert_eq!(folder_count(&watcher), 1);
         assert_eq!(os_watched_folders(&watcher), 1);
 
@@ -787,8 +891,8 @@ mod tests {
         let gone = dir.0.join("gone.md").to_str().unwrap().to_owned();
         let (watcher, notices) = watcher();
 
-        watcher.watch("main", path.clone(), &hash("older")).unwrap();
-        watcher.watch("main", gone.clone(), &hash("older")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("older"));
+        watch_now(&watcher, "main", gone.clone(), &hash("older"));
 
         let removed = Notice::Removed(FileRemovedEvent { path: gone });
         assert_eq!(
@@ -803,8 +907,8 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("w-1", path.clone(), &hash("old")).unwrap();
-        watcher.watch("w-2", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "w-1", path.clone(), &hash("old"));
+        watch_now(&watcher, "w-2", path.clone(), &hash("old"));
 
         fs::write(&path, "new").unwrap();
 
@@ -826,8 +930,8 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("w-1", path.clone(), &hash("old")).unwrap();
-        watcher.watch("w-2", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "w-1", path.clone(), &hash("old"));
+        watch_now(&watcher, "w-2", path.clone(), &hash("old"));
 
         watcher.unwatch("w-1", &path);
         watcher.unwatch("w-1", &path);
@@ -845,8 +949,8 @@ mod tests {
         let path = dir.file(".markdownlint.json", "{}");
         let (watcher, notices) = watcher();
         // Once as an open doc, once as the lint config of another doc.
-        watcher.watch("main", path.clone(), &hash("{}")).unwrap();
-        watcher.watch("main", path.clone(), &hash("{}")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("{}"));
+        watch_now(&watcher, "main", path.clone(), &hash("{}"));
 
         watcher.unwatch("main", &path);
         fs::write(&path, "{ }").unwrap();
@@ -863,9 +967,9 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "now");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("now")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("now"));
 
-        watcher.watch("w-1", path.clone(), &hash("before")).unwrap();
+        watch_now(&watcher, "w-1", path.clone(), &hash("before"));
 
         assert_eq!(
             notices.try_recv(),
@@ -879,11 +983,11 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "new");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("new")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("new"));
         // As if the file changed and its folder's event has not arrived yet.
         watcher.lock().by_key.values_mut().next().unwrap().hash = Some(hash("old"));
 
-        watcher.watch("w-1", path.clone(), &hash("new")).unwrap();
+        watch_now(&watcher, "w-1", path.clone(), &hash("new"));
 
         assert_eq!(
             notices.try_recv(),
@@ -899,10 +1003,10 @@ mod tests {
         let path = dir.file("a.md", "new");
         let other = dir.0.join(".").join("a.md").to_str().unwrap().to_owned();
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("new")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("new"));
         watcher.lock().by_key.values_mut().next().unwrap().hash = Some(hash("old"));
 
-        watcher.watch("main", other, &hash("new")).unwrap();
+        watch_now(&watcher, "main", other, &hash("new"));
 
         assert_eq!(
             notices.try_recv(),
@@ -916,8 +1020,8 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
-        watcher.watch("w-1", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+        watch_now(&watcher, "w-1", path.clone(), &hash("old"));
 
         let saved = watcher.saving("main", &path, || files::write_text(&path, "mine"));
 
@@ -935,10 +1039,10 @@ mod tests {
         let a = dir.file("a.md", "a");
         let b = dir.file("b.md", "b");
         let (watcher, _notices) = watcher();
-        watcher.watch("w-1", a.clone(), &hash("a")).unwrap();
-        watcher.watch("w-1", b.clone(), &hash("b")).unwrap();
-        watcher.watch("w-1", b.clone(), &hash("b")).unwrap();
-        watcher.watch("main", b.clone(), &hash("b")).unwrap();
+        watch_now(&watcher, "w-1", a.clone(), &hash("a"));
+        watch_now(&watcher, "w-1", b.clone(), &hash("b"));
+        watch_now(&watcher, "w-1", b.clone(), &hash("b"));
+        watch_now(&watcher, "main", b.clone(), &hash("b"));
 
         watcher.drop_window("w-1");
 
@@ -978,8 +1082,8 @@ mod tests {
         let a = dir.file("a.md", "a");
         let b = dir.file("b.md", "b");
         let watcher = Arc::new(watcher().0);
-        watcher.watch("main", a.clone(), &hash("a")).unwrap();
-        watcher.watch("w-1", b.clone(), &hash("b")).unwrap();
+        watch_now(&watcher, "main", a.clone(), &hash("a"));
+        watch_now(&watcher, "w-1", b.clone(), &hash("b"));
         let slow = slow_save(&watcher, &a, Duration::from_secs(3));
 
         let begun = Instant::now();
@@ -997,11 +1101,11 @@ mod tests {
         let a = dir.file("a.md", "a");
         let b = dir.file("b.md", "b");
         let watcher = Arc::new(watcher().0);
-        watcher.watch("main", a.clone(), &hash("a")).unwrap();
+        watch_now(&watcher, "main", a.clone(), &hash("a"));
         let slow = slow_save(&watcher, &a, Duration::from_secs(3));
 
         let begun = Instant::now();
-        watcher.watch("w-1", b, &hash("b")).unwrap();
+        watch_now(&watcher, "w-1", b, &hash("b"));
         let waited = begun.elapsed();
 
         assert!(waited < Duration::from_millis(1500), "waited {waited:?}");
@@ -1014,7 +1118,7 @@ mod tests {
         let dir = TempDir::new();
         let a = dir.file("a.md", "a");
         let watcher = Arc::new(watcher().0);
-        watcher.watch("w-1", a, &hash("a")).unwrap();
+        watch_now(&watcher, "w-1", a, &hash("a"));
         let busy = lock(&watcher.folders);
         let (done, finished) = mpsc::channel();
         let closing = Arc::clone(&watcher);
@@ -1035,12 +1139,81 @@ mod tests {
         assert_eq!(os_watched_folders(&watcher), 0);
     }
 
+    /// Runs `call` on another thread while the OS watcher is held busy, as by a watch call
+    /// stuck on a stalled share. None when `call` did not return within a second.
+    fn while_os_watcher_busy<T: Send + 'static>(
+        watcher: &Arc<Watcher>,
+        call: impl FnOnce(&Watcher) -> T + Send + 'static,
+    ) -> Option<T> {
+        let busy = lock(&watcher.folders);
+        let (done, finished) = mpsc::channel();
+        let caller = Arc::clone(watcher);
+        thread::spawn(move || {
+            let _ = done.send(call(&caller));
+        });
+        let returned = finished.recv_timeout(Duration::from_secs(1)).ok();
+        drop(busy);
+        returned
+    }
+
+    // Ruling 358: opening a file must not wait for another folder's OS watch call.
+    #[test]
+    fn a_watch_does_not_wait_while_the_os_watcher_is_busy() {
+        let dir = TempDir::new();
+        let a = dir.file("a.md", "a");
+        let watcher = Arc::new(watcher().0);
+
+        let returned = while_os_watcher_busy(&watcher, move |w| w.watch("main", a, &hash("a")));
+
+        assert_eq!(returned, Some(Ok(())), "watch waited for the OS watcher");
+        assert_eq!(os_watched_folders(&watcher), 1);
+    }
+
+    // watch() no longer waits for the OS, so a folder it cannot watch is reported later.
+    #[test]
+    fn a_folder_the_os_will_not_watch_is_reported_to_the_watching_window() {
+        let dir = TempDir::new();
+        let a = dir.file("a.md", "a");
+        let (watcher, notices) = watcher();
+        lock(&watcher.folders).watcher = Err("the file watcher could not start".to_owned());
+
+        assert_eq!(watcher.watch("w-1", a, &hash("a")), Ok(()));
+
+        let failed = Notice::Failed(WatchFailedEvent {
+            message: "the file watcher could not start".to_owned(),
+        });
+        assert_eq!(next(&notices, "a watch that failed"), ("w-1".to_owned(), failed));
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn a_save_into_a_folder_put_back_does_not_wait_while_the_os_watcher_is_busy() {
+        let dir = TempDir::new();
+        let (watcher, notices) = watcher();
+        let watcher = Arc::new(watcher);
+        let (folder, a, _) = watched_folder(&dir, &watcher);
+        fs::remove_dir_all(&folder).unwrap();
+        two_notices(&notices, "a deleted folder");
+        fs::create_dir(&folder).unwrap();
+
+        let path = a.clone();
+        let returned = while_os_watcher_busy(&watcher, move |w| {
+            w.saving("main", &path, || files::write_text(&path, "mine"))
+        });
+
+        assert_eq!(returned, Some(Ok(hash("mine"))), "the save waited for the OS watcher");
+        assert_eq!(os_watched_folders(&watcher), 1);
+        fs::write(&a, "theirs").unwrap();
+        let notice = next(&notices, "a change after a save into a folder put back");
+        assert_eq!(notice, ("main".to_owned(), changed(&a, "theirs")));
+    }
+
     #[test]
     fn a_change_by_another_program_during_a_save_is_reported_after_it() {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
 
         let saved = watcher.saving("main", &path, || {
             let written = files::write_text(&path, "mine");
@@ -1111,7 +1284,7 @@ mod tests {
 
         fs::create_dir(&folder).unwrap();
         fs::write(&a, "back").unwrap();
-        watcher.watch("main", a.clone(), &hash("back")).unwrap();
+        watch_now(&watcher, "main", a.clone(), &hash("back"));
         assert_eq!(lost_folders(&watcher), 0);
         assert_eq!(os_watched_folders(&watcher), 1);
         fs::write(&a, "changed").unwrap();
@@ -1194,7 +1367,7 @@ mod tests {
 
             fs::create_dir(&folder).unwrap();
             fs::write(&a, "back").unwrap();
-            watcher.watch("main", a.clone(), &hash("back")).unwrap();
+            watch_now(&watcher, "main", a.clone(), &hash("back"));
             watcher.unwatch("main", &a);
             assert_eq!(lost_folders(&watcher), 0);
             assert_eq!(os_watched_folders(&watcher), 1);
@@ -1212,7 +1385,7 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.file("a.md", "old");
         let (watcher, notices) = watcher();
-        watcher.watch("main", path.clone(), &hash("old")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
         fs::write(&path, "new").unwrap();
         next(&notices, "a write by another program");
 
@@ -1247,7 +1420,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let (watcher, notices) = watcher();
 
-        watcher.watch("main", path.clone(), &hash("known")).unwrap();
+        watch_now(&watcher, "main", path.clone(), &hash("known"));
 
         assert!(notices.try_recv().is_err());
         let files = watcher.lock();

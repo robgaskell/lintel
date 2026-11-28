@@ -4,7 +4,7 @@ import { message } from '@tauri-apps/plugin-dialog';
 import { undo } from '@codemirror/commands';
 import { EditorState, type ChangeSet } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { FILE_CHANGED, FILE_REMOVED, pathsExist, readTextFile, writeTextFile } from '../ipc';
+import { FILE_CHANGED, FILE_REMOVED, pathsExist, readTextFile, WATCH_FAILED, writeTextFile } from '../ipc';
 import { editorExtensions } from '../editor/setup';
 import { registerView, setActiveDocSource, setEditorsLocked } from '../editor/views';
 import {
@@ -413,6 +413,18 @@ describe('live reload switched off (Ruling 265)', () => {
     quiet.mockRestore();
   });
 
+  it('says so when Rust could not watch a folder (Ruling 358)', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(listen).mockClear();
+    await listenForFileEvents('w-1').ready;
+    const failed = vi.mocked(listen).mock.calls.find(([event]) => event === WATCH_FAILED)?.[1];
+
+    (failed as (e: unknown) => void)({ payload: { message: 'Could not watch /notes: too many files' } });
+
+    expect(notices).toEqual(['Live reload is off: Could not watch /notes: too many files']);
+    quiet.mockRestore();
+  });
+
   it('says so when this window cannot listen for file events', async () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(listen).mockRejectedValueOnce(new Error('no event plugin'));
@@ -435,6 +447,7 @@ describe('listenForFileEvents', () => {
     expect(calls.map(([event, , options]) => [event, options])).toEqual([
       [FILE_CHANGED, { target: { kind: 'WebviewWindow', label: 'w-1' } }],
       [FILE_REMOVED, { target: { kind: 'WebviewWindow', label: 'w-1' } }],
+      [WATCH_FAILED, { target: { kind: 'WebviewWindow', label: 'w-1' } }],
     ]);
     const removed = calls[1][1] as (e: { payload: { path: string } }) => void;
     removed({ payload: { path: '/notes/plan.md' } });
