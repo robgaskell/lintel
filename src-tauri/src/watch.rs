@@ -64,8 +64,10 @@ struct Folders {
 
 /// One debounced watcher for the whole app. It watches folders, not files, because editors
 /// that save by renaming break a watch on the file itself. Each folder is watched once.
-/// No file I/O runs under the files lock, so a stalled share holds up nothing else
-/// (Ruling 357): snapshot under it, read or write outside it, then check under it again.
+/// watch, unwatch, drop_window and saving touch only their own file and folder on disk:
+/// no file I/O runs under the files lock, and OS watch calls run on their own thread
+/// (Rulings 357, 358). A stalled share can still delay events, and the start of watching
+/// other folders.
 pub struct Watcher {
     files: Arc<Mutex<Files>>,
     sink: Sink,
