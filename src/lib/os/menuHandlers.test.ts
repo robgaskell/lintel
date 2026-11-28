@@ -11,7 +11,7 @@ import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settin
 import { printDoc } from '../export/print';
 import { exportHtml } from '../export/html';
 import { exportDocx } from '../export/docx';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { openPath, openUrl } from '@tauri-apps/plugin-opener';
 import { copyNotices } from '../ipc';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
@@ -27,7 +27,7 @@ vi.mock('../export/docx', () => ({ exportDocx: vi.fn(async () => {}) }));
 vi.mock('../ipc', () => ({
   copyNotices: vi.fn(async () => '/Users/me/Library/Caches/com.robgaskell.lintel/THIRD_PARTY_NOTICES.md'),
 }));
-vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn(async () => {}) }));
+vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn(async () => {}), openUrl: vi.fn(async () => {}) }));
 vi.mock('../../settings/settingsWindow', () => ({
   focusedSettingsWindow: vi.fn(async () => null),
   openSettingsWindow: vi.fn(async () => {}),
@@ -291,6 +291,21 @@ describe('makeMenuHandlers', () => {
     );
     expect(copyNotices).toHaveBeenCalledOnce();
     expect(openPath).toHaveBeenCalledOnce();
+  });
+
+  it('opens the repo page in the browser for Lintel on GitHub (spec 13a)', async () => {
+    makeMenuHandlers(deps()).openGithub();
+
+    await vi.waitFor(() => expect(openUrl).toHaveBeenCalledWith('https://github.com/robgaskell/lintel'));
+    expect(openUrl).toHaveBeenCalledOnce();
+  });
+
+  it('shows a failure to open the repo page in a dialog', async () => {
+    vi.mocked(openUrl).mockRejectedValueOnce(new Error('No browser.'));
+
+    makeMenuHandlers(deps()).openGithub();
+
+    await vi.waitFor(() => expect(message).toHaveBeenCalledWith('Error: No browser.', { title: 'Lintel', kind: 'error' }));
   });
 
   it('opens nothing when the copy cannot be made, and says why', async () => {

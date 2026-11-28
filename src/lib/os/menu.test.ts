@@ -90,6 +90,7 @@ vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => thisWindow })
 vi.mock('@tauri-apps/plugin-store', () => import('../../test/fakes').then((f) => f.storeModule));
 vi.mock('@tauri-apps/api/event', () => import('../../test/fakes').then((f) => f.eventModule));
 vi.mock('@tauri-apps/api/core', () => import('../../test/fakes').then((f) => f.coreModule));
+vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '9.8.7') }));
 const recentList = vi.hoisted(() => ({ changed: new Set<() => void>() }));
 vi.mock('./recent', () => ({
   getRecent: vi.fn(),
@@ -155,6 +156,7 @@ function handlers(): MenuHandlers {
     previousTab: vi.fn(),
     split: vi.fn(),
     openNotices: vi.fn(),
+    openGithub: vi.fn(),
   };
 }
 
@@ -221,9 +223,9 @@ describe('menuEntries', () => {
   });
 
   it.each([
-    ['macos', ['third-party-notices']],
-    ['windows', ['About', 'Separator', 'third-party-notices']],
-    ['linux', ['About', 'Separator', 'third-party-notices']],
+    ['macos', ['lintel-github', 'third-party-notices']],
+    ['windows', ['About', 'Separator', 'lintel-github', 'third-party-notices']],
+    ['linux', ['About', 'Separator', 'lintel-github', 'third-party-notices']],
   ] as const)('puts Third-Party Notices in the Help menu on %s (Ruling 328)', (platform, expected) => {
     const h = handlers();
     const help = (menuEntries(h, [], platform) as Entry[]).find((e) => e.text === 'Help')!;
@@ -234,6 +236,32 @@ describe('menuEntries', () => {
     expect(item.text).toBe('Third-Party Notices');
     item.action!();
     expect(h.openNotices).toHaveBeenCalledOnce();
+  });
+
+  it.each(['macos', 'windows', 'linux'] as const)('puts Lintel on GitHub in the Help menu on %s (spec 13a)', (platform) => {
+    const h = handlers();
+    const help = (menuEntries(h, [], platform) as Entry[]).find((e) => e.text === 'Help')!;
+
+    const item = byId(help.items!, 'lintel-github');
+    expect(item.text).toBe('Lintel on GitHub');
+    item.action!();
+    expect(h.openGithub).toHaveBeenCalledOnce();
+  });
+
+  it('gives the macOS About the version once and the repo address as text (Ruling 4)', () => {
+    const app = (menuEntries(handlers(), [], 'macos', '9.8.7') as Entry[])[0];
+
+    expect(app.items![0].item).toEqual({
+      About: { name: 'Lintel', version: '9.8.7', shortVersion: '', credits: 'https://github.com/robgaskell/lintel' },
+    });
+  });
+
+  it.each(['windows', 'linux'] as const)('gives the %s About the version and the repo address (Ruling 4)', (platform) => {
+    const help = (menuEntries(handlers(), [], platform, '9.8.7') as Entry[]).find((e) => e.text === 'Help')!;
+
+    expect(help.items![0].item).toEqual({
+      About: { name: 'Lintel', version: '9.8.7', website: 'https://github.com/robgaskell/lintel' },
+    });
   });
 
   it('has no predefined Quit, Close Window, Undo or Redo on any platform', () => {
@@ -430,6 +458,14 @@ describe('buildAppMenu', () => {
     const ids = [...tauri.channels.keys()];
     expect(ids.length).toBeGreaterThan(10);
     for (const id of ids) expect(id).toMatch(/^[a-z-]+#main#\d+$/);
+  });
+
+  it("puts the app's own version in the About item", async () => {
+    await buildAppMenu(handlers(), []);
+
+    const items = vi.mocked(Menu.new).mock.lastCall![0]!.items as Entry[];
+    const about = flatten(items).find((e) => typeof e.item === 'object' && 'About' in e.item!);
+    expect(about?.item).toMatchObject({ About: { version: '9.8.7' } });
   });
 
   it('keeps every item working after a rebuild closes the old menu', async () => {

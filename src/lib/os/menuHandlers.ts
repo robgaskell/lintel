@@ -1,5 +1,5 @@
 import { message, open } from '@tauri-apps/plugin-dialog';
-import { openPath } from '@tauri-apps/plugin-opener';
+import { openPath, openUrl } from '@tauri-apps/plugin-opener';
 import { focusedSettingsWindow, openSettingsWindow } from '../../settings/settingsWindow';
 import { docs, saveDoc, saveDocAs, type ViewMode } from '../docs/store.svelte';
 import { exportDocx } from '../export/docx';
@@ -7,7 +7,7 @@ import { exportHtml } from '../export/html';
 import { printDoc } from '../export/print';
 import { copyNotices } from '../ipc';
 import type { Workspace } from '../layout/workspace';
-import type { MenuHandlers } from './menu';
+import { REPO_URL, type MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
 import { isMac, type Platform } from './platform';
 import { quitApp } from './quit';
@@ -129,6 +129,7 @@ export function makeMenuHandlers({
     nextTab: forDoc(() => workspace.nextTab()),
     previousTab: forDoc(() => workspace.previousTab()),
     openNotices: guarded(openNotices),
+    openGithub: guarded(() => openUrl(REPO_URL)),
     split: (direction) =>
       forDoc(() => {
         const id = workspace.activeDocId();

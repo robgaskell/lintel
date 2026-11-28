@@ -1,4 +1,6 @@
+import { getVersion } from '@tauri-apps/api/app';
 import {
+  type AboutMetadata,
   CheckMenuItem,
   Menu,
   MenuItem,
@@ -42,7 +44,10 @@ export interface MenuHandlers {
   previousTab(): void;
   split(direction: 'right' | 'below'): void;
   openNotices(): void;
+  openGithub(): void;
 }
+
+export const REPO_URL = 'https://github.com/robgaskell/lintel';
 
 type MenuEntry =
   | MenuItemOptions
@@ -199,7 +204,7 @@ async function install(h: MenuHandlers, recent: string[] | null, force: boolean)
   const checked = outline.visible;
   const splittable = splitEnabled;
   const label = getCurrentWindow().label;
-  const entries = menuEntries(h, recent, currentPlatform());
+  const entries = menuEntries(h, recent, currentPlatform(), await appVersion());
   stampBuildIds(entries, `${label}#${++generation}`);
   const check = await liveCheckItem(entries, 'toggle-outline');
   const splits: MenuItem[] = [];
@@ -263,6 +268,28 @@ async function liveMenuItem(entries: MenuEntry[], base: string): Promise<MenuIte
   return null;
 }
 
+let version: Promise<string | undefined> | null = null;
+
+// Without a version the menu still builds; About then shows none (or the plist's, on macOS).
+function appVersion(): Promise<string | undefined> {
+  version ??= getVersion().catch((err) => {
+    console.error('Could not read the app version for About:', err);
+    return undefined;
+  });
+  return version;
+}
+
+/**
+ * The About panel's contents (Ruling 4). On macOS `shortVersion` is the bracketed build
+ * part, so '' hides it; Windows and Linux append any `shortVersion` in brackets. Only
+ * macOS reads `credits`, and only Windows and Linux read `website`.
+ */
+function aboutMetadata(mac: boolean, version: string | undefined): AboutMetadata {
+  return mac
+    ? { name: 'Lintel', version, shortVersion: '', credits: REPO_URL }
+    : { name: 'Lintel', version, website: REPO_URL };
+}
+
 /**
  * The menu bar's contents.
  * There is no predefined Close Window: its Cmd+W would bypass Close Tab (Ruling 37).
@@ -271,8 +298,10 @@ export function menuEntries(
   h: MenuHandlers,
   recent: string[] | null,
   platform: Platform,
+  version?: string,
 ): MenuEntry[] {
   const mac = platform === 'macos';
+  const about: PredefinedMenuItemOptions = { item: { About: aboutMetadata(mac, version) } };
   const separator: PredefinedMenuItemOptions = { item: 'Separator' };
   const settings: MenuItemOptions = {
     id: 'settings',
@@ -291,7 +320,7 @@ export function menuEntries(
   const app: SubmenuOptions = {
     text: 'Lintel',
     items: [
-      { item: { About: null } },
+      about,
       separator,
       settings,
       separator,
@@ -427,11 +456,16 @@ export function menuEntries(
     text: 'Third-Party Notices',
     action: () => h.openNotices(),
   };
+  const github: MenuItemOptions = {
+    id: 'lintel-github',
+    text: 'Lintel on GitHub',
+    action: () => h.openGithub(),
+  };
   const help: SubmenuOptions = {
     id: '__tauri_help_menu__',
     text: 'Help',
     // macOS adds a search field to its Help menu; elsewhere About lives here.
-    items: mac ? [notices] : [{ item: { About: null } }, separator, notices],
+    items: mac ? [github, notices] : [about, separator, github, notices],
   };
 
   return [
