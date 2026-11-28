@@ -519,6 +519,18 @@ fn check(
     paths: HashSet<PathBuf>,
     rescan: bool,
 ) -> (Vec<(String, Notice)>, Vec<PathBuf>) {
+    let reads = read_disk(files, &paths, rescan);
+    apply_reads(files, reads)
+}
+
+/// What a check found on disk, read outside the files lock.
+struct DiskReads {
+    vanished: HashSet<PathBuf>,
+    /// Each touched file, the version of its hash before the read, and what the read found.
+    files: Vec<(PathBuf, u64, Option<Option<String>>)>,
+}
+
+fn read_disk(files: &Mutex<Files>, paths: &HashSet<PathBuf>, rescan: bool) -> DiskReads {
     let (folders, snapshot): (Vec<PathBuf>, Vec<(PathBuf, u64)>) = {
         let files = lock(files);
         let folders = files.folder_counts.keys().cloned().collect();
@@ -546,6 +558,14 @@ fn check(
         };
         reads.push((key, version, now));
     }
+    DiskReads {
+        vanished,
+        files: reads,
+    }
+}
+
+fn apply_reads(files: &Mutex<Files>, reads: DiskReads) -> (Vec<(String, Notice)>, Vec<PathBuf>) {
+    let DiskReads { vanished, files: reads } = reads;
     let mut files = lock(files);
     let mut notices = Vec::new();
     for (key, version, now) in reads {
@@ -1208,6 +1228,66 @@ mod tests {
         fs::write(&a, "theirs").unwrap();
         let notice = next(&notices, "a change after a save into a folder put back");
         assert_eq!(notice, ("main".to_owned(), changed(&a, "theirs")));
+    }
+
+    // The three guards below keep a stale read from undoing a save (Ruling 358).
+    #[test]
+    fn a_check_that_read_before_a_save_does_not_put_the_older_hash_back() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, _notices) = watcher();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+        let reads = read_disk(&watcher.files, &HashSet::from([watch_key(&path)]), false);
+
+        watcher
+            .saving("main", &path, || files::write_text(&path, "mine"))
+            .unwrap();
+        let (sent, _) = apply_reads(&watcher.files, reads);
+
+        assert!(sent.is_empty(), "{sent:?}");
+        let hash_now = watcher.lock().by_key.values().next().unwrap().hash.clone();
+        assert_eq!(hash_now, Some(hash("mine")));
+    }
+
+    #[test]
+    fn a_check_during_a_save_leaves_the_file_to_the_save() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+        let key = watch_key(&path);
+        let mut during = Vec::new();
+
+        watcher
+            .saving("main", &path, || {
+                let written = files::write_text(&path, "mine");
+                during = check(&watcher.files, HashSet::from([key]), false).0;
+                written
+            })
+            .unwrap();
+
+        assert!(during.is_empty(), "{during:?}");
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn a_watch_during_a_save_leaves_the_change_for_the_save_to_report() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+
+        watcher
+            .saving("main", &path, || {
+                let written = files::write_text(&path, "mine");
+                watcher.watch("w-1", path.clone(), &hash("old")).unwrap();
+                written
+            })
+            .unwrap();
+
+        let got: Vec<_> = notices.try_iter().collect();
+        assert_eq!(got, [("w-1".to_owned(), changed(&path, "mine"))]);
+        assert_quiet(&notices);
     }
 
     #[test]

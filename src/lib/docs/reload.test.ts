@@ -339,6 +339,21 @@ describe('loadDisk', () => {
   });
 });
 
+describe('a doc deleted on disk whose file comes back (Ruling 358)', () => {
+  it('takes the new bytes when it has no edits, as a clean doc does, not a conflict', async () => {
+    const doc = openDoc('old\n');
+    doc.external = 'deleted';
+    read.mockResolvedValueOnce({ text: 'back\n', hash: 'h-back' });
+
+    await handleFileChanged({ path: '/notes/plan.md', hash: 'h-back' });
+
+    expect(doc.external).not.toBe('conflict');
+    expect(doc.text).toBe('back\n');
+    expect(doc.diskHash).toBe('h-back');
+    expect(doc.diskText).toBeNull();
+  });
+});
+
 describe('handleFileRemoved', () => {
   it('marks the doc deleted, and a save of the clean doc writes it once and clears the mark', async () => {
     const doc = openDoc('kept\n');
