@@ -155,11 +155,12 @@ describe('WindowToolbar (v0.2 item 5)', () => {
 
     const targets = (container: HTMLElement, button: (name: string) => HTMLButtonElement) => ({
       'greyed Split Right': button('Split Right'),
+      'greyed Split Down': button('Split Down'),
       divider: container.querySelector('.divider')!,
       'toolbar row': container.querySelector('[role="toolbar"]')!,
     });
 
-    for (const where of ['greyed Split Right', 'divider', 'toolbar row'] as const) {
+    for (const where of ['greyed Split Right', 'greyed Split Down', 'divider', 'toolbar row'] as const) {
       it(`leaves the editor focused after a press on the ${where}`, () => {
         const { container, button } = toolbar({ canSplit: false });
         editor.focus();
