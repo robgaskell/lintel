@@ -67,6 +67,9 @@ vi.mock('@tauri-apps/api/menu', () => ({
         setChecked: vi.fn(async function (this: { checked: boolean }, checked: boolean) {
           this.checked = checked;
         }),
+        isChecked: vi.fn(async function (this: { checked: boolean }) {
+          return this.checked;
+        }),
         close: vi.fn(async () => {}),
       };
     }),
@@ -804,6 +807,29 @@ describe('syncAppMenu', () => {
     await vi.waitFor(() => expect(item.setChecked).toHaveBeenLastCalledWith(false));
     await settle();
     expect(Menu.new).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it('puts the Show Toolbar tick right on the next change after this listener missed one (Ruling 12)', async () => {
+    const stop = syncAppMenu(handlers(), vi.fn());
+    // Another listener in this window takes a change before this one is registered, so the
+    // first build ticks from the new value while this listener never heard of it.
+    settings.showToolbar = false;
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+    const item = (await vi.mocked(CheckMenuItem.new).mock.results.at(-1)!.value) as unknown as {
+      id: string;
+      checked: boolean;
+    };
+    expect(item.id).toMatch(/^show-toolbar#/);
+    expect(item.checked).toBe(false);
+
+    // The next toggle, saved in another window.
+    await eventModule.emit('lintel://settings-changed', {
+      revision: 1_000_000 + Date.now(),
+      changes: { showToolbar: true },
+    });
+
+    await vi.waitFor(() => expect(item.checked).toBe(true));
     stop();
   });
 

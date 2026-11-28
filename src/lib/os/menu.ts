@@ -75,6 +75,12 @@ export async function setToolbarChecked(checked: boolean): Promise<void> {
   await toolbarItem?.setChecked(checked);
 }
 
+// Asks the item, not a remembered value, which a change heard elsewhere could make stale.
+async function followToolbarSetting(shown: boolean): Promise<void> {
+  const item = toolbarItem;
+  if (item && (await item.isChecked()) !== shown) await item.setChecked(shown);
+}
+
 const SPLIT_IDS = ['split-right', 'split-down'];
 // Like the outline item: View > Split Right and Split Down, greyed out without a rebuild.
 let splitItems: MenuItem[] = [];
@@ -114,7 +120,6 @@ export function takeAppMenu(): void {
 export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): () => void {
   let latest = 0;
   let limit = settings.recentLimit;
-  let toolbarShown = settings.showToolbar;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   // `force` installs the menu even while this window is not focused.
@@ -132,10 +137,7 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
 
   const stopRecent = onRecentChanged(rebuildSoon);
   const stopSettings = onSettingsChanged((next) => {
-    if (next.showToolbar !== toolbarShown) {
-      toolbarShown = next.showToolbar;
-      setToolbarChecked(toolbarShown).catch(onError);
-    }
+    followToolbarSetting(next.showToolbar).catch(onError);
     if (next.recentLimit === limit) return;
     limit = next.recentLimit;
     rebuildSoon();
