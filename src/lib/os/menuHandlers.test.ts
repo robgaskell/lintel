@@ -43,6 +43,7 @@ const mainWindow = {
   unminimize: vi.fn(async () => {}),
   show: vi.fn(async () => {}),
   setFocus: vi.fn(async () => {}),
+  isFocused: vi.fn(async () => true),
 };
 
 function deps(): MenuHandlerDeps {
@@ -66,6 +67,7 @@ function deps(): MenuHandlerDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mainWindow.isFocused.mockResolvedValue(true);
   vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   docs.clear();
   settings.showToolbar = true;
@@ -91,6 +93,23 @@ describe('makeMenuHandlers', () => {
       expect(closeTabOrWindow).toHaveBeenCalledWith(d.workspace, expect.anything());
       expect(openPaths).toHaveBeenCalledWith(['/notes/a.md']);
     });
+  });
+
+  it('leaves every tab alone on Close Tab while a native panel such as About is key (Ruling 13)', async () => {
+    const d = deps();
+    mainWindow.isFocused.mockResolvedValue(false);
+
+    makeMenuHandlers(d).closeTab();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mainWindow.isFocused).toHaveBeenCalled();
+    expect(closeTabOrWindow).not.toHaveBeenCalled();
+    expect(mainWindow.destroy).not.toHaveBeenCalled();
+    expect(message).not.toHaveBeenCalled();
+
+    mainWindow.isFocused.mockResolvedValue(true);
+    makeMenuHandlers(d).closeTab();
+    await vi.waitFor(() => expect(closeTabOrWindow).toHaveBeenCalledWith(d.workspace, mainWindow));
   });
 
   it('re-reads the recent list after an Open Recent attempt, so a dead entry is pruned', async () => {

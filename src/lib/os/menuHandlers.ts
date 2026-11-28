@@ -32,6 +32,7 @@ export interface MenuHandlerDeps {
     unminimize(): Promise<void>;
     show(): Promise<void>;
     setFocus(): Promise<void>;
+    isFocused(): Promise<boolean>;
   };
   outline: { visible: boolean };
   setOutlineChecked(checked: boolean): Promise<void>;
@@ -119,7 +120,11 @@ export function makeMenuHandlers({
   async function closeTab() {
     const settingsWindow = await focusedSettingsWindow();
     if (settingsWindow) return settingsWindow.destroy();
-    return closeTabOrWindow(workspace, currentWindow());
+    // The native About panel can be key over this window, and Cmd+W still reaches this menu
+    // item. No API closes that panel, so nothing closes (Ruling 13).
+    const win = currentWindow();
+    if (!(await win.isFocused())) return;
+    return closeTabOrWindow(workspace, win);
   }
 
   return {
