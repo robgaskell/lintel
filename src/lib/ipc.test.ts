@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { claimPath, writeTextFile } from './ipc';
+import { readFileSync } from 'node:fs';
+import { claimPath, FILE_CHANGED, FILE_REMOVED, WATCH_FAILED, writeTextFile } from './ipc';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => null) }));
 
@@ -36,5 +37,15 @@ describe('writeTextFile', () => {
       text: 'mine\n',
       expectedHash: null,
     });
+  });
+});
+
+// Ruling 359: a renamed event on either side would leave the window deaf to it.
+describe('event names', () => {
+  it('match the names Rust sends from watch.rs', () => {
+    const rust = readFileSync('src-tauri/src/watch.rs', 'utf8');
+    for (const [name, value] of Object.entries({ FILE_CHANGED, FILE_REMOVED, WATCH_FAILED })) {
+      expect(rust).toContain(`pub const ${name}: &str = "${value}";`);
+    }
   });
 });

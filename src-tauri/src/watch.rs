@@ -77,6 +77,14 @@ pub struct Watcher {
     os_requests: Sender<OsRequest>,
 }
 
+struct WatchRead {
+    key: PathBuf,
+    /// The version of the file's hash before the disk read; None when it was not watched.
+    seen: Option<u64>,
+    folder_back: bool,
+    disk: Option<Option<String>>,
+}
+
 /// Work for the OS watcher thread, which callers hand over without waiting.
 enum OsRequest {
     /// Watch or unwatch `folder` as the files need; `renew` first ends a watch the OS dropped.
@@ -228,12 +236,35 @@ impl Watcher {
     /// the window has; a file that differs is reported to that window at once. Its folder is
     /// watched soon after; a failure there comes back as a Failed notice.
     pub fn watch(&self, label: &str, path: String, known_hash: &str) -> Result<(), String> {
-        let key = watch_key(&path);
-        let folder = folder_of(&key).to_path_buf();
+        let read = self.read_for_watch(&path);
+        self.finish_watch(label, path, known_hash, read);
+        Ok(())
+    }
+
+    /// The reads watch() makes before it takes the lock, apart so a test can put a save
+    /// between the two.
+    fn read_for_watch(&self, path: &str) -> WatchRead {
+        let key = watch_key(path);
         let seen = self.lock().by_key.get(&key).map(|w| w.version);
-        let folder_back = folder.is_dir();
+        let folder_back = folder_of(&key).is_dir();
         // An unreadable file counts as unchanged until an event shows otherwise.
         let disk = disk_hash(&key);
+        WatchRead {
+            key,
+            seen,
+            folder_back,
+            disk,
+        }
+    }
+
+    fn finish_watch(&self, label: &str, path: String, known_hash: &str, read: WatchRead) {
+        let WatchRead {
+            key,
+            seen,
+            folder_back,
+            disk,
+        } = read;
+        let folder = folder_of(&key).to_path_buf();
         let mut notices = Vec::new();
         let mut files = self.lock();
         let renew = folder_back && files.lost.remove(&folder);
@@ -257,11 +288,10 @@ impl Watcher {
         if watched.hash.as_deref() != Some(known_hash) {
             notices.push((label.to_owned(), notice_for(&path, &watched.hash)));
         }
-        *watched.subs.entry((label.to_owned(), path.clone())).or_insert(0) += 1;
+        *watched.subs.entry((label.to_owned(), path)).or_insert(0) += 1;
         drop(files);
         self.os_request(OsRequest::Sync { folder, renew });
         self.send(notices);
-        Ok(())
     }
 
     /// Removes one of the window's watches of `path`; other windows' watches stay.
@@ -389,7 +419,10 @@ impl Watcher {
     fn flush(&self) {
         let (done, finished) = mpsc::channel();
         self.os_request(OsRequest::Flush(done));
-        let _ = finished.recv();
+        // A stuck thread fails the test instead of hanging it.
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the OS watcher thread did not answer within 10 s");
     }
 
     fn send(&self, notices: Vec<(String, Notice)>) {
@@ -1287,6 +1320,141 @@ mod tests {
 
         let got: Vec<_> = notices.try_iter().collect();
         assert_eq!(got, [("w-1".to_owned(), changed(&path, "mine"))]);
+        assert_quiet(&notices);
+    }
+
+    /// Runs `call` on another thread and gives up after a second, so a regression that
+    /// blocks fails the test instead of hanging it.
+    fn within_a_second<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = done.send(call());
+        });
+        finished.recv_timeout(Duration::from_secs(1)).ok()
+    }
+
+    // Ruling 359: a save that ends while watch() reads the disk knows better than the read.
+    #[test]
+    fn a_save_that_ends_while_a_watch_reads_keeps_its_hash() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+        let read = watcher.read_for_watch(&path);
+
+        watcher
+            .saving("main", &path, || files::write_text(&path, "mine"))
+            .unwrap();
+        watcher.finish_watch("w-1", path.clone(), &hash("old"), read);
+
+        let got: Vec<_> = notices.try_iter().collect();
+        assert_eq!(got, [("w-1".to_owned(), changed(&path, "mine"))]);
+        let hash_now = watcher.lock().by_key.values().next().unwrap().hash.clone();
+        assert_eq!(hash_now, Some(hash("mine")));
+    }
+
+    // The file was not watched when this watch read it, but another watch and a save came first.
+    #[test]
+    fn a_watch_that_read_before_the_file_was_watched_does_not_undo_a_save() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        let read = watcher.read_for_watch(&path);
+
+        watch_now(&watcher, "main", path.clone(), &hash("old"));
+        watcher
+            .saving("main", &path, || files::write_text(&path, "mine"))
+            .unwrap();
+        watcher.finish_watch("w-1", path.clone(), &hash("old"), read);
+
+        let got: Vec<_> = notices.try_iter().collect();
+        assert_eq!(got, [("w-1".to_owned(), changed(&path, "mine"))]);
+        let hash_now = watcher.lock().by_key.values().next().unwrap().hash.clone();
+        assert_eq!(hash_now, Some(hash("mine")));
+    }
+
+    #[test]
+    fn an_unwatch_does_not_wait_while_the_os_watcher_is_busy() {
+        let dir = TempDir::new();
+        let a = dir.file("a.md", "a");
+        let watcher = Arc::new(watcher().0);
+        watch_now(&watcher, "main", a.clone(), &hash("a"));
+
+        let returned = while_os_watcher_busy(&watcher, move |w| w.unwatch("main", &a));
+
+        assert_eq!(returned, Some(()), "unwatch waited for the OS watcher");
+        assert_eq!(os_watched_folders(&watcher), 0);
+    }
+
+    // The re-check stats every watched folder, so it must not run on the saving thread.
+    #[test]
+    fn a_save_s_re_check_runs_on_the_os_watcher_thread() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "old");
+        let (watcher, notices) = watcher();
+        let watcher = Arc::new(watcher);
+        // Its folder is not watched yet, so no event reports the change below.
+        let busy = lock(&watcher.folders);
+        let saver = Arc::clone(&watcher);
+        let saving = path.clone();
+        let saved = within_a_second(move || {
+            saver.watch("main", saving.clone(), &hash("old")).unwrap();
+            let key = watch_key(&saving);
+            saver.saving("main", &saving, || {
+                let written = files::write_text(&saving, "mine");
+                fs::write(&saving, "theirs").unwrap();
+                // As an event during the save would.
+                check(&saver.files, HashSet::from([key]), false);
+                written
+            })
+        });
+        let heard_while_busy = notices.try_recv().ok();
+        drop(busy);
+
+        assert_eq!(saved, Some(Ok(hash("mine"))), "the save waited");
+        assert_eq!(heard_while_busy, None, "the re-check ran on the saving thread");
+        let notice = next(&notices, "a change during a save, after the thread is free");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "theirs")));
+        assert_quiet(&notices);
+    }
+
+    // A change between watch() and the start of its folder's OS watch has no event.
+    #[test]
+    fn a_change_before_the_os_watch_starts_is_reported_once_it_does() {
+        let dir = TempDir::new();
+        let path = dir.file("a.md", "new");
+        let (watcher, notices) = watcher();
+        let watcher = Arc::new(watcher);
+        let busy = lock(&watcher.folders);
+        let opener = Arc::clone(&watcher);
+        let opening = path.clone();
+        let watched = within_a_second(move || opener.watch("main", opening, &hash("new")));
+        // As if the file changed after watch() read it. FSEvents can report a write made
+        // just before its watch starts, so a real write would not test the check.
+        watcher.lock().by_key.values_mut().next().unwrap().hash = Some(hash("old"));
+        drop(busy);
+
+        assert_eq!(watched, Some(Ok(())), "watch waited");
+        let notice = next(&notices, "a change before the OS watch started");
+        assert_eq!(notice, ("main".to_owned(), changed(&path, "new")));
+        assert_quiet(&notices);
+    }
+
+    #[test]
+    fn a_failed_folder_is_reported_only_to_the_windows_watching_it() {
+        let dir = TempDir::new();
+        let b = dir.file("b.md", "b");
+        let gone = dir.0.join("gone").join("x.md").to_str().unwrap().to_owned();
+        let (watcher, notices) = watcher();
+        watch_now(&watcher, "w-2", b, &hash("b"));
+
+        watch_now(&watcher, "w-1", gone.clone(), &hash("x"));
+
+        let got: Vec<_> = notices.try_iter().collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], ("w-1".to_owned(), removed(&gone)));
+        assert_eq!(got[1].0, "w-1");
+        assert!(matches!(got[1].1, Notice::Failed(_)), "{got:?}");
         assert_quiet(&notices);
     }
 
