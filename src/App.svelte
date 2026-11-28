@@ -20,6 +20,7 @@
   import {
     setOutlineChecked,
     setSplitEnabled,
+    setToolbarChecked,
     syncAppMenu,
     takeAppMenu,
     type MenuHandlers,
@@ -44,6 +45,7 @@
   import { followTheme } from './lib/theme/theme';
   import EmptyState from './lib/ui/EmptyState.svelte';
   import StatusBar from './lib/ui/StatusBar.svelte';
+  import WindowToolbar from './lib/ui/WindowToolbar.svelte';
 
   const RECENT_SHOWN = 5;
   const NOTICE_MS = 10_000;
@@ -54,6 +56,8 @@
   let host: HTMLElement;
   let handlers = $state<MenuHandlers | null>(null);
   let activeId = $state<string | null>(null);
+  // Set with View > Split's enabled state, so the toolbar and the menu always agree.
+  let canSplit = $state(false);
   const active = $derived(activeId === null ? undefined : docs.get(activeId));
   const cursor = $derived(activeId === null ? undefined : cursors.get(activeId));
   // null or missing: not linted, so the status bar shows no count.
@@ -171,9 +175,8 @@
     // View > Split Right and Split Down grey out for a lone tab, as in the tab menu (Ruling 192).
     const syncSplit = () => {
       const id = workspace.activeDocId();
-      setSplitEnabled(id !== null && !workspace.isAloneInGroup(id)).catch((err) =>
-        console.error('Could not update View > Split:', err),
-      );
+      canSplit = id !== null && !workspace.isAloneInGroup(id);
+      setSplitEnabled(canSplit).catch((err) => console.error('Could not update View > Split:', err));
     };
     syncSplit();
     const stopLayout = workspace.onLayoutChange(() => {
@@ -192,6 +195,7 @@
       currentWindow: getCurrentWindow,
       outline,
       setOutlineChecked,
+      setToolbarChecked,
     });
     const menuHandlers = handlers;
     const stopTabKeys = listenTabSwitchKeys(menuHandlers, currentPlatform());
@@ -290,6 +294,9 @@
 </script>
 
 <div class="app">
+  {#if settings.showToolbar && handlers}
+    <WindowToolbar {handlers} {canSplit} outlineVisible={outline.visible} />
+  {/if}
   <div class="work">
     <main class="dock" bind:this={host}></main>
     {#if docs.size === 0 && handlers}

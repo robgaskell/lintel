@@ -13,6 +13,7 @@ import { exportHtml } from '../export/html';
 import { exportDocx } from '../export/docx';
 import { openPath, openUrl } from '@tauri-apps/plugin-opener';
 import { copyNotices } from '../ipc';
+import { settings, updateSettings } from '../settings/settings.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn() }));
 vi.mock('../docs/store.svelte', () => ({ docs: new Map(), saveDoc: vi.fn(), saveDocAs: vi.fn() }));
@@ -28,6 +29,10 @@ vi.mock('../ipc', () => ({
   copyNotices: vi.fn(async () => '/Users/me/Library/Caches/com.robgaskell.lintel/THIRD_PARTY_NOTICES.md'),
 }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn(async () => {}), openUrl: vi.fn(async () => {}) }));
+vi.mock('../settings/settings.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../settings/settings.svelte')>();
+  return { ...actual, updateSettings: vi.fn(async (patch: object) => void Object.assign(actual.settings, patch)) };
+});
 vi.mock('../../settings/settingsWindow', () => ({
   focusedSettingsWindow: vi.fn(async () => null),
   openSettingsWindow: vi.fn(async () => {}),
@@ -55,6 +60,7 @@ function deps(): MenuHandlerDeps {
     currentWindow: vi.fn(() => mainWindow),
     outline: { visible: true },
     setOutlineChecked: vi.fn(async () => {}),
+    setToolbarChecked: vi.fn(async () => {}),
   };
 }
 
@@ -62,6 +68,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(focusedSettingsWindow).mockResolvedValue(null);
   docs.clear();
+  settings.showToolbar = true;
 });
 
 describe('makeMenuHandlers', () => {
@@ -182,6 +189,43 @@ describe('makeMenuHandlers', () => {
     await vi.waitFor(() => expect(d.setOutlineChecked).toHaveBeenLastCalledWith(true));
     expect(d.outline.visible).toBe(true);
     expect(message).not.toHaveBeenCalled();
+  });
+
+  it('flips Settings.showToolbar for every window and ticks Show Toolbar to the saved value', async () => {
+    const d = deps();
+    const h = makeMenuHandlers(d);
+
+    h.toggleToolbar();
+    await vi.waitFor(() => expect(d.setToolbarChecked).toHaveBeenLastCalledWith(false));
+    expect(updateSettings).toHaveBeenLastCalledWith({ showToolbar: false });
+
+    h.toggleToolbar();
+    await vi.waitFor(() => expect(d.setToolbarChecked).toHaveBeenLastCalledWith(true));
+    expect(updateSettings).toHaveBeenLastCalledWith({ showToolbar: true });
+    expect(message).not.toHaveBeenCalled();
+  });
+
+  it('puts the Show Toolbar tick back and shows why when the change cannot be saved', async () => {
+    vi.mocked(updateSettings).mockRejectedValueOnce(new Error('Settings could not be loaded'));
+    const d = deps();
+
+    makeMenuHandlers(d).toggleToolbar();
+
+    await vi.waitFor(() =>
+      expect(message).toHaveBeenCalledWith('Error: Settings could not be loaded', { title: 'Lintel', kind: 'error' }),
+    );
+    expect(d.setToolbarChecked).toHaveBeenLastCalledWith(true);
+    expect(settings.showToolbar).toBe(true);
+  });
+
+  it('toggles the toolbar from a focused Settings window too, as the setting is app-wide', async () => {
+    vi.mocked(focusedSettingsWindow).mockResolvedValue({} as never);
+    const d = deps();
+
+    makeMenuHandlers(d).toggleToolbar();
+
+    await vi.waitFor(() => expect(d.setToolbarChecked).toHaveBeenLastCalledWith(false));
+    expect(updateSettings).toHaveBeenCalledWith({ showToolbar: false });
   });
 
   it('prints the active doc, with the PDF hint for Export as PDF (Ruling 292)', async () => {

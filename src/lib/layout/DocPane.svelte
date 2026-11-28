@@ -15,6 +15,7 @@
   import { attachEditorContextMenu } from '../editor/contextMenu';
   import { registerView } from '../editor/views';
   import { attachLint } from '../lint/lintState.svelte';
+  import { settings } from '../settings/settings.svelte';
   import { largeFileNotices } from '../os/open';
   import { extractHeadings } from '../render/headings';
   import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
@@ -262,7 +263,12 @@
 </script>
 
 <div class="doc-pane" data-doc-pane={doc.id} bind:this={pane}>
-  <Toolbar docId={doc.id} mode={doc.mode} onModeChange={(m) => (doc.mode = m)} />
+  <Toolbar
+    docId={doc.id}
+    mode={doc.mode}
+    formatting={settings.showToolbar}
+    onModeChange={(m) => (doc.mode = m)}
+  />
   <div class="panes mode-{doc.mode}">
     {#if outlinePlacement.anchorId === doc.id}
       <WindowOutline docId={outlinePlacement.docId} />

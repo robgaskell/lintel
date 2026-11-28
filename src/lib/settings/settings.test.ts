@@ -157,6 +157,7 @@ describe('loadSettings', () => {
     store().data.set('updates', { autoCheck: 'yes' });
     store().data.set('readingFont', 'Georgia');
     store().data.set('remoteImages', 'always');
+    store().data.set('showToolbar', 0);
 
     const loaded = await loadSettings();
 
@@ -170,6 +171,27 @@ describe('loadSettings', () => {
       store().data.set('remoteImages', choice);
       expect((await loadSettings()).remoteImages).toBe(choice);
     }
+  });
+
+  it('shows the toolbar for a v0.1.0 settings file, which has no showToolbar', async () => {
+    store().data.set('version', 1);
+    store().data.set('fontSize', 18);
+
+    const loaded = await loadSettings();
+
+    expect(DEFAULT_SETTINGS.showToolbar).toBe(true);
+    expect(loaded.showToolbar).toBe(true);
+    expect(settings.showToolbar).toBe(true);
+  });
+
+  it('keeps a stored showToolbar, and reads one that is not true or false as true', async () => {
+    store().data.set('version', 1);
+    store().data.set('showToolbar', false);
+    expect((await loadSettings()).showToolbar).toBe(false);
+
+    store().data.set('showToolbar', 'no');
+    expect((await loadSettings()).showToolbar).toBe(true);
+    expect(await store().get('showToolbar')).toBe(true);
   });
 
   it('rounds and clamps numbers into their ranges', async () => {

@@ -9,6 +9,7 @@ import { largeFileNotices } from '../os/open';
 import type { LintIssue } from '../lint/lint';
 import { lintExtension } from '../lint/lintExtension';
 import { lintIssues } from '../lint/lintState.svelte';
+import { settings } from '../settings/settings.svelte';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
 import { outline, outlinePlacement, outlineSources } from './outline.svelte';
 
@@ -35,6 +36,7 @@ beforeEach(() => {
   outline.visible = true;
   outlinePlacement.anchorId = null;
   outlinePlacement.docId = null;
+  settings.showToolbar = true;
 });
 
 // As the workspace does for a lone pane: the outline sits in it and lists its headings.
@@ -147,6 +149,26 @@ describe('DocPane modes', () => {
     flushSync();
     expect(editorHost().inert).toBe(false);
     expect(q('[aria-label="Formatting"]')).not.toBeNull();
+  });
+
+  it('hides the formatting buttons but keeps the Edit/Split/Read switch while Show Toolbar is off (Ruling 5)', () => {
+    const { q, getByRole } = pane('edit');
+    const modeNames = () =>
+      within(getByRole('group', { name: 'View mode' }))
+        .getAllByRole('button')
+        .map((b) => b.textContent);
+    expect(q('[aria-label="Formatting"]')).not.toBeNull();
+
+    settings.showToolbar = false;
+    flushSync();
+    expect(q('[aria-label="Formatting"]')).toBeNull();
+    expect(q('.toolbar button[aria-label="Bold"]')).toBeNull();
+    expect(modeNames()).toEqual(['Edit', 'Split', 'Read']);
+
+    settings.showToolbar = true;
+    flushSync();
+    expect(q('[aria-label="Formatting"]')).not.toBeNull();
+    expect(modeNames()).toEqual(['Edit', 'Split', 'Read']);
   });
 
   it('does not render in Edit, and renders at once when the preview is shown', () => {

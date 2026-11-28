@@ -35,6 +35,7 @@ export interface MenuHandlers {
   closeTab(): void;
   setMode(mode: ViewMode): void;
   toggleOutline(): void;
+  toggleToolbar(): void;
   print(): void;
   exportPdf(): void;
   exportHtml(): void;
@@ -65,6 +66,13 @@ let outlineItem: CheckMenuItem | null = null;
 /** Ticks or clears View > Show Outline (Ruling 110). */
 export async function setOutlineChecked(checked: boolean): Promise<void> {
   await outlineItem?.setChecked(checked);
+}
+
+// Like the outline item, but it follows `settings.showToolbar`, which every window shares.
+let toolbarItem: CheckMenuItem | null = null;
+
+export async function setToolbarChecked(checked: boolean): Promise<void> {
+  await toolbarItem?.setChecked(checked);
 }
 
 const SPLIT_IDS = ['split-right', 'split-down'];
@@ -123,6 +131,7 @@ export function syncAppMenu(h: MenuHandlers, onError: (err: unknown) => void): (
 
   const stopRecent = onRecentChanged(rebuildSoon);
   const stopSettings = onSettingsChanged((next) => {
+    setToolbarChecked(next.showToolbar).catch(onError);
     if (next.recentLimit === limit) return;
     limit = next.recentLimit;
     rebuildSoon();
@@ -202,11 +211,13 @@ export function buildAppMenu(
 
 async function install(h: MenuHandlers, recent: string[] | null, force: boolean): Promise<void> {
   const checked = outline.visible;
+  const toolbarShown = settings.showToolbar;
   const splittable = splitEnabled;
   const label = getCurrentWindow().label;
   const entries = menuEntries(h, recent, currentPlatform(), await appVersion());
   stampBuildIds(entries, `${label}#${++generation}`);
   const check = await liveCheckItem(entries, 'toggle-outline');
+  const toolbarCheck = await liveCheckItem(entries, 'show-toolbar');
   const splits: MenuItem[] = [];
   for (const base of SPLIT_IDS) {
     const item = await liveMenuItem(entries, base);
@@ -216,22 +227,26 @@ async function install(h: MenuHandlers, recent: string[] | null, force: boolean)
   // Focus can move while the menu is built; the window that has it then builds its own.
   if (!force && !(await getCurrentWindow().isFocused())) {
     holdsMenu = false;
-    await Promise.all([menu, check, ...splits].map((unused) => unused?.close()));
+    await Promise.all([menu, check, toolbarCheck, ...splits].map((unused) => unused?.close()));
     return;
   }
   const previous = await menu.setAsAppMenu();
   holdsMenu = true;
   emit(MENU_OWNER, label).catch((err) => console.error('Could not announce the menu owner:', err));
   const previousCheck = outlineItem;
+  const previousToolbarCheck = toolbarItem;
   const previousSplits = splitItems;
   outlineItem = check;
+  toolbarItem = toolbarCheck;
   splitItems = splits;
   // Each menu holds native resources and action channels until closed (Ruling 37).
   await previous?.close();
   await previousCheck?.close();
+  await previousToolbarCheck?.close();
   await Promise.all(previousSplits.map((item) => item.close()));
-  // The outline or the active tab may have changed while this menu was being built.
+  // The outline, the toolbar setting or the active tab may have changed during the build.
   if (outline.visible !== checked) await check?.setChecked(outline.visible);
+  if (settings.showToolbar !== toolbarShown) await toolbarCheck?.setChecked(settings.showToolbar);
   if (splitEnabled !== splittable) await setSplitEnabled(splitEnabled);
 }
 
@@ -303,7 +318,7 @@ export function menuEntries(
   const mac = platform === 'macos';
   const about: PredefinedMenuItemOptions = { item: { About: aboutMetadata(mac, version) } };
   const separator: PredefinedMenuItemOptions = { item: 'Separator' };
-  const settings: MenuItemOptions = {
+  const settingsItem: MenuItemOptions = {
     id: 'settings',
     text: 'Settings…',
     accelerator: 'CmdOrCtrl+,',
@@ -322,7 +337,7 @@ export function menuEntries(
     items: [
       about,
       separator,
-      settings,
+      settingsItem,
       separator,
       { item: 'Services' },
       separator,
@@ -358,7 +373,7 @@ export function menuEntries(
       { id: 'export-pdf', text: 'Export as PDF…', action: () => h.exportPdf() },
       { id: 'export-html', text: 'Export as HTML…', action: () => h.exportHtml() },
       { id: 'export-docx', text: 'Export as Word…', action: () => h.exportDocx() },
-      ...(mac ? [] : [separator, settings, separator, quit]),
+      ...(mac ? [] : [separator, settingsItem, separator, quit]),
     ],
   };
 
@@ -366,12 +381,12 @@ export function menuEntries(
     text: 'Edit',
     items: [
       // Custom, because the predefined pair drives WKWebView's undo stack, not the editor's (Ruling 39).
-      { id: 'undo', text: 'Undo', accelerator: 'CmdOrCtrl+Z', action: () => void editHistory('undo') },
+      { id: 'undo', text: 'Undo', accelerator: 'CmdOrCtrl+Z', action: () => void runHistory('undo') },
       {
         id: 'redo',
         text: 'Redo',
         accelerator: 'Shift+CmdOrCtrl+Z',
-        action: () => void editHistory('redo'),
+        action: () => void runHistory('redo'),
       },
       separator,
       { item: 'Cut' },
@@ -407,6 +422,12 @@ export function menuEntries(
         text: 'Show Outline',
         checked: outline.visible,
         action: () => h.toggleOutline(),
+      },
+      {
+        id: 'show-toolbar',
+        text: 'Show Toolbar',
+        checked: settings.showToolbar,
+        action: () => h.toggleToolbar(),
       },
       separator,
       {
@@ -529,7 +550,8 @@ function onActiveNow(command: (view: EditorView) => boolean): void {
   if (view) command(view);
 }
 
-async function editHistory(kind: 'undo' | 'redo'): Promise<void> {
+/** Edit > Undo and Redo, which the window toolbar's buttons share. */
+export async function runHistory(kind: 'undo' | 'redo'): Promise<void> {
   if (await focusedSettingsWindow()) return;
   const focused = document.activeElement;
   // A text field outside the editor, such as the find field, keeps its own undo stack.

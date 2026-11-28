@@ -8,12 +8,14 @@ import { createDoc } from '../docs/store.svelte';
 import { outline } from '../layout/outline.svelte';
 import { registerView, setActiveDocSource } from '../editor/views';
 import { eventModule, events, listenCalls, resetFakes } from '../../test/fakes';
-import { loadSettings, updateSettings } from '../settings/settings.svelte';
+import { loadSettings, settings, updateSettings } from '../settings/settings.svelte';
 import {
   buildAppMenu,
   menuEntries,
+  runHistory,
   setOutlineChecked,
   setSplitEnabled,
+  setToolbarChecked,
   syncAppMenu,
   takeAppMenu,
   type MenuHandlers,
@@ -147,6 +149,7 @@ function handlers(): MenuHandlers {
     closeTab: vi.fn(),
     setMode: vi.fn(),
     toggleOutline: vi.fn(),
+    toggleToolbar: vi.fn(),
     print: vi.fn(),
     exportPdf: vi.fn(),
     exportHtml: vi.fn(),
@@ -333,6 +336,50 @@ describe('menuEntries', () => {
     expect(hidden.checked).toBe(false);
   });
 
+  it.each(['macos', 'windows', 'linux'] as const)(
+    'puts Show Toolbar after Show Outline in View as a check item that follows the setting on %s',
+    (platform) => {
+      const h = handlers();
+      const view = (menuEntries(h, [], platform) as Entry[]).find((e) => e.text === 'View')!;
+      const ids = view.items!.map((e) => e.id);
+      expect(ids.indexOf('show-toolbar')).toBe(ids.indexOf('toggle-outline') + 1);
+      const item = byId(view.items!, 'show-toolbar') as Entry & { checked?: boolean };
+      expect([item.text, item.accelerator, item.checked]).toEqual(['Show Toolbar', undefined, true]);
+
+      item.action!();
+      expect(h.toggleToolbar).toHaveBeenCalledOnce();
+      expect(h.toggleOutline).not.toHaveBeenCalled();
+
+      settings.showToolbar = false;
+      const hidden = byId(menuEntries(h, [], platform) as Entry[], 'show-toolbar') as { checked?: boolean };
+      expect(hidden.checked).toBe(false);
+    },
+  );
+
+  it('exports runHistory, which undoes and redoes the active editor as Edit > Undo and Redo do', async () => {
+    const doc = createDoc({ path: null, raw: 'a', hash: '', mode: 'edit' });
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: 'a', extensions: [history()] }),
+    });
+    const forget = registerView(doc.id, view);
+    setActiveDocSource({ activeDocId: () => doc.id });
+    view.dispatch({ changes: { from: 1, insert: 'b' } });
+
+    await runHistory('undo');
+    expect(view.state.doc.toString()).toBe('a');
+    await runHistory('redo');
+    expect(view.state.doc.toString()).toBe('ab');
+
+    doc.mode = 'read';
+    await runHistory('undo');
+    expect(view.state.doc.toString()).toBe('ab');
+
+    forget();
+    setActiveDocSource(null);
+    view.destroy();
+  });
+
   it('opens Settings from Settings… on Cmd+, in the app menu on macOS and in File elsewhere (Ruling 141)', () => {
     for (const platform of ['macos', 'windows', 'linux'] as const) {
       const h = handlers();
@@ -452,6 +499,21 @@ describe('buildAppMenu', () => {
     action(id);
   }
 
+  type LiveCheck = {
+    id: string;
+    checked: boolean;
+    setChecked: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  };
+
+  // Each build makes one live check item per base id; `build` 0 is the first since the last clear.
+  async function checkItems(base: string): Promise<LiveCheck[]> {
+    const all = (await Promise.all(
+      vi.mocked(CheckMenuItem.new).mock.results.map((r) => r.value),
+    )) as unknown as LiveCheck[];
+    return all.filter((item) => item.id.split('#')[0] === base);
+  }
+
   it("stamps every id with this window's label, so windows never share an id (Ruling 188)", async () => {
     await buildAppMenu(handlers(), []);
 
@@ -552,11 +614,11 @@ describe('buildAppMenu', () => {
   it('moves the tick to the new item after a rebuild, which starts with the current value', async () => {
     const h = handlers();
     await buildAppMenu(h, []);
-    const first = await vi.mocked(CheckMenuItem.new).mock.results[0].value;
+    const [first] = await checkItems('toggle-outline');
     outline.visible = false;
 
     await buildAppMenu(h, ['/notes/a.md']);
-    const second = await vi.mocked(CheckMenuItem.new).mock.results[1].value;
+    const [, second] = await checkItems('toggle-outline');
     expect(second.checked).toBe(false);
     expect(first.close).toHaveBeenCalled();
 
@@ -565,6 +627,49 @@ describe('buildAppMenu', () => {
     await setOutlineChecked(true);
     expect(second.setChecked).toHaveBeenLastCalledWith(true);
     expect(first.setChecked).not.toHaveBeenCalledWith(true);
+  });
+
+  it('builds Show Toolbar as a second check item and ticks it without a rebuild', async () => {
+    await buildAppMenu(handlers(), []);
+    const [item] = await checkItems('show-toolbar');
+    expect(item.checked).toBe(true);
+    const view = (vi.mocked(Menu.new).mock.lastCall![0]!.items as Built[]).find(
+      (entry) => (entry as { text?: string }).text === 'View',
+    );
+    expect(view?.items).toContain(item);
+    expect(await checkItems('toggle-outline')).toHaveLength(1);
+
+    await setToolbarChecked(false);
+
+    expect(item.setChecked).toHaveBeenLastCalledWith(false);
+    expect(Menu.new).toHaveBeenCalledOnce();
+  });
+
+  it('builds Show Toolbar from the setting, re-ticks it after a change mid-build, and moves the tick on a rebuild', async () => {
+    const h = handlers();
+    settings.showToolbar = false;
+    await buildAppMenu(h, []);
+    const [first] = await checkItems('show-toolbar');
+    expect(first.checked).toBe(false);
+
+    const real = vi.mocked(CheckMenuItem.new).getMockImplementation()!;
+    vi.mocked(CheckMenuItem.new).mockImplementation(async (opts) => {
+      const item = await real(opts);
+      settings.showToolbar = true; // another window changes it mid-build
+      return item;
+    });
+    await buildAppMenu(h, ['/notes/a.md']);
+    vi.mocked(CheckMenuItem.new).mockImplementation(real);
+    const [, second] = await checkItems('show-toolbar');
+    expect(second.setChecked).toHaveBeenCalledWith(true);
+    expect(second.checked).toBe(true);
+    expect(first.close).toHaveBeenCalled();
+
+    click('show-toolbar');
+    expect(h.toggleToolbar).toHaveBeenCalledOnce();
+    await setToolbarChecked(false);
+    expect(second.setChecked).toHaveBeenLastCalledWith(false);
+    expect(first.setChecked).not.toHaveBeenCalled();
   });
 });
 
@@ -659,6 +764,27 @@ describe('syncAppMenu', () => {
     await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledTimes(2));
     expect(openRecentIn(lastBuild())).toBeUndefined();
     expect(getRecent).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it('ticks Show Toolbar, without a rebuild, when any window changes the setting', async () => {
+    const stop = syncAppMenu(handlers(), vi.fn());
+    await vi.waitFor(() => expect(Menu.new).toHaveBeenCalledOnce());
+    const item = (await vi.mocked(CheckMenuItem.new).mock.results.at(-1)!.value) as unknown as {
+      id: string;
+      setChecked: ReturnType<typeof vi.fn>;
+    };
+    expect(item.id).toMatch(/^show-toolbar#/);
+
+    // As Rust tells every window after another one saves the change.
+    await eventModule.emit('lintel://settings-changed', {
+      revision: 1_000_000 + Date.now(),
+      changes: { showToolbar: false },
+    });
+
+    await vi.waitFor(() => expect(item.setChecked).toHaveBeenLastCalledWith(false));
+    await settle();
+    expect(Menu.new).toHaveBeenCalledOnce();
     stop();
   });
 

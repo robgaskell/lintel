@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
@@ -18,7 +18,8 @@ import { knownRecent, recentMayHaveChanged } from './lib/os/recent';
 import { restoreAllWindows, restoreWindow, scheduleWindowSave } from './lib/os/session';
 import { restartToUpdate, type UpdateState } from './lib/os/updater';
 import { handleCloseRequested } from './lib/os/window';
-import { DEFAULT_SETTINGS, loadSettings, settings } from './lib/settings/settings.svelte';
+import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, settings } from './lib/settings/settings.svelte';
+import { eventModule } from './test/fakes';
 import App from './App.svelte';
 
 // App's own wiring is under test; everything it calls out to is faked.
@@ -75,8 +76,12 @@ vi.mock('./lib/os/menu', () => ({
   syncAppMenu: vi.fn(() => () => {}),
   setOutlineChecked: vi.fn(async () => {}),
   setSplitEnabled: vi.fn(async () => {}),
+  setToolbarChecked: vi.fn(async () => {}),
   takeAppMenu: vi.fn(),
+  runHistory: vi.fn(async () => {}),
 }));
+// Settings changes arrive as Rust's app-wide event, as another window's save sends it.
+vi.mock('@tauri-apps/api/event', () => import('./test/fakes').then((f) => f.eventModule));
 vi.mock('./lib/os/windows', () => ({
   listenForAdoption: vi.fn(() => () => {}),
   listenForReveal: vi.fn(() => () => {}),
@@ -501,6 +506,77 @@ describe('App View > Split (Ruling 192)', () => {
 
     fake.focusHandler!({ payload: true });
     expect(setSplitEnabled).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('App window toolbar (v0.2 items 5, 6)', () => {
+  const toolbar = (container: HTMLElement) => container.querySelector('[role="toolbar"][aria-label="Window toolbar"]');
+  const button = (container: HTMLElement, name: string) =>
+    toolbar(container)?.querySelector(`button[aria-label="${name}"]`) as HTMLButtonElement | null;
+  function layoutChanged() {
+    for (const cb of fake.layoutListeners) cb();
+    flushSync();
+  }
+
+  it('puts the toolbar in its own row above the tab groups', async () => {
+    const { container } = render(App);
+
+    await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
+    expect(container.querySelector('.app')?.firstElementChild).toBe(toolbar(container));
+    expect(toolbar(container)?.nextElementSibling?.classList.contains('work')).toBe(true);
+  });
+
+  it('greys out the split buttons exactly when View > Split Right and Split Down are', async () => {
+    const a = createDoc({ path: '/a.md', raw: '', hash: 'h', mode: 'edit' });
+    fake.active = a.id;
+    fake.alone.add(a.id);
+    const { container } = render(App);
+    await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
+    const splitsEnabled = () => [button(container, 'Split Right')!, button(container, 'Split Down')!].map((b) => !b.disabled);
+
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
+    expect(splitsEnabled()).toEqual([false, false]);
+
+    fake.alone.clear();
+    layoutChanged();
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(true);
+    expect(splitsEnabled()).toEqual([true, true]);
+
+    fake.active = null;
+    layoutChanged();
+    expect(setSplitEnabled).toHaveBeenLastCalledWith(false);
+    expect(splitsEnabled()).toEqual([false, false]);
+  });
+
+  it('presses Outline while this window shows its outline', async () => {
+    const { container } = render(App);
+    await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
+    expect(button(container, 'Outline')?.getAttribute('aria-pressed')).toBe('true');
+
+    outline.visible = false;
+    flushSync();
+    expect(button(container, 'Outline')?.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('hides the toolbar while Show Toolbar is off, and follows a change saved in another window', async () => {
+    const actual = await vi.importActual<typeof import('./lib/settings/settings.svelte')>(
+      './lib/settings/settings.svelte',
+    );
+    vi.mocked(onSettingsChanged).mockImplementation(actual.onSettingsChanged);
+    onTestFinished(() => {
+      vi.mocked(onSettingsChanged).mockImplementation(() => () => {});
+    });
+    const { container } = render(App);
+    await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
+    await vi.waitFor(() => expect(onSettingsChanged).toHaveBeenCalled());
+    let revision = 1_000_000 + Date.now();
+
+    await eventModule.emit('lintel://settings-changed', { revision: ++revision, changes: { showToolbar: false } });
+    await vi.waitFor(() => expect(toolbar(container)).toBeNull());
+    expect(settings.showToolbar).toBe(false);
+
+    await eventModule.emit('lintel://settings-changed', { revision: ++revision, changes: { showToolbar: true } });
+    await vi.waitFor(() => expect(toolbar(container)).not.toBeNull());
   });
 });
 

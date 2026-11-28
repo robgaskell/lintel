@@ -14,11 +14,14 @@
   import type { ViewMode } from '../docs/store.svelte';
   import ModeSwitch from './ModeSwitch.svelte';
 
+  // `formatting` false is View > Show Toolbar off; the mode switch stays (Ruling 5).
   let {
     docId,
     mode,
+    formatting,
     onModeChange,
-  }: { docId: string; mode: ViewMode; onModeChange: (m: ViewMode) => void } = $props();
+  }: { docId: string; mode: ViewMode; formatting: boolean; onModeChange: (m: ViewMode) => void } = $props();
+  const showFormatting = $derived(formatting && mode !== 'read');
 
   function run(command: (view: EditorView) => boolean) {
     const view = viewFor(docId);
@@ -32,8 +35,8 @@
   }
 </script>
 
-<div class="toolbar" class:reading={mode === 'read'}>
-  {#if mode !== 'read'}
+<div class="toolbar" class:mode-only={!showFormatting}>
+  {#if showFormatting}
     <div class="formatting" role="toolbar" aria-label="Formatting">
       <button class="bold" aria-label="Bold" title="Bold" onmousedown={keepEditorFocus} onclick={() => run(toggleBold)}>B</button>
       <button class="italic" aria-label="Italic" title="Italic" onmousedown={keepEditorFocus} onclick={() => run(toggleItalic)}>I</button>
@@ -71,7 +74,7 @@
     border-bottom: 1px solid var(--toolbar-border);
   }
 
-  .toolbar.reading {
+  .toolbar.mode-only {
     justify-content: flex-end;
   }
 

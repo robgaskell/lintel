@@ -30,6 +30,7 @@ export interface Settings {
   lint: { enabled: boolean; rules: Record<string, boolean | object> };
   updates: { autoCheck: boolean };
   remoteImages: RemoteImagesChoice;
+  showToolbar: boolean; // false also hides each pane's formatting buttons
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = deepFreeze({
@@ -59,6 +60,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = deepFreeze({
   lint: { enabled: true, rules: { default: true } },
   updates: { autoCheck: true },
   remoteImages: 'ask',
+  showToolbar: true,
 } satisfies Settings);
 
 const FILE = 'settings.json';
@@ -312,6 +314,7 @@ const READERS: { [K in Exclude<keyof Settings, 'version'>]: Reader<Settings[K]> 
       ? { autoCheck: value.autoCheck }
       : undefined,
   remoteImages: oneOf(['ask', 'load', 'block']),
+  showToolbar: (value) => (typeof value === 'boolean' ? value : undefined),
 };
 
 function oneOf<T extends string>(allowed: readonly T[]): Reader<T> {

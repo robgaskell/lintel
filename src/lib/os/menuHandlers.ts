@@ -7,6 +7,7 @@ import { exportHtml } from '../export/html';
 import { printDoc } from '../export/print';
 import { copyNotices } from '../ipc';
 import type { Workspace } from '../layout/workspace';
+import { settings, updateSettings } from '../settings/settings.svelte';
 import { REPO_URL, type MenuHandlers } from './menu';
 import { newUntitled, openPaths } from './open';
 import { isMac, type Platform } from './platform';
@@ -34,6 +35,7 @@ export interface MenuHandlerDeps {
   };
   outline: { visible: boolean };
   setOutlineChecked(checked: boolean): Promise<void>;
+  setToolbarChecked(checked: boolean): Promise<void>;
 }
 
 /** What each menu item does. Every handler shows its own errors in a dialog. */
@@ -42,6 +44,7 @@ export function makeMenuHandlers({
   currentWindow,
   outline,
   setOutlineChecked,
+  setToolbarChecked,
 }: MenuHandlerDeps): MenuHandlers {
   async function saveActive(as: boolean) {
     const id = workspace.activeDocId();
@@ -104,6 +107,15 @@ export function makeMenuHandlers({
     await setOutlineChecked(outline.visible);
   }
 
+  // App-wide, so it works from Settings too. The tick is set to what was saved, or put back.
+  async function toggleToolbar() {
+    try {
+      await updateSettings({ showToolbar: !settings.showToolbar });
+    } finally {
+      await setToolbarChecked(settings.showToolbar);
+    }
+  }
+
   async function closeTab() {
     const settingsWindow = await focusedSettingsWindow();
     if (settingsWindow) return settingsWindow.destroy();
@@ -121,6 +133,7 @@ export function makeMenuHandlers({
     closeTab: guarded(closeTab),
     setMode: (mode) => forDoc(() => setMode(mode))(),
     toggleOutline: guarded(toggleOutline),
+    toggleToolbar: guarded(toggleToolbar),
     print: forDoc(() => printActive(false)),
     exportPdf: forDoc(() => printActive(true)),
     exportHtml: forDoc(exportActiveAsHtml),
