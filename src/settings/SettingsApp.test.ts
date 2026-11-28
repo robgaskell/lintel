@@ -95,6 +95,8 @@ describe('SettingsApp', () => {
     const { container } = render(SettingsApp, { target: mountEl });
 
     expect(container).toBe(mountEl);
+    expect(getComputedStyle(document.documentElement).height).toBe('100%');
+    expect(getComputedStyle(document.body).height).toBe('100%');
     expect(getComputedStyle(mountEl).height).toBe('100%');
     expect(getComputedStyle(container.querySelector('.settings-app')!).height).toBe('100%');
     expect(getComputedStyle(container.querySelector('main')!).overflowY).toBe('auto');

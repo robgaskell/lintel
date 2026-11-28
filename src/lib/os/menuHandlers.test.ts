@@ -341,6 +341,13 @@ describe('makeMenuHandlers', () => {
       vi.mocked(focusedSettingsWindow).mockResolvedValue(settingsWindow as never);
     });
 
+    // The menu bar still belongs to a document window, which runs this.
+    it('still opens the repo page for Lintel on GitHub', async () => {
+      makeMenuHandlers(deps()).openGithub();
+
+      await vi.waitFor(() => expect(openUrl).toHaveBeenCalledWith('https://github.com/robgaskell/lintel'));
+    });
+
     it('leaves the main window alone for document commands', async () => {
       const doc = { id: 'doc-1', mode: 'split' } as DocState;
       docs.set(doc.id, doc);

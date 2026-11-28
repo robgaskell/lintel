@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { CheckMenuItem, Menu, MenuItem } from '@tauri-apps/api/menu';
 import { history } from '@codemirror/commands';
 import { search } from '@codemirror/search';
@@ -843,5 +843,45 @@ describe('syncAppMenu', () => {
 
     await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(new Error('event plugin down')));
     stop();
+  });
+});
+
+describe('the About version', () => {
+  // menu.ts keeps the version for the window's life, so each test loads its own copy.
+  async function freshMenu() {
+    vi.resetModules();
+    const { getVersion } = await import('@tauri-apps/api/app');
+    const api = await import('@tauri-apps/api/menu');
+    return { getVersion: vi.mocked(getVersion), newMenu: vi.mocked(api.Menu.new), menu: await import('./menu') };
+  }
+
+  function about(newMenu: ReturnType<typeof vi.mocked<typeof Menu.new>>): Entry {
+    const items = newMenu.mock.lastCall![0]!.items as Entry[];
+    return flatten(items).find((e) => typeof e.item === 'object' && 'About' in e.item!)!;
+  }
+
+  it('builds the menu without a version, and logs why, when the version cannot be read', async () => {
+    const { getVersion, newMenu, menu } = await freshMenu();
+    getVersion.mockRejectedValueOnce(new Error('no app version'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    onTestFinished(() => log.mockRestore());
+
+    await menu.buildAppMenu(handlers(), []);
+
+    expect(newMenu).toHaveBeenCalledOnce();
+    expect(about(newMenu).item).toMatchObject({ About: { name: 'Lintel', version: undefined } });
+    expect(log).toHaveBeenCalledWith('Could not read the app version for About:', new Error('no app version'));
+  });
+
+  it('reads the version once, however often the menu is rebuilt', async () => {
+    const { getVersion, newMenu, menu } = await freshMenu();
+
+    await menu.buildAppMenu(handlers(), []);
+    await menu.buildAppMenu(handlers(), ['/notes/a.md']);
+    await menu.buildAppMenu(handlers(), []);
+
+    expect(newMenu).toHaveBeenCalledTimes(3);
+    expect(getVersion).toHaveBeenCalledOnce();
+    expect(about(newMenu).item).toMatchObject({ About: { version: '9.8.7' } });
   });
 });
