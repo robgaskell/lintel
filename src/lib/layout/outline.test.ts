@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { outline, resetOutlineWidth, restoreOutlineWidth, setOutlineWidth } from './outline.svelte';
+import {
+  outline,
+  resetOutlineWidth,
+  restoreOutlineWidth,
+  setOutlineWidth,
+  shownOutlineWidth,
+} from './outline.svelte';
 
 beforeEach(() => {
   outline.width = 210;
@@ -46,5 +52,18 @@ describe('outline width (v0.2 item 8)', () => {
     expect(restoreOutlineWidth(300)).toBe(300);
     expect(restoreOutlineWidth(160)).toBe(160);
     expect(restoreOutlineWidth(480)).toBe(480);
+  });
+});
+
+describe('shown outline width (Ruling 15 of the v0.2 ledger)', () => {
+  it.each([
+    [480, 480, 160],
+    [480, 600, 280],
+    [250, 600, 250],
+    [480, 800, 480],
+    [480, 1200, 480],
+    [300, 400, 160],
+  ])('shows a saved %i px column at %i px of window as %i px', (saved, windowWidth, shown) => {
+    expect(shownOutlineWidth(saved, windowWidth)).toBe(shown);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { EditorView } from '@codemirror/view';
 import { fakePreviewLayout } from '../../test/layout';
@@ -36,9 +36,16 @@ beforeEach(() => {
   outline.collapsed = false;
   outline.width = 210;
   outlineSources.clear();
+  resizeWindow(1024);
 });
 
 afterEach(() => vi.useRealTimers());
+
+function resizeWindow(width: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
+  window.dispatchEvent(new Event('resize'));
+  flushSync();
+}
 
 describe('WindowOutline', () => {
   it('builds a fresh outline for each doc, so no scroll or focus carries over', async () => {
@@ -64,6 +71,12 @@ describe('WindowOutline', () => {
   it('shows nothing with no active tab, as in an empty window (Ruling 9 of the v0.2 ledger)', () => {
     outlineSources.set('a', source('Intro'));
     render(WindowOutline, { docId: null });
+    expect(column()).toBeNull();
+  });
+
+  it('shows no rail either before the doc has published its headings', () => {
+    outline.collapsed = true;
+    render(WindowOutline, { docId: 'a' });
     expect(column()).toBeNull();
   });
 });
@@ -113,8 +126,9 @@ describe('WindowOutline collapse (v0.2 item 8)', () => {
 
 describe('WindowOutline width (v0.2 item 8)', () => {
   const edge = () => screen.getByRole('separator', { name: 'Resize Outline' });
-  const pointer = (type: string, clientX: number, button = 0) =>
-    new PointerEvent(type, { bubbles: true, cancelable: true, clientX, button, pointerId: 1 });
+  const pointer = (type: string, clientX: number, button = 0, buttons = 1) =>
+    new PointerEvent(type, { bubbles: true, cancelable: true, clientX, button, buttons, pointerId: 1 });
+  const resizing = () => document.body.classList.contains('outline-resizing');
 
   beforeEach(() => {
     outlineSources.set('a', source('Intro'));
@@ -145,16 +159,79 @@ describe('WindowOutline width (v0.2 item 8)', () => {
     document.dispatchEvent(pointer('pointermove', 0));
     expect(outline.width).toBe(160);
 
-    document.dispatchEvent(pointer('pointerup', 0));
+    document.dispatchEvent(pointer('pointerup', 0, 0, 0));
     document.dispatchEvent(pointer('pointermove', 300));
     expect(outline.width).toBe(160);
+  });
+
+  it('moves the width by how far the pointer moved, wherever the press began', () => {
+    render(WindowOutline, { docId: 'a' });
+
+    edge().dispatchEvent(pointer('pointerdown', 100));
+    document.dispatchEvent(pointer('pointermove', 150));
+
+    expect(outline.width).toBe(260);
+  });
+
+  it('cancels the press, so focus stays where it was and no text selection starts', () => {
+    render(WindowOutline, { docId: 'a' });
+    const down = pointer('pointerdown', 210);
+
+    edge().dispatchEvent(down);
+
+    expect(down.defaultPrevented).toBe(true);
+  });
+
+  it('marks the page as resizing only while the drag lasts', () => {
+    render(WindowOutline, { docId: 'a' });
+    expect(resizing()).toBe(false);
+
+    edge().dispatchEvent(pointer('pointerdown', 210));
+    expect(resizing()).toBe(true);
+
+    document.dispatchEvent(pointer('pointerup', 250, 0, 0));
+    expect(resizing()).toBe(false);
+  });
+
+  it('stops following the pointer when a context menu opens', () => {
+    render(WindowOutline, { docId: 'a' });
+
+    edge().dispatchEvent(pointer('pointerdown', 210));
+    document.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    document.dispatchEvent(pointer('pointermove', 300));
+
+    expect(outline.width).toBe(210);
+    expect(resizing()).toBe(false);
+  });
+
+  // A pointerup outside the window can be lost; these keep the drag from sticking (Ruling 16 of the v0.2 ledger).
+  it('stops following the pointer when the window loses focus', () => {
+    render(WindowOutline, { docId: 'a' });
+
+    edge().dispatchEvent(pointer('pointerdown', 210));
+    window.dispatchEvent(new Event('blur'));
+    document.dispatchEvent(pointer('pointermove', 300));
+
+    expect(outline.width).toBe(210);
+    expect(resizing()).toBe(false);
+  });
+
+  it('stops following the pointer once it moves with no button held', () => {
+    render(WindowOutline, { docId: 'a' });
+
+    edge().dispatchEvent(pointer('pointerdown', 210));
+    document.dispatchEvent(pointer('pointermove', 300, 0, 0));
+    document.dispatchEvent(pointer('pointermove', 350));
+
+    expect(outline.width).toBe(210);
+    expect(resizing()).toBe(false);
   });
 
   it('stops following the pointer on a cancel too', () => {
     render(WindowOutline, { docId: 'a' });
 
     edge().dispatchEvent(pointer('pointerdown', 210));
-    document.dispatchEvent(pointer('pointercancel', 250));
+    document.dispatchEvent(pointer('pointercancel', 250, 0, 0));
     document.dispatchEvent(pointer('pointermove', 300));
 
     expect(outline.width).toBe(210);
@@ -163,7 +240,7 @@ describe('WindowOutline width (v0.2 item 8)', () => {
   it('ignores a press with a button other than the main one', () => {
     render(WindowOutline, { docId: 'a' });
 
-    edge().dispatchEvent(pointer('pointerdown', 210, 2));
+    edge().dispatchEvent(pointer('pointerdown', 210, 2, 2));
     document.dispatchEvent(pointer('pointermove', 300));
 
     expect(outline.width).toBe(210);
@@ -186,6 +263,103 @@ describe('WindowOutline width (v0.2 item 8)', () => {
     document.dispatchEvent(pointer('pointermove', 300));
 
     expect(outline.width).toBe(210);
+  });
+});
+
+describe('WindowOutline focus on collapse and expand (Ruling 16 of the v0.2 ledger)', () => {
+  let editor: HTMLTextAreaElement;
+  const collapseButton = () => screen.getByRole('button', { name: 'Collapse Outline' });
+  const expandButton = () => screen.getByRole('button', { name: 'Expand Outline' });
+
+  beforeEach(() => {
+    outlineSources.set('a', source('Intro'));
+    editor = document.createElement('textarea');
+    document.body.append(editor);
+  });
+  afterEach(() => editor.remove());
+
+  // As a browser does: a press focuses the button unless its mousedown is cancelled.
+  async function mouseClick(button: HTMLElement) {
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 });
+    button.dispatchEvent(down);
+    if (!down.defaultPrevented) button.focus();
+    await fireEvent.click(button, { detail: 1 });
+    await tick();
+  }
+
+  it('keeps focus in the editor when Collapse and then Expand are clicked', async () => {
+    render(WindowOutline, { docId: 'a' });
+    editor.focus();
+
+    await mouseClick(collapseButton());
+    expect(outline.collapsed).toBe(true);
+    expect(document.activeElement).toBe(editor);
+
+    await mouseClick(expandButton());
+    expect(outline.collapsed).toBe(false);
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it('moves keyboard focus to the button that replaces the one pressed', async () => {
+    render(WindowOutline, { docId: 'a' });
+
+    collapseButton().focus();
+    await fireEvent.click(collapseButton());
+    await vi.waitFor(() => expect(document.activeElement).toBe(expandButton()));
+
+    await fireEvent.click(expandButton());
+    await vi.waitFor(() => expect(document.activeElement).toBe(collapseButton()));
+  });
+});
+
+describe('WindowOutline in a narrow window (Ruling 15 of the v0.2 ledger)', () => {
+  beforeEach(() => {
+    outlineSources.set('a', source('Intro'));
+  });
+
+  it.each([
+    [480, 480, '160px'],
+    [600, 480, '280px'],
+    [600, 250, '250px'],
+    [800, 480, '480px'],
+    [1200, 480, '480px'],
+    [1200, 210, '210px'],
+  ])('in a %i px window, shows a saved %i px column at %s, leaving the tabs 320 px', (windowWidth, saved, shown) => {
+    resizeWindow(windowWidth);
+    outline.width = saved;
+    render(WindowOutline, { docId: 'a' });
+
+    expect(column()!.style.width).toBe(shown);
+  });
+
+  it('narrows the column as the window narrows and shows the saved width again as it widens, without changing it', () => {
+    outline.width = 480;
+    render(WindowOutline, { docId: 'a' });
+
+    resizeWindow(600);
+    expect(column()!.style.width).toBe('280px');
+    expect(outline.width).toBe(480);
+
+    resizeWindow(1200);
+    expect(column()!.style.width).toBe('480px');
+    expect(outline.width).toBe(480);
+  });
+
+  it('starts a drag from the width shown and saves no more than the window allows', () => {
+    resizeWindow(600);
+    outline.width = 480;
+    render(WindowOutline, { docId: 'a' });
+    const at = (type: string, clientX: number, buttons = 1) =>
+      new PointerEvent(type, { bubbles: true, cancelable: true, clientX, button: 0, buttons });
+    const edge = screen.getByRole('separator', { name: 'Resize Outline' });
+
+    edge.dispatchEvent(at('pointerdown', 280));
+    document.dispatchEvent(at('pointermove', 250));
+    expect(outline.width).toBe(250);
+
+    document.dispatchEvent(at('pointermove', 400));
+    expect(outline.width).toBe(280);
+    document.dispatchEvent(at('pointerup', 400, 0));
   });
 });
 

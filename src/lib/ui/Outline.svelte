@@ -119,7 +119,15 @@
   <div class="label">
     Outline
     {#if onCollapse}
-      <button type="button" class="collapse" aria-label="Collapse Outline" title="Collapse Outline" onclick={onCollapse}>
+      <!-- A click keeps focus where it was, as in the window toolbar. -->
+      <button
+        type="button"
+        class="collapse"
+        aria-label="Collapse Outline"
+        title="Collapse Outline"
+        onmousedown={(event) => event.preventDefault()}
+        onclick={onCollapse}
+      >
         <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"></path></svg>
       </button>
     {/if}

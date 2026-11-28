@@ -21,6 +21,14 @@ export function resetOutlineWidth(): void {
   outline.width = DEFAULT_WIDTH;
 }
 
+// The tab groups keep at least this much of the window.
+const MIN_DOCK_WIDTH = 320;
+
+/** The width to show: the saved one, narrowed to leave the tabs 320 px, but never below 160. */
+export function shownOutlineWidth(saved: number, windowWidth: number): number {
+  return Math.max(MIN_WIDTH, Math.min(saved, windowWidth - MIN_DOCK_WIDTH));
+}
+
 /** A saved width is kept only as a whole number of px in range; a v0.1.0 session has none. */
 export function restoreOutlineWidth(saved: unknown): number {
   return typeof saved === 'number' && Number.isInteger(saved) && saved >= MIN_WIDTH && saved <= MAX_WIDTH
