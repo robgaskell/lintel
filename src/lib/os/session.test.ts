@@ -62,7 +62,15 @@ function fileDoc(path: string) {
 }
 
 function session(tabs: WindowSession['tabs'], extra: Partial<WindowSession> = {}): WindowSession {
-  return { label: 'main', layout: fakeLayout, tabs, outlineVisible: true, ...extra };
+  return {
+    label: 'main',
+    layout: fakeLayout,
+    tabs,
+    outlineVisible: true,
+    outlineCollapsed: false,
+    outlineWidth: 210,
+    ...extra,
+  };
 }
 
 beforeEach(() => {
@@ -70,6 +78,8 @@ beforeEach(() => {
   docs.clear();
   untitledCounter.n = 0;
   outline.visible = true;
+  outline.collapsed = false;
+  outline.width = 210;
   vi.clearAllMocks();
   vi.mocked(pathsExist).mockImplementation(async (paths) => paths.map(() => true));
   vi.mocked(readTextFile).mockImplementation(async (path) => ({ text: `# ${path}\n`, hash: `h-${path}` }));
@@ -80,27 +90,30 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('toWindowSession', () => {
-  it('leaves out untitled docs and keeps pin, mode, topLine and outline visibility', () => {
+  it('leaves out untitled docs and keeps pin, mode, topLine and the outline column', () => {
     const a = fileDoc('/notes/a.md');
     a.pinned = true;
     a.mode = 'read';
     setTopLine(a.id, 42);
     createDoc({ path: null, raw: '', hash: '', mode: 'edit' });
 
-    const saved = toWindowSession(workspace as unknown as Workspace, false, 'w-1');
+    const column = { visible: false, collapsed: true, width: 300 };
+    const saved = toWindowSession(workspace as unknown as Workspace, column, 'w-1');
 
     expect(saved).toEqual({
       label: 'w-1',
       layout: fakeLayout,
       tabs: { [a.id]: { path: '/notes/a.md', pinned: true, mode: 'read', topLine: 42 } },
       outlineVisible: false,
+      outlineCollapsed: true,
+      outlineWidth: 300,
     });
   });
 
   it('saves a fractional scroll line as a whole 1-based line', () => {
     const a = fileDoc('/notes/a.md');
     setTopLine(a.id, 7.6);
-    expect(toWindowSession(workspace, true, 'main').tabs[a.id].topLine).toBe(7);
+    expect(toWindowSession(workspace, outline, 'main').tabs[a.id].topLine).toBe(7);
   });
 });
 
@@ -155,6 +168,17 @@ describe('saveWindowSession', () => {
     expect(store().saves).toBe(1);
     expect(store().data.has('window:w-4')).toBe(true);
   });
+
+  it('saves the outline collapsed and its width (v0.2 item 8)', async () => {
+    await restoreWindow('w-4b');
+    fileDoc('/notes/a.md');
+    outline.collapsed = true;
+    outline.width = 333;
+
+    await saveWindowSession('w-4b');
+
+    expect(store().data.get('window:w-4b')).toMatchObject({ outlineCollapsed: true, outlineWidth: 333 });
+  });
 });
 
 describe('forgetWindowSession', () => {
@@ -191,8 +215,42 @@ describe('restoreWindow', () => {
     expect(a).toMatchObject({ path: '/a.md', pinned: true, mode: 'read', text: '# /a.md\n' });
     expect(workspace.fromJSON).toHaveBeenCalledWith(fakeLayout);
     expect(outline.visible).toBe(false);
-    expect(toWindowSession(workspace, false, 'w-6').tabs['id-a'].topLine).toBe(12);
+    expect(toWindowSession(workspace, outline, 'w-6').tabs['id-a'].topLine).toBe(12);
     expect(vi.mocked(setRestoring).mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('restores the outline collapsed and at its saved width (v0.2 item 8)', async () => {
+    store().data.set('version', 1);
+    store().data.set('window:w-6b', session({}, { label: 'w-6b', outlineCollapsed: true, outlineWidth: 300 }));
+
+    await restoreWindow('w-6b');
+
+    expect(outline.collapsed).toBe(true);
+    expect(outline.width).toBe(300);
+  });
+
+  it('restores a v0.1.0 session expanded at 210 px', async () => {
+    outline.collapsed = true;
+    outline.width = 400;
+    store().data.set('version', 1);
+    store().data.set('window:w-6c', { label: 'w-6c', layout: fakeLayout, tabs: {}, outlineVisible: true });
+
+    await restoreWindow('w-6c');
+
+    expect(outline.collapsed).toBe(false);
+    expect(outline.width).toBe(210);
+  });
+
+  it('restores 210 px for a saved width outside 160-480, and expanded for a collapsed flag that is not true', async () => {
+    outline.collapsed = true;
+    outline.width = 400;
+    store().data.set('version', 1);
+    store().data.set('window:w-6d', { ...session({}, { label: 'w-6d', outlineWidth: 600 }), outlineCollapsed: 'yes' });
+
+    await restoreWindow('w-6d');
+
+    expect(outline.width).toBe(210);
+    expect(outline.collapsed).toBe(false);
   });
 
   it('restores the rest when a file is gone, and returns the gone one in missing', async () => {

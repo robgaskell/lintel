@@ -14,6 +14,7 @@
   import { followEditorFont, setActiveDocSource, setEditorsLocked, viewFor } from './lib/editor/views';
   import { dropStalePrintRoot } from './lib/export/print';
   import { outline } from './lib/layout/outline.svelte';
+  import WindowOutline from './lib/layout/WindowOutline.svelte';
   import { configStatus, currentConfig, followDocConfigs, refreshConfigsOnFocus } from './lib/lint/config';
   import { followLintSettings, lintIssues } from './lib/lint/lintState.svelte';
   import { Workspace } from './lib/layout/workspace';
@@ -93,7 +94,7 @@
   // Pin, mode and outline changes fire no layout event, so they are watched here (Ruling 209).
   $effect(() => {
     for (const doc of docs.values()) void [doc.pinned, doc.mode];
-    void outline.visible;
+    void [outline.visible, outline.collapsed, outline.width];
     untrack(() => scheduleWindowSave(label));
   });
 
@@ -298,6 +299,8 @@
     <WindowToolbar {handlers} {canSplit} outlineVisible={outline.visible} />
   {/if}
   <div class="work">
+    <!-- One column left of every group, full height (spec item 7). -->
+    <WindowOutline docId={activeId} />
     <main class="dock" bind:this={host}></main>
     {#if docs.size === 0 && handlers}
       <EmptyState
@@ -347,11 +350,15 @@
 
   .work {
     position: relative;
+    display: flex;
     flex: 1;
     min-height: 0;
   }
 
+  /* dockview follows its own size, so the column's width needs no relayout call. */
   .dock {
+    flex: 1;
+    min-width: 0;
     height: 100%;
   }
 

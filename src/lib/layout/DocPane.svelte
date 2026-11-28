@@ -21,8 +21,7 @@
   import { renderMarkdown, type Heading, type RenderResult } from '../render/markdown';
   import { createScrollLock, renderDelayMs } from '../render/scrollSync';
   import type { DocState, ViewMode } from '../docs/store.svelte';
-  import { outline, outlinePlacement, outlineSources } from './outline.svelte';
-  import WindowOutline from './WindowOutline.svelte';
+  import { outline, outlineSources } from './outline.svelte';
 
   let { doc }: { doc: DocState } = $props();
 
@@ -129,7 +128,8 @@
     return editor.state.doc.line(n).from;
   }
 
-  // Ruling 108: the hidden editor in Read is left alone.
+  // Ruling 108: the hidden editor in Read is left alone. Focus goes to the view shown, so
+  // the keyboard carries on there.
   function pickHeading(heading: Heading) {
     topLine = heading.line;
     scrolledToEnd = false;
@@ -139,6 +139,7 @@
       view.focus();
     }
     if (doc.mode !== 'edit') preview?.scrollToLine(heading.line);
+    if (doc.mode === 'read') preview?.focus();
   }
 
   // Debounced render. Showing the preview renders at once; edits wait (spec: Large files).
@@ -173,15 +174,25 @@
     performance.measure?.('lintel:render', { start: started, end: performance.now() });
   }
 
-  // The preview's render carries headings; Edit mode extracts its own (Ruling 107), always
-  // debounced and never while the tab is hidden, so opening a tab does not wait on it (Ruling 119).
+  // The preview's render carries headings; Edit mode extracts its own (Ruling 107), debounced
+  // and never while the tab is hidden, so opening a tab does not wait on it (Ruling 119).
+  // Nor while the column is hidden or collapsed; showing it extracts at once.
   let extracted = $state.raw<Heading[]>([]);
   let extractedText: string | null = null;
+  let columnOpen = untrack(() => outline.visible && !outline.collapsed);
   $effect(() => {
     const text = doc.text;
-    if (!outline.visible || doc.mode !== 'edit' || paneHidden || text === extractedText) return;
+    const open = outline.visible && !outline.collapsed;
+    const justOpened = open && !columnOpen;
+    columnOpen = open;
+    if (!open || doc.mode !== 'edit' || paneHidden || text === extractedText) return;
     if (result && renderedText === text) {
       extracted = result.headings;
+      extractedText = text;
+      return;
+    }
+    if (justOpened) {
+      extracted = extractHeadings(text);
       extractedText = text;
       return;
     }
@@ -270,9 +281,6 @@
     onModeChange={(m) => (doc.mode = m)}
   />
   <div class="panes mode-{doc.mode}">
-    {#if outlinePlacement.anchorId === doc.id}
-      <WindowOutline docId={outlinePlacement.docId} />
-    {/if}
     <div class="doc-column">
       {#if doc.external === 'conflict'}
         <ConflictBanner fileName={doc.title} onKeep={() => keepMine(doc.id)} onLoad={() => loadDisk(doc.id)} />

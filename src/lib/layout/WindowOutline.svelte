@@ -1,43 +1,164 @@
 <script lang="ts">
   import Outline from '../ui/Outline.svelte';
-  import { outline, outlineSources } from './outline.svelte';
+  import { outline, outlineSources, resetOutlineWidth, setOutlineWidth } from './outline.svelte';
 
   // One outline per window, for the active doc in whichever group it is (Ruling 181).
   let { docId }: { docId: string | null } = $props();
 
   const source = $derived(docId === null ? undefined : outlineSources.get(docId));
+  let dragging = $state(false);
 
-  // The outline sits in another group's pane: a press here must not make that group
-  // active, or the outline would switch to its doc before the click (Ruling 195).
-  function keepGroup(event: Event) {
-    event.stopPropagation();
-    // Cancelling the mousedown keeps focus, and so the active group, where it was.
-    if (event.type === 'mousedown' && event.target instanceof Element && event.target.closest('a')) {
+  // As dockview's sashes: listeners on the document, not pointer capture, which jsdom lacks.
+  function resizable(edge: HTMLElement) {
+    const page = edge.ownerDocument;
+    let stop = () => {};
+
+    function start(event: PointerEvent) {
+      if (event.button !== 0) return;
+      // No text selection starts under the drag.
       event.preventDefault();
+      stop();
+      const startX = event.clientX;
+      const startWidth = outline.width;
+      const move = (e: PointerEvent) => setOutlineWidth(startWidth + e.clientX - startX);
+      const end = () => {
+        page.removeEventListener('pointermove', move);
+        page.removeEventListener('pointerup', end);
+        page.removeEventListener('pointercancel', end);
+        page.removeEventListener('contextmenu', end);
+        page.body.classList.remove('outline-resizing');
+        dragging = false;
+        stop = () => {};
+      };
+      stop = end;
+      page.addEventListener('pointermove', move);
+      page.addEventListener('pointerup', end);
+      page.addEventListener('pointercancel', end);
+      page.addEventListener('contextmenu', end);
+      page.body.classList.add('outline-resizing');
+      dragging = true;
     }
-  }
 
-  // Svelte delegates onpointerdown and onmousedown to the root, too late to stop them here.
-  function guard(box: HTMLElement) {
-    box.addEventListener('pointerdown', keepGroup);
-    box.addEventListener('mousedown', keepGroup);
+    edge.addEventListener('pointerdown', start);
+    edge.addEventListener('dblclick', resetOutlineWidth);
     return () => {
-      box.removeEventListener('pointerdown', keepGroup);
-      box.removeEventListener('mousedown', keepGroup);
+      edge.removeEventListener('pointerdown', start);
+      edge.removeEventListener('dblclick', resetOutlineWidth);
+      stop();
     };
   }
 </script>
 
 {#if outline.visible && source}
-  <div class="window-outline" {@attach guard}>
-    {#key docId}
-      <Outline headings={source.headings} activeLine={source.activeLine} onPick={(h) => source.pick(h)} />
-    {/key}
+  <div
+    class="outline-column"
+    class:collapsed={outline.collapsed}
+    style:width={outline.collapsed ? null : `${outline.width}px`}
+  >
+    {#if outline.collapsed}
+      <button
+        type="button"
+        class="expand"
+        aria-label="Expand Outline"
+        title="Expand Outline"
+        onclick={() => (outline.collapsed = false)}
+      >
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"></path></svg>
+      </button>
+    {:else}
+      {#key docId}
+        <Outline
+          headings={source.headings}
+          activeLine={source.activeLine}
+          onPick={(h) => source.pick(h)}
+          onCollapse={() => (outline.collapsed = true)}
+        />
+      {/key}
+      <div
+        class="edge"
+        class:dragging
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize Outline"
+        {@attach resizable}
+      ></div>
+    {/if}
   </div>
 {/if}
 
 <style>
-  .window-outline {
-    display: contents;
+  .outline-column {
+    position: relative;
+    display: flex;
+    flex: none;
+    min-height: 0;
+  }
+
+  /* The rail: the column at 28 px with one button (spec F2 exception). */
+  .collapsed {
+    flex-direction: column;
+    align-items: center;
+    box-sizing: border-box;
+    width: 28px;
+    padding-top: 9px;
+    background: var(--outline-bg);
+    border-right: 1px solid var(--toolbar-border);
+  }
+
+  .expand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--toolbar-icon);
+  }
+
+  .expand:hover {
+    background: var(--toolbar-hover);
+  }
+
+  .expand:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Sized, placed and lit like dockview's sashes between groups. */
+  .edge {
+    position: absolute;
+    top: 0;
+    right: -2px;
+    bottom: 0;
+    z-index: 99;
+    width: 4px;
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .edge:hover,
+  .edge.dragging {
+    background-color: var(--accent);
+    transition: background-color 0.1s ease-in-out 0.5s;
+  }
+
+  .edge.dragging {
+    transition-delay: 0s;
+  }
+
+  /* While dragging, the page under the pointer neither selects nor changes the cursor. */
+  :global(body.outline-resizing) {
+    cursor: ew-resize;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  :global(body.outline-resizing *) {
+    pointer-events: none;
   }
 </style>

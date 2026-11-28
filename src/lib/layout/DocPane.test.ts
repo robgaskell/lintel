@@ -11,7 +11,7 @@ import { lintExtension } from '../lint/lintExtension';
 import { lintIssues } from '../lint/lintState.svelte';
 import { settings } from '../settings/settings.svelte';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
-import { outline, outlinePlacement, outlineSources } from './outline.svelte';
+import { outline, outlineSources } from './outline.svelte';
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
@@ -34,16 +34,9 @@ beforeEach(() => {
   docs.clear();
   largeFileNotices.clear();
   outline.visible = true;
-  outlinePlacement.anchorId = null;
-  outlinePlacement.docId = null;
+  outline.collapsed = false;
   settings.showToolbar = true;
 });
-
-// As the workspace does for a lone pane: the outline sits in it and lists its headings.
-function placeOutlineIn(id: string) {
-  outlinePlacement.anchorId = id;
-  outlinePlacement.docId = id;
-}
 
 afterEach(() => vi.useRealTimers());
 
@@ -70,7 +63,6 @@ function fakeResizeObservers() {
 
 function pane(mode: ViewMode, raw = '# Title\n') {
   const doc = createDoc({ path: '/notes/a.md', raw, hash: 'h', mode });
-  placeOutlineIn(doc.id);
   const view = render(DocPane, { doc });
   const q = (selector: string) => view.container.querySelector(selector);
   return { doc, ...view, q };
@@ -211,18 +203,6 @@ describe('DocPane large-file notice', () => {
     doc.mode = 'edit';
     flushSync();
     expect(queryByText(NOTICE)).toBeNull();
-  });
-
-  it('spans the document column only, not the outline (Ruling 122)', () => {
-    const doc = createDoc({ path: '/big.md', raw: '# x', hash: 'h', mode: 'edit' });
-    largeFileNotices.add(doc.id);
-    placeOutlineIn(doc.id);
-    const { getByRole, container } = render(DocPane, { doc });
-
-    const column = getByRole('status').closest('.doc-column');
-    expect(column).not.toBeNull();
-    expect(column!.querySelector('nav')).toBeNull();
-    expect(container.querySelector('nav[aria-label="Outline"]')).not.toBeNull();
   });
 
   it('shows no notice for an ordinary doc', () => {
@@ -370,177 +350,56 @@ describe('DocPane scroll sync', () => {
   });
 });
 
-describe('DocPane outline', () => {
-  let restoreLayout: () => void;
-  beforeEach(() => (restoreLayout = fakePreviewLayout()));
-  afterEach(() => restoreLayout());
-
-  // With the fake layout each top-level block is 100 px: A at 0, C at 200, E at 400.
+// The column's own tests, with a pane beside it, are in WindowOutline.test.ts.
+describe('DocPane outline source', () => {
   const src = '# A\n\nb\n\n## C\n\nd\n\n### E\n\nf\n';
-
-  function links(getByRole: (role: string, options: { name: string }) => HTMLElement) {
-    return within(getByRole('navigation', { name: 'Outline' })).getAllByRole('link');
-  }
-  const current = (all: HTMLElement[]) =>
-    all.filter((a) => a.getAttribute('aria-current') === 'true').map((a) => a.textContent);
-  const editorOf = (q: (s: string) => Element | null) =>
-    EditorView.findFromDOM(q('.cm-editor') as HTMLElement)!;
-
-  it('lists headings in Edit mode, where nothing is rendered, after the debounce (Rulings 107, 119)', () => {
-    vi.useFakeTimers();
-    const { getByRole, getByText, q } = pane('edit', src);
-
-    expect(q('.preview')).toBeNull();
-    expect(getByText('No headings')).toBeTruthy();
-    vi.advanceTimersByTime(150);
-    flushSync();
-    expect(links(getByRole).map((a) => a.textContent)).toEqual(['A', 'C', 'E']);
-    expect(current(links(getByRole))).toEqual(['A']);
-  });
-
-  it('waits until a hidden tab is shown before extracting its headings (Ruling 119)', () => {
-    vi.useFakeTimers();
-    const observers = fakeResizeObservers();
-    const { getByRole, getByText } = pane('edit', src);
-
-    observers.resize(0);
-    flushSync();
-    vi.advanceTimersByTime(1000);
-    flushSync();
-    expect(getByText('No headings')).toBeTruthy();
-
-    observers.resize(500);
-    flushSync();
-    vi.advanceTimersByTime(150);
-    flushSync();
-    expect(links(getByRole)).toHaveLength(3);
-    observers.restore();
-  });
-
-  it('marks the last heading once the preview is scrolled to its end (Ruling 122)', () => {
-    const { getByRole, q } = pane('read', src);
-    const preview = q('.preview') as HTMLElement;
-    Object.defineProperty(preview, 'scrollHeight', { configurable: true, value: 700 });
-
-    preview.scrollTop = 300;
-    preview.dispatchEvent(new Event('scroll'));
-    flushSync();
-
-    expect(current(links(getByRole))).toEqual(['E']);
-  });
-
-  it('marks the last heading once the editor is scrolled to its end', () => {
-    vi.useFakeTimers();
-    const { getByRole, q } = pane('edit', src);
-    vi.advanceTimersByTime(150);
-    const scroller = q('.cm-scroller') as HTMLElement;
-    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 405 });
-    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
-
-    scroller.scrollTop = 5;
-    scroller.dispatchEvent(new Event('scroll'));
-    flushSync();
-
-    expect(current(links(getByRole))).toEqual(['E']);
-  });
-
-  it('updates the headings after an edit only after the debounce', () => {
-    vi.useFakeTimers();
-    const { doc, getByRole } = pane('edit', src);
-    vi.advanceTimersByTime(150);
-
-    doc.text = '# Only\n';
-    flushSync();
-    vi.advanceTimersByTime(149);
-    flushSync();
-    expect(links(getByRole)).toHaveLength(3);
-
-    vi.advanceTimersByTime(1);
-    flushSync();
-    expect(links(getByRole).map((a) => a.textContent)).toEqual(['Only']);
-  });
+  const headingsOf = (id: string) => outlineSources.get(id)?.headings.map((h) => h.text);
 
   it('gives the window outline its headings while mounted, and takes them back after', () => {
     const { doc, unmount } = pane('split', src);
-    expect(outlineSources.get(doc.id)?.headings.map((h) => h.text)).toEqual(['A', 'C', 'E']);
+    expect(headingsOf(doc.id)).toEqual(['A', 'C', 'E']);
 
     unmount();
     expect(outlineSources.has(doc.id)).toBe(false);
   });
 
-  it('shows the outline only in the pane it is placed in, listing the active doc (Ruling 191)', () => {
-    const { container } = pane('split', src);
-    const other = createDoc({ path: '/notes/b.md', raw: '# B\n', hash: 'h', mode: 'split' });
-    const second = render(DocPane, { doc: other });
-    const navIn = (el: Element) => el.querySelector('nav[aria-label="Outline"]');
-    expect(navIn(container)).not.toBeNull();
-    expect(navIn(second.container)).toBeNull();
-
-    outlinePlacement.docId = other.id;
-    flushSync();
-    expect([...navIn(container)!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['B']);
-
-    outlinePlacement.anchorId = other.id;
-    flushSync();
-    expect(navIn(container)).toBeNull();
-    expect(navIn(second.container)).not.toBeNull();
-  });
-
-  it('hides the panel when the outline is turned off for the window', () => {
-    const { queryByRole } = pane('split', src);
-    expect(queryByRole('navigation', { name: 'Outline' })).not.toBeNull();
-
-    outline.visible = false;
-    flushSync();
-    expect(queryByRole('navigation', { name: 'Outline' })).toBeNull();
-  });
-
-  it('in Split, a pick puts the cursor on the heading and scrolls both sides (Ruling 108)', async () => {
-    const { getByRole, q } = pane('split', src);
-    const view = editorOf(q);
-    const dispatch = vi.spyOn(view, 'dispatch');
-
-    await fireEvent.click(links(getByRole)[1]);
-
-    expect(view.state.selection.main.head).toBe(view.state.doc.line(5).from);
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ effects: expect.anything() }));
-    expect(q('.preview')!.scrollTop).toBe(200);
-    expect(current(links(getByRole))).toEqual(['C']);
-  });
-
-  it('in Edit, a pick moves the cursor and marks the heading at once', async () => {
+  it('extracts no Edit-mode headings while the column is collapsed, then extracts at once on expand', () => {
     vi.useFakeTimers();
-    const { getByRole, q } = pane('edit', src);
+    outline.collapsed = true;
+    const { doc } = pane('edit', src);
+
+    vi.advanceTimersByTime(1000);
+    flushSync();
+    expect(headingsOf(doc.id)).toEqual([]);
+
+    outline.collapsed = false;
+    flushSync();
+    expect(headingsOf(doc.id)).toEqual(['A', 'C', 'E']);
+  });
+
+  it('extracts no Edit-mode headings while the outline is hidden, then extracts at once when shown', () => {
+    vi.useFakeTimers();
+    outline.visible = false;
+    const { doc } = pane('edit', src);
+
+    vi.advanceTimersByTime(1000);
+    flushSync();
+    expect(headingsOf(doc.id)).toEqual([]);
+
+    outline.visible = true;
+    flushSync();
+    expect(headingsOf(doc.id)).toEqual(['A', 'C', 'E']);
+  });
+
+  it('still waits for the debounce when a tab opens with the column shown (Ruling 119)', () => {
+    vi.useFakeTimers();
+    const { doc } = pane('edit', src);
+    flushSync();
+    expect(headingsOf(doc.id)).toEqual([]);
+
     vi.advanceTimersByTime(150);
     flushSync();
-    const view = editorOf(q);
-
-    await fireEvent.click(links(getByRole)[2]);
-
-    expect(view.state.selection.main.head).toBe(view.state.doc.line(9).from);
-    expect(current(links(getByRole))).toEqual(['E']);
-  });
-
-  it('in Read, a pick scrolls the preview and leaves the hidden editor alone', async () => {
-    const { getByRole, q } = pane('read', src);
-    const view = editorOf(q);
-
-    await fireEvent.click(links(getByRole)[1]);
-
-    expect(q('.preview')!.scrollTop).toBe(200);
-    expect(view.state.selection.main.head).toBe(0);
-    expect(current(links(getByRole))).toEqual(['C']);
-  });
-
-  it('marks the heading in view as the user scrolls the preview', () => {
-    const { getByRole, q } = pane('read', src);
-    const preview = q('.preview')!;
-
-    preview.scrollTop = 250;
-    preview.dispatchEvent(new Event('scroll'));
-    flushSync();
-
-    expect(current(links(getByRole))).toEqual(['C']);
+    expect(headingsOf(doc.id)).toEqual(['A', 'C', 'E']);
   });
 });
 

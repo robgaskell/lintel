@@ -18,7 +18,6 @@ import {
 } from '../docs/store.svelte';
 import { resolvedTheme, type ResolvedTheme } from '../theme/theme';
 import DocPane, { PANE_MOVED } from './DocPane.svelte';
-import { outlinePlacement } from './outline.svelte';
 import Tab from './Tab.svelte';
 import { attachTabMenu, tabDocId } from './tabMenu';
 import './vendor/dockview.css';
@@ -46,12 +45,10 @@ export class Workspace {
   private readonly closing = new Map<string, Promise<boolean>>();
   private readonly focusListener: { dispose(): void };
   private readonly moveListener: { dispose(): void };
-  private readonly layoutListener: { dispose(): void };
   private readonly stopTheme: () => void;
   private readonly detachTabMenu: () => void;
   private readonly onKeydown = (e: KeyboardEvent) => this.closeTabFromKeyboard(e);
   private readonly onClick = (e: MouseEvent) => this.selectTabOnClick(e);
-  private readonly onFocus = (e: FocusEvent) => this.keepGroupOnOutlineFocus(e);
   private readonly onPointerDown = (e: PointerEvent) => this.activateGroupUnderPointer(e);
   private sorting = false;
   private pointerActivating = false;
@@ -75,12 +72,9 @@ export class Workspace {
       // The pane left the page during the move, which reset its scroll.
       this.panes.get(e.panel.id)?.querySelector('[data-doc-pane]')?.dispatchEvent(new Event(PANE_MOVED));
     });
-    this.layoutListener = this.api.onDidLayoutChange(() => this.placeOutline());
     // Capture phase, so this runs before dockview's own tab-list key handler.
     el.addEventListener('keydown', this.onKeydown, true);
     el.addEventListener('click', this.onClick);
-    // Capture phase, so this runs before the focus tracking dockview puts on each group.
-    el.addEventListener('focus', this.onFocus, true);
     el.addEventListener('pointerdown', this.onPointerDown);
     this.detachTabMenu = attachTabMenu(el, this);
   }
@@ -229,14 +223,10 @@ export class Workspace {
   dispose(): void {
     this.el.removeEventListener('keydown', this.onKeydown, true);
     this.el.removeEventListener('click', this.onClick);
-    this.el.removeEventListener('focus', this.onFocus, true);
     this.el.removeEventListener('pointerdown', this.onPointerDown);
     this.detachTabMenu();
     this.focusListener.dispose();
     this.moveListener.dispose();
-    this.layoutListener.dispose();
-    outlinePlacement.anchorId = null;
-    outlinePlacement.docId = null;
     this.stopTheme();
     this.api.dispose();
   }
@@ -266,12 +256,6 @@ export class Workspace {
       const panel = this.api.getPanel(id);
       if (panel) this.api.removePanel(panel);
     }
-  }
-
-  private placeOutline(): void {
-    const root = this.api.toJSON().grid.root as unknown as GridNode;
-    outlinePlacement.anchorId = this.api.panels.length ? topLeftView(root) : null;
-    outlinePlacement.docId = this.activeDocId();
   }
 
   private groupDocIds(id?: string): string[] {
@@ -322,12 +306,6 @@ export class Workspace {
     // A pinned tab has no close button, so the keys do nothing either (Ruling 48).
     if (docs.get(id)?.pinned) return;
     void this.closeDoc(id);
-  }
-
-  // Dockview makes a group active when focus enters it. The outline lists the active doc
-  // from inside another group's pane, so focus there must not switch groups (Ruling 195).
-  private keepGroupOnOutlineFocus(e: FocusEvent): void {
-    if (e.target instanceof Element && e.target.closest('.window-outline')) e.stopPropagation();
   }
 
   // A press on a group's preview moves no focus, so dockview would leave the group inactive.
@@ -401,11 +379,6 @@ export class Workspace {
       if (editor) EditorView.findFromDOM(editor)?.focus();
     }, 0);
   }
-}
-
-function topLeftView(node: GridNode): string | null {
-  if (node.type === 'leaf') return node.data.activeView ?? node.data.views[0] ?? null;
-  return node.data.length ? topLeftView(node.data[0]) : null;
 }
 
 function leafViews(node: GridNode): string[] {

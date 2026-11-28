@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
+import { EditorView } from '@codemirror/view';
 import { cursors, type Cursor } from './lib/docs/cursor.svelte';
 import { listenForFileEvents, reportLiveReloadOff, setReloadNoticeShower } from './lib/docs/reload';
 import { createDoc, docs, setWatchFailureReporter } from './lib/docs/store.svelte';
@@ -9,7 +10,8 @@ import { dropStalePrintRoot } from './lib/export/print';
 import { findLintConfig } from './lib/ipc';
 import { fixAll, type LintIssue } from './lib/lint/lint';
 import { lintIssues } from './lib/lint/lintState.svelte';
-import { outline } from './lib/layout/outline.svelte';
+import { outline, outlineSources } from './lib/layout/outline.svelte';
+import type { Workspace } from './lib/layout/workspace';
 import { setOutlineChecked, setSplitEnabled, takeAppMenu } from './lib/os/menu';
 import { listenForAdoption, listenForReveal } from './lib/os/windows';
 import { listenForDrops, listenForOpenFiles, openPaths, setOpenNoticeShower } from './lib/os/open';
@@ -35,10 +37,13 @@ const fake = vi.hoisted(() => ({
   stopDrops: (() => {}) as () => void,
   fileEventsReady: Promise.resolve(),
   stopFileEvents: (() => {}) as () => void,
+  realWorkspace: false,
+  workspace: null as unknown,
 }));
 
-vi.mock('./lib/layout/workspace', () => ({
-  Workspace: class {
+vi.mock('./lib/layout/workspace', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./lib/layout/workspace')>();
+  class FakeWorkspace {
     activeDocId = () => fake.active;
     onActiveChange(cb: (id: string | null) => void) {
       fake.activeListeners.add(cb);
@@ -51,8 +56,18 @@ vi.mock('./lib/layout/workspace', () => ({
     isAloneInGroup = (id: string) => fake.alone.has(id);
     isVisible = (id: string) => id === fake.active;
     dispose() {}
-  },
-}));
+  }
+  return {
+    // A few tests need dockview's real groups and panes beside App's own layout.
+    Workspace: class {
+      constructor(el: HTMLElement) {
+        const ws = fake.realWorkspace ? new actual.Workspace(el) : new FakeWorkspace();
+        fake.workspace = ws;
+        return ws;
+      }
+    },
+  };
+});
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     label: fake.label,
@@ -70,6 +85,8 @@ vi.mock('@tauri-apps/api/window', () => ({
 }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   getCurrentWebviewWindow: () => ({ setBackgroundColor: async () => {} }),
+  // No Settings window, so the toolbar's Split buttons act here.
+  WebviewWindow: { getByLabel: async () => null },
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), open: vi.fn(), save: vi.fn() }));
 vi.mock('./lib/os/menu', () => ({
@@ -180,7 +197,12 @@ beforeEach(() => {
   fake.label = 'main';
   fake.focused = true;
   fake.fileEventsReady = Promise.resolve();
+  fake.realWorkspace = false;
+  fake.workspace = null;
   outline.visible = true;
+  outline.collapsed = false;
+  outline.width = 210;
+  outlineSources.clear();
   Object.assign(settings, structuredClone(DEFAULT_SETTINGS));
   localStorage.clear();
   document.documentElement.removeAttribute('style');
@@ -464,14 +486,160 @@ describe('App with several windows (M4.3)', () => {
   });
 });
 
-describe('App outline (Rulings 181, 191)', () => {
-  it('leaves the outline to the panes, with none beside the dock', () => {
+describe('App outline column (v0.2 items 7, 8)', () => {
+  const column = (container: HTMLElement) => container.querySelector<HTMLElement>('.outline-column');
+  function headings(id: string, text: string) {
+    outlineSources.set(id, { headings: [{ level: 1, text, id: 'h', line: 1 }], activeLine: 1, pick: vi.fn() });
+  }
+
+  it("puts the column first in the work area, left of the dock, for the active tab's headings", () => {
     const a = createDoc({ path: '/a.md', raw: '# A\n', hash: 'h', mode: 'edit' });
+    const b = createDoc({ path: '/b.md', raw: '# B\n', hash: 'h', mode: 'edit' });
+    headings(a.id, 'A');
+    headings(b.id, 'B');
     fake.active = a.id;
     const { container } = render(App);
 
-    expect(container.querySelector('.work > nav')).toBeNull();
-    expect(container.querySelector('.work')?.firstElementChild?.classList.contains('dock')).toBe(true);
+    const work = container.querySelector('.work')!;
+    expect(work.firstElementChild).toBe(column(container));
+    expect(column(container)?.nextElementSibling?.classList.contains('dock')).toBe(true);
+    expect(column(container)?.textContent).toContain('A');
+
+    setActive(b.id);
+    expect(column(container)?.textContent).toContain('B');
+  });
+
+  it('shows no column in an empty window, so the empty state stays centred (Ruling 9 of the v0.2 ledger)', async () => {
+    const { container, getByRole } = render(App);
+    await vi.waitFor(() => expect(getByRole('button', { name: 'Open a file' })).toBeTruthy());
+
+    expect(column(container)).toBeNull();
+  });
+
+  it('starts at the top of the work area with the toolbar hidden too', () => {
+    settings.showToolbar = false;
+    const a = createDoc({ path: '/a.md', raw: '# A\n', hash: 'h', mode: 'edit' });
+    headings(a.id, 'A');
+    fake.active = a.id;
+    const { container } = render(App);
+
+    expect(container.querySelector('.app')?.firstElementChild?.classList.contains('work')).toBe(true);
+    expect(container.querySelector('.work')?.firstElementChild).toBe(column(container));
+  });
+
+  it('keeps Outline pressed while the column is collapsed (Ruling 9 of the v0.2 ledger)', async () => {
+    const a = createDoc({ path: '/a.md', raw: '# A\n', hash: 'h', mode: 'edit' });
+    headings(a.id, 'A');
+    fake.active = a.id;
+    const { container, getByRole } = render(App);
+    await vi.waitFor(() => expect(container.querySelector('[role="toolbar"][aria-label="Window"]')).not.toBeNull());
+
+    await fireEvent.click(getByRole('button', { name: 'Collapse Outline' }));
+
+    expect(getByRole('button', { name: 'Expand Outline' })).toBeTruthy();
+    const pressed = container.querySelector('[aria-label="Window"] button[aria-label="Outline"]');
+    expect(pressed?.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('App outline column beside real tab groups (v0.2 items 7, 8)', () => {
+  const column = () => document.querySelector<HTMLElement>('.app .outline-column');
+  const link = (text: string) => [...(column()?.querySelectorAll('a') ?? [])].find((a) => a.textContent === text);
+  const settle = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  };
+
+  beforeEach(() => {
+    fake.realWorkspace = true;
+  });
+
+  async function app() {
+    const view = render(App);
+    await vi.waitFor(() => expect(view.container.querySelector('[role="toolbar"][aria-label="Window"]')).not.toBeNull());
+    const ws = fake.workspace as Workspace;
+    return { ...view, ws };
+  }
+
+  function doc(name: string, raw = `# ${name}\n\ntext\n\n## ${name} two\n`) {
+    return createDoc({ path: `/notes/${name}.md`, raw, hash: 'h', mode: 'split' });
+  }
+
+  it('after Split Down, is one outline left of the dock and below the toolbar, in no pane', async () => {
+    const { container, getByRole, ws } = await app();
+    const [a, b] = [doc('a'), doc('b')];
+    ws.openDoc(a);
+    ws.openDoc(b);
+    await vi.waitFor(() => expect(getByRole('button', { name: 'Split Down' }).getAttribute('aria-disabled')).toBe('false'));
+
+    await fireEvent.click(getByRole('button', { name: 'Split Down' }));
+    await vi.waitFor(() => expect(ws.groupCount()).toBe(2));
+    await vi.waitFor(() => expect(link('b two')).toBeDefined());
+
+    const outlines = container.querySelectorAll('nav[aria-label="Outline"]');
+    expect(outlines).toHaveLength(1);
+    const col = outlines[0].closest('.outline-column')!;
+    expect(col.parentElement?.classList.contains('work')).toBe(true);
+    expect(col.nextElementSibling?.classList.contains('dock')).toBe(true);
+    expect(col.parentElement?.previousElementSibling?.getAttribute('aria-label')).toBe('Window');
+    expect(col.closest('[data-doc-pane], .dv-groupview')).toBeNull();
+  });
+
+  it('follows the active tab from group to group', async () => {
+    const { ws } = await app();
+    const [a, b] = [doc('a'), doc('b')];
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'right');
+    await vi.waitFor(() => expect(link('b two')).toBeDefined());
+
+    ws.activate(a.id);
+    await vi.waitFor(() => expect(link('a two')).toBeDefined());
+    expect(link('b two')).toBeUndefined();
+
+    ws.activate(b.id);
+    await vi.waitFor(() => expect(link('b two')).toBeDefined());
+  });
+
+  // Without Ruling 195's guards: the column is outside every group, so dockview never sees these.
+  it('picks a heading in the active doc and leaves the active group alone', async () => {
+    const { ws } = await app();
+    const [a, b] = [doc('a'), doc('b')];
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'right');
+    await vi.waitFor(() => expect(link('b two')).toBeDefined());
+    const target = link('b two')!;
+
+    // As a browser does: a press focuses the link unless its mousedown is cancelled.
+    target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 });
+    target.dispatchEvent(down);
+    if (!down.defaultPrevented) target.focus();
+    await settle();
+    (link('b two') ?? target).click();
+    await settle();
+
+    expect(ws.activeDocId()).toBe(b.id);
+    const editor = document.querySelector(`[data-doc-pane="${b.id}"] .cm-editor`) as HTMLElement;
+    const view = EditorView.findFromDOM(editor)!;
+    expect(view.state.selection.main.head).toBe(view.state.doc.line(5).from);
+    expect(document.activeElement).toBe(view.contentDOM);
+  });
+
+  it('leaves the active group alone when the keyboard moves into the column', async () => {
+    const { ws } = await app();
+    const [a, b] = [doc('a'), doc('b')];
+    ws.openDoc(a);
+    ws.openDoc(b);
+    ws.split(b.id, 'right');
+    await vi.waitFor(() => expect(link('b two')).toBeDefined());
+
+    link('b two')!.focus();
+    await settle();
+
+    expect(ws.activeDocId()).toBe(b.id);
+    expect(link('b two')).toBeDefined();
   });
 });
 
@@ -721,7 +889,7 @@ describe('App session (Rulings 205, 209, 212)', () => {
     expect(statusText(container)).not.toContain('not found');
   });
 
-  it('saves the session after a layout, pin, mode or outline change', () => {
+  it('saves the session after a layout, pin, mode or outline change, collapse and width included', () => {
     const a = createDoc({ path: '/a.md', raw: 'one', hash: 'h', mode: 'edit' });
     render(App);
     flushSync();
@@ -739,9 +907,15 @@ describe('App session (Rulings 205, 209, 212)', () => {
     outline.visible = false;
     flushSync();
     expect(save).toHaveBeenCalledTimes(4);
+    outline.collapsed = true;
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(5);
+    outline.width = 300;
+    flushSync();
+    expect(save).toHaveBeenCalledTimes(6);
     a.text = 'typing is not a session change';
     flushSync();
-    expect(save).toHaveBeenCalledTimes(4);
+    expect(save).toHaveBeenCalledTimes(6);
     expect(save).toHaveBeenLastCalledWith('main');
   });
 });

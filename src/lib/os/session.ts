@@ -4,7 +4,7 @@ import { load, type Store } from '@tauri-apps/plugin-store';
 import { setStartTopLine, topLineOf } from '../docs/cursor.svelte';
 import { docs, restoreDoc, type ViewMode } from '../docs/store.svelte';
 import { pathsExist } from '../ipc';
-import { outline } from '../layout/outline.svelte';
+import { outline, restoreOutlineWidth } from '../layout/outline.svelte';
 import type { Workspace } from '../layout/workspace';
 import { SETTINGS_LABEL } from '../../settings/settingsWindow';
 import { largeFileNotices, requireWorkspace } from './open';
@@ -24,6 +24,8 @@ export interface WindowSession {
   layout: unknown; // dockview toJSON() output, stored as-is
   tabs: Record<string, PersistedTab>; // keyed by DocState.id / panel id
   outlineVisible: boolean;
+  outlineCollapsed: boolean; // missing in a v0.1.0 session = false
+  outlineWidth: number; // px, integer 160-480; missing or out of range = 210
 }
 
 export interface PersistedTab {
@@ -43,7 +45,7 @@ const MODES: readonly ViewMode[] = ['edit', 'split', 'read'];
 /** This window's session as it stands. Untitled docs are left out. */
 export function toWindowSession(
   ws: Pick<Workspace, 'toJSON'>,
-  outlineVisible: boolean,
+  column: { visible: boolean; collapsed: boolean; width: number },
   label: string = getCurrentWindow().label,
 ): WindowSession {
   const tabs: Record<string, PersistedTab> = {};
@@ -51,7 +53,14 @@ export function toWindowSession(
     if (doc.path === null) continue;
     tabs[doc.id] = { path: doc.path, pinned: doc.pinned, mode: doc.mode, topLine: topLineOf(doc.id) };
   }
-  return { label, layout: ws.toJSON(), tabs, outlineVisible };
+  return {
+    label,
+    layout: ws.toJSON(),
+    tabs,
+    outlineVisible: column.visible,
+    outlineCollapsed: column.collapsed,
+    outlineWidth: column.width,
+  };
 }
 
 /** "1 file from last session was not found", for the status bar (Ruling 212). */
@@ -89,7 +98,7 @@ export function saveWindowSession(label: string): Promise<void> {
   cancelPendingSave();
   return oneAtATime(async () => {
     if (restoreState.get(label) !== 'done' || forgotten.has(label)) return;
-    const session = toWindowSession(requireWorkspace(), outline.visible, label);
+    const session = toWindowSession(requireWorkspace(), outline, label);
     const store = await sessionStore();
     // A session of another version was ignored at launch; the first save starts over (Ruling 210).
     if ((await store.get('version')) !== VERSION) {
@@ -232,6 +241,8 @@ async function rebuild(session: WindowSession): Promise<{ restored: number; miss
     }
   }
   outline.visible = session.outlineVisible;
+  outline.collapsed = session.outlineCollapsed;
+  outline.width = session.outlineWidth;
   try {
     ws.fromJSON(session.layout);
   } catch (err) {
@@ -249,7 +260,14 @@ async function readSession(label: string): Promise<WindowSession | null> {
   for (const [id, tab] of Object.entries(value.tabs)) {
     if (isTab(tab)) tabs[id] = tab;
   }
-  return { label, layout: value.layout, tabs, outlineVisible: value.outlineVisible !== false };
+  return {
+    label,
+    layout: value.layout,
+    tabs,
+    outlineVisible: value.outlineVisible !== false,
+    outlineCollapsed: value.outlineCollapsed === true,
+    outlineWidth: restoreOutlineWidth(value.outlineWidth),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

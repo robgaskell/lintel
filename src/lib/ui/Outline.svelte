@@ -26,7 +26,13 @@
     headings,
     activeLine,
     onPick,
-  }: { headings: Heading[]; activeLine: number; onPick: (h: Heading) => void } = $props();
+    onCollapse,
+  }: {
+    headings: Heading[];
+    activeLine: number;
+    onPick: (h: Heading) => void;
+    onCollapse?: () => void;
+  } = $props();
 
   let list: HTMLDivElement | undefined = $state();
 
@@ -110,7 +116,14 @@
 </script>
 
 <nav class="outline" aria-label="Outline">
-  <div class="label">Outline</div>
+  <div class="label">
+    Outline
+    {#if onCollapse}
+      <button type="button" class="collapse" aria-label="Collapse Outline" title="Collapse Outline" onclick={onCollapse}>
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"></path></svg>
+      </button>
+    {/if}
+  </div>
   {#if headings.length === 0}
     <p class="empty">No headings</p>
   {:else}
@@ -139,8 +152,10 @@
 </nav>
 
 <style>
+  /* The column around it sets the width. */
   .outline {
-    flex: 0 0 210px;
+    flex: 1 1 auto;
+    min-width: 0;
     box-sizing: border-box;
     min-height: 0;
     overflow-y: auto;
@@ -151,12 +166,39 @@
   }
 
   .label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     padding: 0 8px 8px;
     color: var(--outline-label);
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+
+  /* As the window toolbar's buttons, smaller; the negative margin keeps the row's height. */
+  .collapse {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin: -5px -6px -5px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--toolbar-icon);
+  }
+
+  .collapse:hover {
+    background: var(--toolbar-hover);
+  }
+
+  .collapse:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .rows {
