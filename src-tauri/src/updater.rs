@@ -21,7 +21,7 @@ const TEST_VAR: &str = "LINTEL_UPDATE_TEST";
 /// With TEST_VAR, a debug build checks this URL instead, such as a local stub.
 const TEST_URL_VAR: &str = "LINTEL_UPDATE_URL";
 
-const CHECKS_OFF: &str = "Update checks are off in development builds.";
+const CHECKS_OFF: &str = "Could not check for updates: update checks are off in development builds.";
 const NOT_READY: &str = "No update is ready to install.";
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -505,13 +505,23 @@ impl Found for Update {
     }
 
     async fn download_bytes(&self) -> Result<Vec<u8>, String> {
-        self.download(|_, _| {}, || {})
-            .await
-            .map_err(|e| e.to_string())
+        self.download(|_, _| {}, || {}).await.map_err(download_error)
     }
 
     fn install_bytes(&self, bytes: &[u8]) -> Result<(), String> {
         self.install(bytes).map_err(|e| e.to_string())
+    }
+}
+
+/// A signature that cannot be decoded or does not check out is named, as the plugin's own
+/// text, such as "Invalid input length: 5", does not say what it is about (Ruling 359).
+fn download_error(err: tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error;
+    match err {
+        Error::Base64(_) | Error::Minisign(_) | Error::SignatureUtf8(_) => {
+            format!("the update's signature is not valid ({err})")
+        }
+        other => other.to_string(),
     }
 }
 
@@ -929,7 +939,29 @@ mod tests {
         assert_eq!(probe.checks(), 0);
         let state = service.state();
         assert_eq!(state.status, Status::Error);
-        assert_eq!(state.error.as_deref(), Some(CHECKS_OFF));
+        // Ruling 359: worded like every other failed check.
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Could not check for updates: update checks are off in development builds.")
+        );
+    }
+
+    // Ruling 359: "Invalid input length: 5" alone does not say what was wrong.
+    #[test]
+    fn a_malformed_signature_is_named_in_the_download_error() {
+        use base64::prelude::{Engine as _, BASE64_STANDARD};
+        let bad = BASE64_STANDARD.decode("bogus").unwrap_err();
+
+        let message = download_error(tauri_plugin_updater::Error::from(bad));
+
+        assert_eq!(message, "the update's signature is not valid (Invalid input length: 5)");
+    }
+
+    #[test]
+    fn other_download_errors_keep_their_own_text() {
+        let message = download_error(tauri_plugin_updater::Error::EmptyEndpoints);
+
+        assert_eq!(message, "Updater does not have any endpoints set.");
     }
 
     fn env(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {

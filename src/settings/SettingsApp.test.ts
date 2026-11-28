@@ -13,6 +13,8 @@ import {
 import { DEFAULT_PALETTES, followTheme } from '../lib/theme/theme';
 import { isMac } from '../lib/os/platform';
 import SettingsApp, { sections } from './SettingsApp.svelte';
+import { followUpdatesInSettings } from '../lib/os/updater';
+import { flushSync } from 'svelte';
 
 const order = vi.hoisted(() => [] as string[]);
 const load = vi.hoisted(() => ({ finish: (_err?: unknown) => {} }));
@@ -81,6 +83,25 @@ describe('SettingsApp', () => {
       ['lint', 'Lint'],
       ['updates', 'Updates'],
     ]);
+  });
+
+  // Ruling 359: the section's own warning colour must beat the shared hint grey.
+  it('shows a failed update check in the warning colour, not the hint grey', () => {
+    history.replaceState(null, '', '/?view=settings&section=updates');
+    const { container } = render(SettingsApp);
+    const onState = vi.mocked(followUpdatesInSettings).mock.calls.at(-1)![0];
+    onState({ status: 'error', version: null, error: 'Could not check for updates: offline', appVersion: '0.1.0', lastChecked: null, revision: 1 });
+    flushSync();
+
+    // Stand-ins for the theme's --muted and --lint-warning, so the two can be told apart.
+    const tokens = document.createElement('style');
+    tokens.textContent = ':root { --muted: rgb(1, 2, 3); --lint-warning: rgb(4, 5, 6); }';
+    document.head.append(tokens);
+    const result = container.querySelector('#update-result')!;
+    const hint = container.querySelector('.hint:not(#update-result)')!;
+    expect(getComputedStyle(hint).color).toBe('rgb(1, 2, 3)');
+    expect(getComputedStyle(result).color).toBe('rgb(4, 5, 6)');
+    tokens.remove();
   });
 
   it('opens on Updates when asked, with Check now (Ruling 343)', () => {
