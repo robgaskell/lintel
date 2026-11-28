@@ -1421,16 +1421,28 @@ mod tests {
     // A change between watch() and the start of its folder's OS watch has no event.
     #[test]
     fn a_change_before_the_os_watch_starts_is_reported_once_it_does() {
+        use notify::Watcher as _;
         let dir = TempDir::new();
         let path = dir.file("a.md", "new");
+        // FSEvents can report a write made just before a watch starts, which would do the
+        // check's job. Once another watch has seen a later write, a new one will not.
+        let (seen, heard) = mpsc::channel();
+        let mut probe = notify::recommended_watcher(seen).unwrap();
+        probe.watch(&dir.0, RecursiveMode::NonRecursive).unwrap();
+        dir.file("mark", "");
+        let is_mark = |event: notify::Result<notify::Event>| {
+            event.unwrap().paths.iter().any(|p| p.ends_with("mark"))
+        };
+        while !is_mark(heard.recv_timeout(WAIT).expect("the probe saw the mark")) {}
+        drop(probe);
+
         let (watcher, notices) = watcher();
         let watcher = Arc::new(watcher);
         let busy = lock(&watcher.folders);
         let opener = Arc::clone(&watcher);
         let opening = path.clone();
         let watched = within_a_second(move || opener.watch("main", opening, &hash("new")));
-        // As if the file changed after watch() read it. FSEvents can report a write made
-        // just before its watch starts, so a real write would not test the check.
+        // As if the file changed after watch() read it, since a real write has an event.
         watcher.lock().by_key.values_mut().next().unwrap().hash = Some(hash("old"));
         drop(busy);
 
