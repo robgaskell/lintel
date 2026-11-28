@@ -111,7 +111,8 @@
     display: none;
   }
 
-  .outcome.failed {
+  /* Names .hint too: SettingsApp's grey .hint rule is as specific and comes later. */
+  .hint.outcome.failed {
     color: var(--lint-warning);
   }
 

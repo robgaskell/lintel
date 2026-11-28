@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
+import { OS_ACTION, OS_ACTION_RESULT, type OsActionEvent } from '../lib/ipc';
 import { resetFakes } from '../test/fakes';
 import {
   DEFAULT_SETTINGS,
@@ -101,6 +102,29 @@ describe('SettingsApp', () => {
     const hint = container.querySelector('.hint:not(#update-result)')!;
     expect(getComputedStyle(hint).color).toBe('rgb(1, 2, 3)');
     expect(getComputedStyle(result).color).toBe('rgb(4, 5, 6)');
+    tokens.remove();
+  });
+
+  // Ruling 360: the same trap as above, in Files.
+  it('shows a failed install or Make default in the warning colour, not the hint grey', async () => {
+    history.replaceState(null, '', '/?view=settings&section=files');
+    void listen(OS_ACTION, ({ payload }) => {
+      const { action, requestId } = payload as OsActionEvent;
+      void emit(OS_ACTION_RESULT, { requestId, ok: false, message: `${action} broke` });
+    });
+    const { container, getByRole, getByText } = render(SettingsApp);
+    load.finish();
+    await vi.waitFor(() => expect(controls(container)).toBe(false));
+    await fireEvent.click(getByRole('button', { name: 'Install command-line tool' }));
+    await fireEvent.click(getByRole('button', { name: 'Make Lintel the default' }));
+    await vi.waitFor(() => getByText('make-default broke'));
+
+    const tokens = document.createElement('style');
+    tokens.textContent = ':root { --muted: rgb(1, 2, 3); --lint-warning: rgb(4, 5, 6); }';
+    document.head.append(tokens);
+    expect(getComputedStyle(container.querySelector('#recent-limit-hint')!).color).toBe('rgb(1, 2, 3)');
+    expect(getComputedStyle(getByText('install-cli broke')).color).toBe('rgb(4, 5, 6)');
+    expect(getComputedStyle(getByText('make-default broke')).color).toBe('rgb(4, 5, 6)');
     tokens.remove();
   });
 
