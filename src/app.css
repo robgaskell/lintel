@@ -68,6 +68,11 @@ body {
   font-size: 13px;
 }
 
+/* Without a height here, Settings' height: 100% resolves to auto and its sections never scroll. */
+#app {
+  height: 100%;
+}
+
 /* One-line banners above a document: large file, remote images. */
 .notice {
   padding: 6px 12px;

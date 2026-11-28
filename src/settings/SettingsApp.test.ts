@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { emit, listen } from '@tauri-apps/api/event';
 import { OS_ACTION, OS_ACTION_RESULT, type OsActionEvent } from '../lib/ipc';
@@ -76,6 +76,30 @@ function controls(container: HTMLElement): boolean {
 }
 
 describe('SettingsApp', () => {
+  // Spec item 4: with no height on the mount element, 100% resolves to auto and main never scrolls.
+  it('fills the window from the mount element down, so main scrolls', async () => {
+    // Read from disk: the project has no Node types.
+    const { readFileSync } = (await import(/* @vite-ignore */ 'node:fs' as string)) as {
+      readFileSync(path: string, encoding: 'utf8'): string;
+    };
+    const sheet = document.createElement('style');
+    sheet.textContent = readFileSync('src/app.css', 'utf8').replace(/@import[^;]*;/g, '');
+    document.head.append(sheet);
+    const mountEl = document.createElement('div');
+    mountEl.id = 'app';
+    document.body.append(mountEl);
+    onTestFinished(() => {
+      sheet.remove();
+      mountEl.remove();
+    });
+    const { container } = render(SettingsApp, { target: mountEl });
+
+    expect(container).toBe(mountEl);
+    expect(getComputedStyle(mountEl).height).toBe('100%');
+    expect(getComputedStyle(container.querySelector('.settings-app')!).height).toBe('100%');
+    expect(getComputedStyle(container.querySelector('main')!).overflowY).toBe('auto');
+  });
+
   it('lists Appearance, Editor, Files, Lint and Updates', () => {
     expect(sections.map((s) => [s.id, s.label])).toEqual([
       ['appearance', 'Appearance'],

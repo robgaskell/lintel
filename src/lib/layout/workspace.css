@@ -1,0 +1,5 @@
+/* Dockview lays this full-size box over the dock when no group is left; without this it swallows clicks meant for
+   the empty state under it (Open a file, Create one, recent files). */
+.dv-watermark-container {
+  pointer-events: none;
+}

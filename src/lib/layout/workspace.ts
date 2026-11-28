@@ -22,6 +22,7 @@ import { outlinePlacement } from './outline.svelte';
 import Tab from './Tab.svelte';
 import { attachTabMenu, tabDocId } from './tabMenu';
 import './vendor/dockview.css';
+import './workspace.css';
 
 // Only the id goes in params: dockview serialises params into the saved layout.
 interface PanelParams {

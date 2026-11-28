@@ -946,3 +946,13 @@ describe('isVisible (Ruling 265)', () => {
     expect(ws.isVisible('no-such-doc')).toBe(false);
   });
 });
+
+describe('empty window (Ruling 2)', () => {
+  it('lets clicks through the watermark box to the empty state under it', () => {
+    // Dockview puts this full-size, z-index 1 box over the dock whenever no group is left.
+    const box = host.querySelector<HTMLElement>('.dv-watermark-container');
+    expect(box).not.toBeNull();
+    expect(getComputedStyle(box!).zIndex).toBe('1');
+    expect(getComputedStyle(box!).pointerEvents).toBe('none');
+  });
+});
