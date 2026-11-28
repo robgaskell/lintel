@@ -70,6 +70,11 @@ network requests, except for web images you choose to load.
 
 See [docs/known-issues.md](docs/known-issues.md).
 
+## Support Lintel
+
+Lintel is free. If it helps you, you can leave a tip on [Ko-fi](https://ko-fi.com/robgaskell).
+Tips go first towards Apple's yearly fee to sign the Mac app, so it opens without a warning.
+
 ## Releasing
 
 Maintainers: see [docs/releasing.md](docs/releasing.md).
